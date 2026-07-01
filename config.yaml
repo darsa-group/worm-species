@@ -1,0 +1,83 @@
+seed: 42
+
+data:
+  root_dir: "/mnt/extssd/Earthworms/petridish-worm-images"
+  metadata_csv: "/mnt/extssd/Earthworms/petridish-worm-images/01_Segmented/global_metadata.csv"
+
+  # choose one:
+  # rel_path_seg      = segmented RGB image
+  # rel_path_raw      = raw image
+  # rel_path_segmask  = binary mask
+  image_col: "rel_path_seg"
+  mask_col: "rel_path_segmask"
+
+  # target can be:
+  # species_label, genus, life_stage
+  target_col: "species_label"
+
+  # individual-level split column
+  group_col: "barcode"
+
+  # If barcode is already the individual ID, keep this false.
+  # Set true only if barcodes look like individual_1, individual_2, etc.
+  strip_final_number_from_group: false
+
+  min_individuals_per_class: 20
+  crop_to_foreground: false
+  crop_pad: 0.15
+  image_size: 224
+
+split:
+  test_size: 0.20
+  val_size: 0.15
+
+model:
+  name: "resnet18"   # resnet18, resnet50, efficientnet_b0, vit_b_16, swin_t
+  pretrained: true
+  freeze_backbone: true
+
+training:
+  epochs: 100
+  batch_size: 128
+  lr: 0.001
+  weight_decay: 0.0001
+  use_amp: true
+  class_weight: true
+  num_workers: 8
+
+output:
+  out_dir: "outputs"
+
+cache:
+  enabled: true
+  dir: "cache/images"
+  root_dir_cache: "/home/devd/worm-species"
+  format: "png"
+  rebuild: false
+  num_workers: 8
+
+sweep:
+  enabled: true
+
+  parameters:
+    model.name:
+      - "vit_b_16"
+      - "efficientnet_b0"
+      - "swin_t"
+      - "resnet18"
+      - "resnet50"
+
+    model.freeze_backbone:
+      - false
+      - true
+
+    model.pretrained:
+      - false
+      - true
+
+    training.class_weight:
+      - false
+      - true
+
+    data.image_size:
+      - 224

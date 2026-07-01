@@ -3,8 +3,16 @@ __pycache__/
 *.py[codz]
 *$py.class
 
+*cache/*
+*.pt
+*.csv
+*.json
+
 # C extensions
 *.so
+
+*.vscode
+
 
 # Distribution / packaging
 .Python
