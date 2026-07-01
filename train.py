@@ -378,6 +378,15 @@ def train_one_run(cfg: dict) -> dict:
     best_val_f1 = -1.0
     history = []
 
+    early_cfg = cfg.get("early_stopping", {})
+    early_enabled = early_cfg.get("enabled", True)
+    patience = early_cfg.get("patience", 12)
+    min_delta = early_cfg.get("min_delta", 0.001)
+
+    best_val_f1 = -float("inf")
+    epochs_without_improvement = 0
+    best_epoch = 0
+
     for epoch in range(1, cfg["training"]["epochs"] + 1):
         train_metrics, _, _ = run_epoch(
             model=model,
@@ -411,16 +420,25 @@ def train_one_run(cfg: dict) -> dict:
 
         history.append(row)
 
+        current_val_f1 = val_metrics["macro_f1"]
+
         print(
             f"[{run_name}] "
             f"Epoch {epoch:03d} | "
             f"train loss {train_metrics['loss']:.4f} | "
-            f"val macro-F1 {val_metrics['macro_f1']:.4f} | "
+            f"val macro-F1 {current_val_f1:.4f} | "
             f"val bal-acc {val_metrics['balanced_accuracy']:.4f}"
         )
 
-        if val_metrics["macro_f1"] > best_val_f1:
-            best_val_f1 = val_metrics["macro_f1"]
+        # -----------------------------
+        # Check improvement
+        # -----------------------------
+        improved = current_val_f1 > best_val_f1 + min_delta
+
+        if improved:
+            best_val_f1 = current_val_f1
+            best_epoch = epoch
+            epochs_without_improvement = 0
 
             torch.save(
                 {
@@ -429,14 +447,36 @@ def train_one_run(cfg: dict) -> dict:
                     "label_to_index": label_to_index,
                     "index_to_label": index_to_label,
                     "best_val_macro_f1": best_val_f1,
+                    "best_epoch": best_epoch,
                 },
                 out_dir / "best_model.pt",
             )
 
+            print(
+                f"[{run_name}] New best model saved | "
+                f"best val macro-F1 {best_val_f1:.4f} at epoch {best_epoch}"
+            )
+
+        else:
+            epochs_without_improvement += 1
+
+            print(
+                f"[{run_name}] No improvement for "
+                f"{epochs_without_improvement}/{patience} epochs"
+            )
+
+        # -----------------------------
+        # Early stopping
+        # -----------------------------
+        if early_enabled and epochs_without_improvement >= patience:
+            print(
+                f"[{run_name}] Early stopping at epoch {epoch}. "
+                f"Best val macro-F1 {best_val_f1:.4f} at epoch {best_epoch}."
+            )
+            break
+    # Final test evaluation
     history_df = pd.DataFrame(history)
     history_df.to_csv(out_dir / "history.csv", index=False)
-
-    # Final test evaluation
     ckpt = torch.load(out_dir / "best_model.pt", map_location=device)
     model.load_state_dict(ckpt["model_state"])
 
