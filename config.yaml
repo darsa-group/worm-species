@@ -22,10 +22,52 @@ data:
   # Set true only if barcodes look like individual_1, individual_2, etc.
   strip_final_number_from_group: false
 
-  min_individuals_per_class: 20
+  min_individuals_per_class: 3
   crop_to_foreground: false
   crop_pad: 0.15
   image_size: 224
+
+  barcode_col: barcode
+  species_requires_binomial: true
+
+  target_cols:
+    genus: genus
+    species: species_label
+    age: life_stage
+
+  split_target_col: __taxon_for_split__
+
+  taxonomic_uncertainty:
+    uncertain_species_labels:
+      - Lumbricus_sp
+      - Aporrectodea_caliginosa_tuberculata
+
+    uncertain_species_patterns:
+      - "(?:^|_)sp(?:$|_)"
+
+    resolved_species_label_overrides:
+      Lumbricus_sp_terrestris_herculeus: Lumbricus_terrestris_herculeus
+
+    life_stage_overrides:
+      Lumbricus_sp_terrestris_herculeus: Adult
+
+  
+  min_individuals_per_class_by_task:
+    genus: 3
+    species: 3
+    age: 3
+
+multi_task:
+  loss_weights:
+    genus: 1.0
+    species: 1.0
+    age: 1.0
+
+  # Recommended because not every image has all three labels.
+  normalize_loss_by_active_tasks: true
+
+  # Other valid choices include genus_macro_f1, species_macro_f1, age_macro_f1.
+  selection_metric: mean_macro_f1
 
 early_stopping:
   enabled: true
@@ -39,9 +81,9 @@ split:
   val_size: 0.15
 
 model:
-  name: "resnet18"   # resnet18, resnet50, efficientnet_b0, vit_b_16, swin_t
+  name: "efficientnet_b0"   # resnet18, resnet50, efficientnet_b0, vit_b_16, swin_t
   pretrained: true
-  freeze_backbone: true
+  freeze_backbone: false
 
 training:
   epochs: 100
@@ -73,20 +115,23 @@ sweep:
       - "swin_t"
       - "resnet18"
       - "resnet50"
+      - "efficientnet_b1"
 
     model.freeze_backbone:
       - false
       - true
+    multitask.loss_weights.genus:
+      - 1.0
+      - 0.5
+      - 2.0
+    multitask.loss_weights.species:
+      - 1.0
+      - 0.5
+      - 2.0
+    multitask.loss_weights.age:
+      - 1.0
+      - 0.5    
+      - 2.0
 
-    model.pretrained:
-      - false
-      - true
 
-    training.class_weight:
-      - false
-      - true
-
-    data.min_individuals_per_class:
-      - 20
-      - 10
-      - 50
+    
