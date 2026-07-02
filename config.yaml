@@ -13,7 +13,7 @@ data:
 
   # target can be:
   # species_label, genus, life_stage
-  target_col: "species_label"
+  target_col: "genus"
 
   # individual-level split column
   group_col: "barcode"
