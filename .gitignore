@@ -10,7 +10,11 @@ __pycache__/
 *.npy
 *.png
 *.jpg
-
+*.args
+*.out
+*.err
+*.txt
+*.tsv
 # C extensions
 *.so
 

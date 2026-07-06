@@ -1,8 +1,8 @@
 seed: 42
 
 data:
-  root_dir: "/mnt/extssd/Earthworms/petridish-worm-images"
-  metadata_csv: "/mnt/extssd/Earthworms/petridish-worm-images/01_Segmented/global_metadata.csv"
+  root_dir: "../petridish-worm-images"
+  metadata_csv: "../petridish-worm-images/01_Segmented/global_metadata.csv"
 
   # choose one:
   # rel_path_seg      = segmented RGB image
@@ -73,7 +73,7 @@ early_stopping:
   enabled: true
   monitor: "macro_f1"
   mode: "max"
-  patience: 15
+  patience: 3
   min_delta: 0.001
 
 split:
@@ -86,13 +86,14 @@ model:
   freeze_backbone: false
 
 training:
-  epochs: 100
+  epochs: 200
   batch_size: 128
   lr: 0.001
   weight_decay: 0.0001
   use_amp: true
   class_weight: true
-  num_workers: 8
+  num_workers: 12
+  val_interval: 5
 
 output:
   out_dir: "outputs"
@@ -100,7 +101,7 @@ output:
 cache:
   enabled: true
   dir: "cache/images"
-  root_dir_cache: "/home/devd/worm-species"
+  root_dir_cache: "../cache"
   format: "png"
   rebuild: false
   num_workers: 8
@@ -110,28 +111,39 @@ sweep:
 
   parameters:
     model.name:
+      - 'convnext_base'
+      - 'swin_v2_b'
       - "vit_b_16"
-      - "efficientnet_b0"
-      - "swin_t"
       - "resnet18"
       - "resnet50"
       - "efficientnet_b1"
+      - 
+
+    training.lr:
+      - 0.0003
+      - 0.0001
+
+    training.batch_size:
+      - 256
 
     model.freeze_backbone:
       - false
-      - true
+
     multitask.loss_weights.genus:
       - 1.0
       - 0.5
       - 2.0
+      
     multitask.loss_weights.species:
       - 1.0
       - 0.5
       - 2.0
+      
     multitask.loss_weights.age:
       - 1.0
-      - 0.5    
-      - 2.0
+      - 0.5
+      - 2.0    
+      
 
 
     

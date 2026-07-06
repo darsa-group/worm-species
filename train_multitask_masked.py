@@ -505,37 +505,39 @@ def run_epoch(
             complete_exact_correct += int((complete_correct & complete_mask).sum().item())
 
     metrics = {"loss": float(np.mean(losses)) if losses else float("nan")}
+    if train:
+        return metrics, all_true, all_pred
+    else:
+        macro_f1_values = []
 
-    macro_f1_values = []
+        for task in tasks:
+            y_true = np.array(all_true[task], dtype=int)
+            y_pred = np.array(all_pred[task], dtype=int)
 
-    for task in tasks:
-        y_true = np.array(all_true[task], dtype=int)
-        y_pred = np.array(all_pred[task], dtype=int)
+            if len(y_true) == 0:
+                metrics[f"{task}_loss"] = float("nan")
+                metrics[f"{task}_n"] = 0
+                metrics[f"{task}_accuracy"] = float("nan")
+                metrics[f"{task}_balanced_accuracy"] = float("nan")
+                metrics[f"{task}_macro_f1"] = float("nan")
+                continue
 
-        if len(y_true) == 0:
-            metrics[f"{task}_loss"] = float("nan")
-            metrics[f"{task}_n"] = 0
-            metrics[f"{task}_accuracy"] = float("nan")
-            metrics[f"{task}_balanced_accuracy"] = float("nan")
-            metrics[f"{task}_macro_f1"] = float("nan")
-            continue
+            task_macro_f1 = f1_score(y_true, y_pred, average="macro", zero_division=0)
+            macro_f1_values.append(task_macro_f1)
 
-        task_macro_f1 = f1_score(y_true, y_pred, average="macro", zero_division=0)
-        macro_f1_values.append(task_macro_f1)
+            metrics[f"{task}_loss"] = float(np.mean(task_losses[task])) if task_losses[task] else float("nan")
+            metrics[f"{task}_n"] = int(len(y_true))
+            metrics[f"{task}_accuracy"] = _safe_metric(accuracy_score, y_true, y_pred)
+            metrics[f"{task}_balanced_accuracy"] = _safe_metric(balanced_accuracy_score, y_true, y_pred)
+            metrics[f"{task}_macro_f1"] = float(task_macro_f1)
 
-        metrics[f"{task}_loss"] = float(np.mean(task_losses[task])) if task_losses[task] else float("nan")
-        metrics[f"{task}_n"] = int(len(y_true))
-        metrics[f"{task}_accuracy"] = _safe_metric(accuracy_score, y_true, y_pred)
-        metrics[f"{task}_balanced_accuracy"] = _safe_metric(balanced_accuracy_score, y_true, y_pred)
-        metrics[f"{task}_macro_f1"] = float(task_macro_f1)
-
-    metrics["mean_macro_f1"] = float(np.mean(macro_f1_values)) if macro_f1_values else float("nan")
-    metrics["complete_exact_match_accuracy"] = (
-        float(complete_exact_correct / complete_exact_total)
-        if complete_exact_total > 0
-        else float("nan")
-    )
-    metrics["complete_exact_match_n"] = int(complete_exact_total)
+        metrics["mean_macro_f1"] = float(np.mean(macro_f1_values)) if macro_f1_values else float("nan")
+        metrics["complete_exact_match_accuracy"] = (
+            float(complete_exact_correct / complete_exact_total)
+            if complete_exact_total > 0
+            else float("nan")
+        )
+        metrics["complete_exact_match_n"] = int(complete_exact_total)
 
     return metrics, all_true, all_pred
 
@@ -554,7 +556,8 @@ def _score_for_selection(metrics: dict, selection_metric: str) -> float:
 
 def train_one_run(cfg: dict) -> dict:
     set_seed(cfg["seed"])
-
+    print(f"Using device: {torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'CPU'}")
+    print(f"Starting training")
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     run_name = make_run_name(cfg)
@@ -576,7 +579,7 @@ def train_one_run(cfg: dict) -> dict:
 
     save_json(split_summary, out_dir / "split_summary.json")
     save_json(label_to_index_by_task, out_dir / "label_to_index_by_task.json")
-
+    print(f"Split summary and label maps saved to {out_dir}")
     num_classes_by_task = {
         task: len(label_to_index)
         for task, label_to_index in label_to_index_by_task.items()
@@ -586,7 +589,7 @@ def train_one_run(cfg: dict) -> dict:
         cfg=cfg,
         num_classes_by_task=num_classes_by_task,
     ).to(device)
-
+    print("Model built and moved to device.")
     criteria = build_criteria(
         train_df=train_df,
         target_cols=target_cols,
@@ -622,15 +625,16 @@ def train_one_run(cfg: dict) -> dict:
 
     early_cfg = cfg.get("early_stopping", {})
     early_enabled = early_cfg.get("enabled", True)
-    patience = early_cfg.get("patience", 12)
+    patience = early_cfg.get("patience", 3)
     min_delta = early_cfg.get("min_delta", 0.001)
 
     selection_metric = cfg.get("multi_task", {}).get("selection_metric", "mean_macro_f1")
+    val_interval = cfg["training"].get("val_interval", 3)
 
     best_val_score = -float("inf")
     epochs_without_improvement = 0
     best_epoch = 0
-
+    print(f"Training for {cfg['training']['epochs']} epochs with early stopping: {early_enabled}, patience: {patience}, min_delta: {min_delta}")
     for epoch in range(1, cfg["training"]["epochs"] + 1):
         train_metrics, _, _ = run_epoch(
             model=model,
@@ -645,18 +649,27 @@ def train_one_run(cfg: dict) -> dict:
             normalize_loss_by_active_tasks=normalize_loss_by_active_tasks,
         )
 
-        val_metrics, _, _ = run_epoch(
-            model=model,
-            loader=val_loader,
-            criteria=criteria,
-            optimizer=None,
-            device=device,
-            train=False,
-            scaler=None,
-            use_amp=use_amp,
-            task_loss_weights=task_loss_weights,
-            normalize_loss_by_active_tasks=normalize_loss_by_active_tasks,
+        do_validation = (
+            epoch == 1
+            or epoch % val_interval == 0
+            or epoch == cfg["training"]["epochs"]
         )
+
+        if do_validation:
+            val_metrics, _, _ = run_epoch(
+                model=model,
+                loader=val_loader,
+                criteria=criteria,
+                optimizer=None,
+                device=device,
+                train=False,
+                scaler=None,
+                use_amp=use_amp,
+                task_loss_weights=task_loss_weights,
+                normalize_loss_by_active_tasks=normalize_loss_by_active_tasks,
+            )
+        else:
+            val_metrics = {}
 
         scheduler.step()
 
@@ -667,64 +680,71 @@ def train_one_run(cfg: dict) -> dict:
         }
         history.append(row)
 
-        if selection_metric not in val_metrics:
-            raise ValueError(
-                f"multi_task.selection_metric={selection_metric!r} is not available. "
-                f"Available validation metrics: {list(val_metrics.keys())}"
-            )
+        if do_validation:
+            if selection_metric not in val_metrics:
+                raise ValueError(
+                    f"multi_task.selection_metric={selection_metric!r} is not available. "
+                    f"Available validation metrics: {list(val_metrics.keys())}"
+                )
 
-        current_val_score = _score_for_selection(val_metrics, selection_metric)
-
-        print(
-            f"[{run_name}] Epoch {epoch:03d} | "
-            f"train loss {train_metrics['loss']:.4f} | "
-            f"val {selection_metric} {val_metrics[selection_metric]:.4f} | "
-            f"complete exact-match {val_metrics['complete_exact_match_accuracy']:.4f} "
-            f"n={val_metrics['complete_exact_match_n']}"
-        )
-
-        for task in target_cols:
-            print(
-                f"    {task}: val macro-F1 {val_metrics[f'{task}_macro_f1']:.4f} | "
-                f"val bal-acc {val_metrics[f'{task}_balanced_accuracy']:.4f} | "
-                f"n={val_metrics[f'{task}_n']}"
-            )
-
-        improved = current_val_score > best_val_score + min_delta
-
-        # Always save the first epoch, even if the chosen metric is nan.
-        if improved or epoch == 1:
-            best_val_score = current_val_score
-            best_epoch = epoch
-            epochs_without_improvement = 0
-
-            torch.save(
-                {
-                    "model_state": model.state_dict(),
-                    "cfg": cfg,
-                    "label_to_index_by_task": label_to_index_by_task,
-                    "index_to_label_by_task": index_to_label_by_task,
-                    "best_val_score": best_val_score,
-                    "selection_metric": selection_metric,
-                    "best_epoch": best_epoch,
-                },
-                out_dir / "best_model.pt",
-            )
+            current_val_score = _score_for_selection(val_metrics, selection_metric)
 
             print(
-                f"[{run_name}] New best model saved | "
-                f"best val {selection_metric} {best_val_score:.4f} at epoch {best_epoch}"
+                f"[{run_name}] Epoch {epoch:03d}/{cfg['training']['epochs']} | "
+                f"train loss {train_metrics['loss']:.4f} | "
+                f"val {selection_metric} {val_metrics[selection_metric]:.4f} | "
+                f"complete exact-match {val_metrics['complete_exact_match_accuracy']:.4f} "
+                f"n={val_metrics['complete_exact_match_n']}"
             )
+
+            for task in target_cols:
+                print(
+                    f"    {task}: val macro-F1 {val_metrics[f'{task}_macro_f1']:.4f} | "
+                    f"val bal-acc {val_metrics[f'{task}_balanced_accuracy']:.4f} | "
+                    f"n={val_metrics[f'{task}_n']}"
+                )
+
+            improved = current_val_score > best_val_score + min_delta
+
+            if improved or epoch == 1:
+                best_val_score = current_val_score
+                best_epoch = epoch
+                epochs_without_improvement = 0
+
+                torch.save(
+                    {
+                        "model_state": model.state_dict(),
+                        "cfg": cfg,
+                        "label_to_index_by_task": label_to_index_by_task,
+                        "index_to_label_by_task": index_to_label_by_task,
+                        "best_val_score": best_val_score,
+                        "selection_metric": selection_metric,
+                        "best_epoch": best_epoch,
+                    },
+                    out_dir / "best_model.pt",
+                )
+
+                print(
+                    f"[{run_name}] New best model saved | "
+                    f"best val {selection_metric} {best_val_score:.4f} at epoch {best_epoch}"
+                )
+            else:
+                epochs_without_improvement += 1
+                print(f"[{run_name}] No improvement for {epochs_without_improvement}/{patience} validation checks")
+
+            if early_enabled and epochs_without_improvement >= patience:
+                print(
+                    f"[{run_name}] Early stopping at epoch {epoch}. "
+                    f"Best val {selection_metric} {best_val_score:.4f} at epoch {best_epoch}."
+                )
+                break
+
         else:
-            epochs_without_improvement += 1
-            print(f"[{run_name}] No improvement for {epochs_without_improvement}/{patience} epochs")
-
-        if early_enabled and epochs_without_improvement >= patience:
             print(
-                f"[{run_name}] Early stopping at epoch {epoch}. "
-                f"Best val {selection_metric} {best_val_score:.4f} at epoch {best_epoch}."
+                f"[{run_name}] Epoch {epoch:03d}/{cfg['training']['epochs']} | "
+                f"train loss {train_metrics['loss']:.4f} | "
+                f"validation skipped"
             )
-            break
 
     history_df = pd.DataFrame(history)
     history_df.to_csv(out_dir / "history.csv", index=False)
