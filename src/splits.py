@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pandas as pd
 from sklearn.model_selection import StratifiedShuffleSplit
-
+import os
 
 def make_individual_level_splits(
     df: pd.DataFrame,
@@ -11,6 +11,7 @@ def make_individual_level_splits(
     test_size: float,
     val_size: float,
     seed: int,
+    root_dir: str | None = None
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """
     Splits by individual/group, not by image row.
@@ -18,7 +19,7 @@ def make_individual_level_splits(
     This prevents images of the same worm from appearing in both train and test sets.
     Assumes each individual belongs to one target class.
     """
-
+    cwd = os.getcwd()
     group_df = (
         df[[group_col, target_col]]
         .drop_duplicates()
@@ -76,5 +77,12 @@ def make_individual_level_splits(
     train_df = df[df[group_col].isin(train_groups)].reset_index(drop=True)
     val_df = df[df[group_col].isin(val_groups)].reset_index(drop=True)
     test_df = df[df[group_col].isin(test_groups)].reset_index(drop=True)
+    
+    if root_dir is not None:
+        train_df.to_csv(os.path.join(cwd, 'split_csv', "train_split.csv"), index=False)
+        val_df.to_csv(os.path.join(cwd, 'split_csv', "val_split.csv"), index=False)
+        test_df.to_csv(os.path.join(cwd, 'split_csv', "test_split.csv"), index=False)
+        print(f"Saved train/val/test splits to {cwd}")
+
 
     return train_df, val_df, test_df

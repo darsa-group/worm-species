@@ -5,7 +5,18 @@ __pycache__/
 
 *cache/*
 *.pt
-*.csv
+*output*/*csv
+*output*/*/*csv
+*output*/*/*/*csv
+*output*/*/*/*/*csv
+*output*/*/*/*/*/*csv
+*output*/*/*/*/*/*/*csv
+*single*/*csv
+*single*/*/*csv
+*single*/*/*/*csv
+*single*/*/*/*/*csv
+*single*/*/*/*/*/*csv
+*single*/*/*/*/*/*/*csv
 *.json
 *.npy
 *.png

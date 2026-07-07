@@ -6,6 +6,7 @@ import itertools
 import math
 from pathlib import Path
 
+import os
 import numpy as np
 import pandas as pd
 import torch
@@ -230,6 +231,20 @@ def build_label_maps(
 
     return label_to_index_by_task, index_to_label_by_task
 
+#READ PREFINED CSV'S split_csv/train_split.csv
+def read_csvs_from_dir(dir_path: str) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    train_csv_path = os.path.join(dir_path,"split_csv", "train_split.csv")
+    val_csv_path = os.path.join(dir_path,"split_csv", "val_split.csv")
+    test_csv_path = os.path.join(dir_path,"split_csv", "test_split.csv")
+
+    if not train_csv_path.exists() or not val_csv_path.exists() or not test_csv_path.exists():
+        raise FileNotFoundError(f"One or more split CSV files not found in {dir_path}")
+
+    train_df = pd.read_csv(train_csv_path)
+    val_df = pd.read_csv(val_csv_path)
+    test_df = pd.read_csv(test_csv_path)
+
+    return train_df, val_df, test_df
 
 def make_loaders(cfg: dict):
     df = prepare_metadata(cfg)
@@ -255,13 +270,14 @@ def make_loaders(cfg: dict):
         image_col_for_dataset = cfg["data"]["image_col"]
         crop_to_foreground_for_dataset = cfg["data"].get("crop_to_foreground", True)
 
-    train_df, val_df, test_df = make_individual_level_splits(
+    train_df, val_df, test_df = read_csvs_from_dir(cfg["data"]["root_dir"]) if cfg["split"].get("use_predefined_splits", False) else make_individual_level_splits(
         df=df,
-        target_col=split_target_col,
         group_col=group_col,
-        test_size=cfg["split"]["test_size"],
-        val_size=cfg["split"]["val_size"],
+        target_col=split_target_col,
+        test_size=cfg["data"]["test_size"],
+        val_size=cfg["data"]["val_size"],
         seed=cfg["seed"],
+        root_dir=cfg["data"]["root_dir"] if cfg["data"].get("save_splits", False) else None,
     )
 
     label_to_index_by_task, index_to_label_by_task = build_label_maps(train_df, target_cols)
