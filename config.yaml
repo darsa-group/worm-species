@@ -79,6 +79,7 @@ early_stopping:
 split:
   test_size: 0.20
   val_size: 0.15
+  predefined_split_dir: "split_csv"
   use_predefined_splits: true
 
 model:
@@ -113,12 +114,11 @@ sweep:
   parameters:
     model.name:
       - 'convnext_base'
-      - 'swin_v2_b'
+      - 'swin_t'
       - "vit_b_16"
       - "resnet18"
       - "resnet50"
       - "efficientnet_b1"
-      - 
 
     training.lr:
       - 0.0003
@@ -132,18 +132,12 @@ sweep:
 
     multitask.loss_weights.genus:
       - 1.0
-      - 0.5
-      - 2.0
       
     multitask.loss_weights.species:
       - 1.0
-      - 0.5
-      - 2.0
       
     multitask.loss_weights.age:
       - 1.0
-      - 0.5
-      - 2.0    
       
 
 

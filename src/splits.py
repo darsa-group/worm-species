@@ -19,7 +19,7 @@ def make_individual_level_splits(
     This prevents images of the same worm from appearing in both train and test sets.
     Assumes each individual belongs to one target class.
     """
-    cwd = os.getcwd()
+    cwd = root_dir if root_dir is not None else os.getcwd()
     group_df = (
         df[[group_col, target_col]]
         .drop_duplicates()

@@ -541,6 +541,7 @@ srun python "$TRAIN_SCRIPT" \
         sweep.enabled=false \
         cache.root_dir_cache="$SCRATCH_ROOT" \
         cache.dir="$CACHE_ROOT" \
+        split.predefined_split_dir="$SCRATCH_PROJECT" \
     || status=$?
 
 echo "$status" > "${RUN_SCRATCH_OUT}/run_status.txt"

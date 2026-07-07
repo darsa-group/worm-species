@@ -236,7 +236,10 @@ def read_csvs_from_dir(dir_path: str) -> tuple[pd.DataFrame, pd.DataFrame, pd.Da
     train_csv_path = os.path.join(dir_path,"split_csv", "train_split.csv")
     val_csv_path = os.path.join(dir_path,"split_csv", "val_split.csv")
     test_csv_path = os.path.join(dir_path,"split_csv", "test_split.csv")
-
+    train_csv_path = Path(train_csv_path)
+    val_csv_path = Path(val_csv_path)
+    test_csv_path = Path(test_csv_path)
+    print(f"Reading train/val/test splits from {train_csv_path}, {val_csv_path}, {test_csv_path}")
     if not train_csv_path.exists() or not val_csv_path.exists() or not test_csv_path.exists():
         raise FileNotFoundError(f"One or more split CSV files not found in {dir_path}")
 
@@ -258,9 +261,7 @@ def make_loaders(cfg: dict):
             f"data.split_target_col={split_target_col!r} is not in the metadata dataframe. "
             "Use '__taxon_for_split__' or an existing column."
         )
-
     cache_enabled = cfg.get("cache", {}).get("enabled", False)
-
     if cache_enabled:
         df = build_image_cache(cfg, df)
         df = df[df["_cached_image_path"].notna()].reset_index(drop=True)
@@ -270,15 +271,31 @@ def make_loaders(cfg: dict):
         image_col_for_dataset = cfg["data"]["image_col"]
         crop_to_foreground_for_dataset = cfg["data"].get("crop_to_foreground", True)
 
-    train_df, val_df, test_df = read_csvs_from_dir(cfg["data"]["root_dir"]) if cfg["split"].get("use_predefined_splits", False) else make_individual_level_splits(
+    train_df, val_df, test_df = read_csvs_from_dir(cfg["split"]["predefined_split_dir"]) if cfg["split"].get("use_predefined_splits", False) else make_individual_level_splits(
         df=df,
         group_col=group_col,
         target_col=split_target_col,
         test_size=cfg["data"]["test_size"],
         val_size=cfg["data"]["val_size"],
         seed=cfg["seed"],
-        root_dir=cfg["data"]["root_dir"] if cfg["data"].get("save_splits", False) else None,
+        root_dir=cfg["split"]["predefined_split_dir"] if cfg["data"].get("save_splits", False) else None,
     )
+    
+    if cfg['split'].get('use_predefined_splits', False) and cfg.get("cache", {}).get("enabled", False):
+        print(f"Using predefined splits from {cfg['split']['predefined_split_dir']}")
+        train_df = build_image_cache(cfg, train_df) 
+        val_df = build_image_cache(cfg, val_df) 
+        test_df = build_image_cache(cfg, test_df) 
+        train_df = train_df[train_df["_cached_image_path"].notna()].reset_index(drop=True)
+        val_df = val_df[val_df["_cached_image_path"].notna()].reset_index(drop=True)
+        test_df = test_df[test_df["_cached_image_path"].notna()].reset_index(drop=True)
+    
+    
+    
+    
+
+    
+    
 
     label_to_index_by_task, index_to_label_by_task = build_label_maps(train_df, target_cols)
 
