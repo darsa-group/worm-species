@@ -10,6 +10,7 @@ import os
 import numpy as np
 import pandas as pd
 import torch
+import torch.nn.functional as F
 from torch import nn
 from torch.utils.data import DataLoader
 
@@ -438,6 +439,144 @@ def _safe_metric(metric_fn, y_true: np.ndarray, y_pred: np.ndarray, default: flo
     return float(metric_fn(y_true, y_pred))
 
 
+def infer_parent_label_from_child_label(child_label: str) -> str:
+    """
+    Infer the parent taxon from a child taxon label.
+
+    For species labels such as "Lumbricus terrestris" or
+    "Lumbricus_terrestris", this returns "Lumbricus".
+    If your labels do not contain the genus name, provide an explicit
+    child_to_parent mapping in the config.
+    """
+    child_label = str(child_label).strip()
+
+    if " " in child_label:
+        return child_label.split()[0]
+    if "_" in child_label:
+        return child_label.split("_")[0]
+
+    return child_label
+
+
+def build_child_to_parent_matrix(
+    label_to_index_by_task: dict[str, dict[str, int]],
+    parent_task: str,
+    child_task: str,
+    device: torch.device,
+    child_to_parent: dict[str, str] | None = None,
+) -> torch.Tensor:
+    """
+    Build a matrix that maps child-task probabilities to parent-task probabilities.
+
+    Example:
+        parent_task = "genus"
+        child_task = "species"
+
+    The returned matrix has shape [n_child_classes, n_parent_classes].
+    Multiplying species probabilities by this matrix gives the genus
+    distribution implied by the species head.
+    """
+    if parent_task not in label_to_index_by_task:
+        raise ValueError(f"Parent task {parent_task!r} is not in label_to_index_by_task.")
+    if child_task not in label_to_index_by_task:
+        raise ValueError(f"Child task {child_task!r} is not in label_to_index_by_task.")
+
+    parent_to_index = label_to_index_by_task[parent_task]
+    child_to_index = label_to_index_by_task[child_task]
+    child_to_parent = child_to_parent or {}
+
+    matrix = torch.zeros(
+        len(child_to_index),
+        len(parent_to_index),
+        dtype=torch.float32,
+        device=device,
+    )
+
+    missing_parent_labels = []
+
+    for child_label, child_index in child_to_index.items():
+        parent_label = child_to_parent.get(
+            child_label,
+            infer_parent_label_from_child_label(child_label),
+        )
+
+        if parent_label not in parent_to_index:
+            missing_parent_labels.append((child_label, parent_label))
+            continue
+
+        parent_index = parent_to_index[parent_label]
+        matrix[child_index, parent_index] = 1.0
+
+    if missing_parent_labels:
+        examples = ", ".join(
+            f"{child!r}->{parent!r}" for child, parent in missing_parent_labels[:10]
+        )
+        raise ValueError(
+            f"Could not map {len(missing_parent_labels)} {child_task!r} labels "
+            f"to valid {parent_task!r} labels. Examples: {examples}. "
+            "Either make sure species labels start with the genus name, "
+            "or provide multi_task.hierarchy_loss.child_to_parent in the config."
+        )
+
+    if not torch.all(matrix.sum(dim=1) == 1):
+        raise ValueError(
+            f"Each {child_task!r} class must map to exactly one {parent_task!r} class."
+        )
+
+    return matrix
+
+
+def hierarchy_consistency_loss(
+    parent_logits: torch.Tensor,
+    child_logits: torch.Tensor,
+    child_to_parent_matrix: torch.Tensor,
+    valid_mask: torch.Tensor,
+    eps: float = 1e-8,
+) -> torch.Tensor | None:
+    """
+    Penalise disagreement between a parent-task head and the parent
+    distribution implied by a child-task head.
+
+    Example:
+        parent = genus
+        child = species
+
+    The loss is applied only to samples selected by valid_mask. In your case,
+    this means samples where both genus and species labels are available.
+    """
+    if not valid_mask.any():
+        return None
+
+    parent_logits = parent_logits[valid_mask]
+    child_logits = child_logits[valid_mask]
+
+    parent_probs = F.softmax(parent_logits, dim=1)
+    child_probs = F.softmax(child_logits, dim=1)
+
+    child_to_parent_matrix = child_to_parent_matrix.to(
+        device=child_probs.device,
+        dtype=child_probs.dtype,
+    )
+
+    implied_parent_probs = child_probs @ child_to_parent_matrix
+
+    # Update the parent head to agree with the child-implied parent distribution.
+    parent_loss = F.kl_div(
+        (parent_probs + eps).log(),
+        implied_parent_probs.detach(),
+        reduction="batchmean",
+    )
+
+    # Update the child head so its implied parent distribution agrees with the parent head.
+    child_loss = F.kl_div(
+        (implied_parent_probs + eps).log(),
+        parent_probs.detach(),
+        reduction="batchmean",
+    )
+
+    return 0.5 * (parent_loss + child_loss)
+
+
 def run_epoch(
     model: nn.Module,
     loader: DataLoader,
@@ -449,6 +588,8 @@ def run_epoch(
     use_amp: bool = True,
     task_loss_weights: dict[str, float] | None = None,
     normalize_loss_by_active_tasks: bool = True,
+    hierarchy_cfg: dict | None = None,
+    child_to_parent_matrix: torch.Tensor | None = None,
 ):
     if train:
         model.train()
@@ -457,9 +598,27 @@ def run_epoch(
 
     tasks = list(criteria.keys())
     task_loss_weights = task_loss_weights or {task: 1.0 for task in tasks}
+    hierarchy_cfg = hierarchy_cfg or {}
+    hierarchy_enabled = bool(hierarchy_cfg.get("enabled", False))
+    hierarchy_parent_task = hierarchy_cfg.get("parent_task", "genus")
+    hierarchy_child_task = hierarchy_cfg.get("child_task", "species")
+    hierarchy_weight = float(
+        hierarchy_cfg.get(
+            "weight",
+            task_loss_weights.get("hierarchy", 0.1),
+        )
+    )
+    use_hierarchy_loss = (
+        hierarchy_enabled
+        and hierarchy_weight > 0.0
+        and child_to_parent_matrix is not None
+        and hierarchy_parent_task in tasks
+        and hierarchy_child_task in tasks
+    )
 
     losses = []
     task_losses = {task: [] for task in tasks}
+    hierarchy_losses = []
     all_true = {task: [] for task in tasks}
     all_pred = {task: [] for task in tasks}
 
@@ -499,6 +658,26 @@ def run_epoch(
                     else:
                         loss_by_task[task] = None
 
+                if use_hierarchy_loss:
+                    hierarchy_valid = (
+                        (y[hierarchy_parent_task] != MISSING_LABEL)
+                        & (y[hierarchy_child_task] != MISSING_LABEL)
+                    )
+
+                    hierarchy_loss = hierarchy_consistency_loss(
+                        parent_logits=logits_by_task[hierarchy_parent_task],
+                        child_logits=logits_by_task[hierarchy_child_task],
+                        child_to_parent_matrix=child_to_parent_matrix,
+                        valid_mask=hierarchy_valid,
+                    )
+
+                    if hierarchy_loss is not None:
+                        total_loss = total_loss + hierarchy_weight * hierarchy_loss
+                        active_weight_sum += hierarchy_weight
+                        loss_by_task["hierarchy"] = hierarchy_loss
+                    else:
+                        loss_by_task["hierarchy"] = None
+
                 if active_weight_sum == 0:
                     # Extremely unlikely because prepare_metadata_multitask removes fully unlabelled rows.
                     continue
@@ -516,6 +695,8 @@ def run_epoch(
                     optimizer.step()
 
         losses.append(float(total_loss.item()))
+        if use_hierarchy_loss and loss_by_task.get("hierarchy") is not None:
+            hierarchy_losses.append(float(loss_by_task["hierarchy"].item()))
 
         complete_mask = torch.ones(x.shape[0], dtype=torch.bool, device=device)
         complete_correct = torch.ones(x.shape[0], dtype=torch.bool, device=device)
@@ -538,6 +719,11 @@ def run_epoch(
             complete_exact_correct += int((complete_correct & complete_mask).sum().item())
 
     metrics = {"loss": float(np.mean(losses)) if losses else float("nan")}
+    if use_hierarchy_loss:
+        metrics["hierarchy_loss"] = (
+            float(np.mean(hierarchy_losses)) if hierarchy_losses else float("nan")
+        )
+
     if train:
         return metrics, all_true, all_pred
     else:
@@ -640,6 +826,23 @@ def train_one_run(cfg: dict) -> dict:
         True,
     )
 
+    hierarchy_cfg = cfg.get("multi_task", {}).get("hierarchy_loss", {})
+    child_to_parent_matrix = None
+    if hierarchy_cfg.get("enabled", False):
+        hierarchy_parent_task = hierarchy_cfg.get("parent_task", "genus")
+        hierarchy_child_task = hierarchy_cfg.get("child_task", "species")
+        child_to_parent_matrix = build_child_to_parent_matrix(
+            label_to_index_by_task=label_to_index_by_task,
+            parent_task=hierarchy_parent_task,
+            child_task=hierarchy_child_task,
+            device=device,
+            child_to_parent=hierarchy_cfg.get("child_to_parent"),
+        )
+        print(
+            f"Using hierarchy loss: {hierarchy_child_task} -> {hierarchy_parent_task} "
+            f"with weight {hierarchy_cfg.get('weight', task_loss_weights.get('hierarchy', 0.1))}"
+        )
+
     optimizer = torch.optim.AdamW(
         filter(lambda p: p.requires_grad, model.parameters()),
         lr=cfg["training"]["lr"],
@@ -680,6 +883,8 @@ def train_one_run(cfg: dict) -> dict:
             use_amp=use_amp,
             task_loss_weights=task_loss_weights,
             normalize_loss_by_active_tasks=normalize_loss_by_active_tasks,
+            hierarchy_cfg=hierarchy_cfg,
+            child_to_parent_matrix=child_to_parent_matrix,
         )
 
         do_validation = (
@@ -700,6 +905,8 @@ def train_one_run(cfg: dict) -> dict:
                 use_amp=use_amp,
                 task_loss_weights=task_loss_weights,
                 normalize_loss_by_active_tasks=normalize_loss_by_active_tasks,
+                hierarchy_cfg=hierarchy_cfg,
+                child_to_parent_matrix=child_to_parent_matrix,
             )
         else:
             val_metrics = {}
@@ -796,6 +1003,8 @@ def train_one_run(cfg: dict) -> dict:
         use_amp=use_amp,
         task_loss_weights=task_loss_weights,
         normalize_loss_by_active_tasks=normalize_loss_by_active_tasks,
+        hierarchy_cfg=hierarchy_cfg,
+        child_to_parent_matrix=child_to_parent_matrix,
     )
 
     for task in target_cols:

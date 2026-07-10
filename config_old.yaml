@@ -63,12 +63,6 @@ multi_task:
     species: 1.0
     age: 1.0
 
-  hierarchy_loss:
-    enabled: true
-    parent_task: genus
-    child_task: species
-    weight: 0.1
-
   # Recommended because not every image has all three labels.
   normalize_loss_by_active_tasks: true
 
@@ -87,7 +81,6 @@ split:
   val_size: 0.15
   predefined_split_dir: "split_csv"
   use_predefined_splits: true
-  save_splits: false
 
 model:
   name: "efficientnet_b0"   # resnet18, resnet50, efficientnet_b0, vit_b_16, swin_t
@@ -121,11 +114,15 @@ sweep:
   parameters:
     model.name:
       - 'convnext_base'
+      - 'swin_t'
       - "vit_b_16"
+      - "resnet18"
+      - "resnet50"
+      - "efficientnet_b1"
 
     training.lr:
+      - 0.0003
       - 0.0001
-      - 0.00005
 
     training.batch_size:
       - 256
@@ -136,38 +133,14 @@ sweep:
     multitask.loss_weights.genus:
       - 1.0
       - 0.5
-      - 2.0
-
       
     multitask.loss_weights.species:
-      - 2.0
       - 1.0
       - 0.5
-      
-    multitask.hierarchy_loss.weight:
-      - 0
-      - 0.1
-      - 0.5
-      - 1.0
       
     multitask.loss_weights.age:
       - 1.0
       - 0.5
-      - 2.0
-     
-    split.use_predefined_splits:
-      - true
-    
-    early_stopping.enabled:
-      - true
-      - false
-    
-    early_stopping.min_delta:
-      - 0.0001
-
-    early_stopping.monitor:
-      - "macro_f1"
-
       
 
 
