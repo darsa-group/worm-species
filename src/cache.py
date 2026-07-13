@@ -1,9 +1,9 @@
-
+from __future__ import annotations
 
 import os
 import hashlib
 from pathlib import Path
-
+from concurrent.futures import ProcessPoolExecutor, as_completed
 
 import pandas as pd
 from PIL import Image
@@ -151,23 +151,15 @@ def build_image_cache(cfg: dict, df: pd.DataFrame) -> pd.DataFrame:
     cached_paths = [None] * len(df)
     statuses = [None] * len(df)
     errors = [None] * len(df)
-    print(f"Building image cache with {num_workers} workers...")
-    if num_workers == 1:
-        for task in tqdm(tasks, desc="Building image cache"):
-            idx, cache_path, status, error = _cache_one_image(task)
+
+    with ProcessPoolExecutor(max_workers=num_workers) as ex:
+        futures = [ex.submit(_cache_one_image, task) for task in tasks]
+
+        for fut in tqdm(as_completed(futures), total=len(futures), desc="Building image cache"):
+            idx, cache_path, status, error = fut.result()
             cached_paths[idx] = cache_path
             statuses[idx] = status
             errors[idx] = error
-    else:
-        from concurrent.futures import ProcessPoolExecutor, as_completed
-        with ProcessPoolExecutor(max_workers=num_workers) as ex:
-            futures = [ex.submit(_cache_one_image, task) for task in tasks]
-
-            for fut in tqdm(as_completed(futures), total=len(futures), desc="Building image cache"):
-                idx, cache_path, status, error = fut.result()
-                cached_paths[idx] = cache_path
-                statuses[idx] = status
-                errors[idx] = error
 
     df["_cached_image_path"] = cached_paths
     df["_cache_status"] = statuses

@@ -35,21 +35,37 @@ PROJECT_SRC="${PROJECT_SRC:-$(pwd)}"
 
 # Dataset on shared filesystem. This is copied to node-local /scratch by
 # the first job that lands on each node.
+<<<<<<< HEAD
+DATA_SRC="${DATA_SRC:-/usr/home/qgg/mehrot/petridish-worm-images}"
+=======
 DATA_SRC="${DATA_SRC:-/home/devd/worm-species/data}"
+>>>>>>> refs/remotes/origin/main
 
 BASE_CONFIG="${BASE_CONFIG:-config.yaml}"
 TRAIN_SCRIPT="${TRAIN_SCRIPT:-train_multitask_masked_hloss.py}"
 
+<<<<<<< HEAD
+CONDA_SH="${CONDA_SH:-/usr/home/qgg/mehrot/miniconda3/etc/profile.d/conda.sh}"
+CONDA_ENV="${CONDA_ENV:-wormspecies}"
+
+# At most this many 1-GPU array tasks run at once.
+MAX_ACTIVE="${MAX_ACTIVE:-2}"
+=======
 CONDA_SH="${CONDA_SH:-/home/devd/miniforge3/etc/profile.d/conda.sh"
 CONDA_ENV="${CONDA_ENV:-wormspecies}"
 
 # At most this many 1-GPU array tasks run at once.
 MAX_ACTIVE="${MAX_ACTIVE:-10}"
+>>>>>>> refs/remotes/origin/main
 
 
 # GPU job resources.
 GPU_PARTITION="${GPU_PARTITION:-ghpc_gpu}"
+<<<<<<< HEAD
+GPU_CPUS_PER_TASK="${GPU_CPUS_PER_TASK:-16}"
+=======
 GPU_CPUS_PER_TASK="${GPU_CPUS_PER_TASK:-8}"
+>>>>>>> refs/remotes/origin/main
 GPU_MEM="${GPU_MEM:-16384}"
 GPU_TIME="${GPU_TIME:-04:00:00}"
 
@@ -60,6 +76,15 @@ CLEANUP_CPUS_PER_TASK="${CLEANUP_CPUS_PER_TASK:-1}"
 CLEANUP_MEM="${CLEANUP_MEM:-2048}"
 CLEANUP_TIME="${CLEANUP_TIME:-00:30:00}"
 
+<<<<<<< HEAD
+
+WANDB_ENABLED="${WANDB_ENABLED:-true}"
+WANDB_PROJECT="${WANDB_PROJECT:-worm-species}"
+WANDB_ENTITY="${WANDB_ENTITY:-}"
+WANDB_MODE="${WANDB_MODE:-online}"
+WANDB_RUN_GROUP="${WANDB_RUN_GROUP:-$(basename "$RESULTS_ROOT")}"
+=======
+>>>>>>> refs/remotes/origin/main
 # Required: the two GPU nodes whose /scratch may contain cached data.
 # Example:
 #   GPU_NODES="gpu001 gpu002" bash submit_worm_node_local_scratch_sweep.sh
@@ -152,6 +177,13 @@ echo "MAX_ACTIVE: $MAX_ACTIVE"
 echo "GPU_PARTITION: $GPU_PARTITION"
 echo "CLEANUP_NODES: ${CLEANUP_NODES[*]}"
 echo "CONDA_ENV: $CONDA_ENV"
+<<<<<<< HEAD
+echo "W&B enabled:        $WANDB_ENABLED"
+echo "W&B project:        $WANDB_PROJECT"
+echo "W&B group:          $WANDB_RUN_GROUP"
+echo "W&B mode:           $WANDB_MODE"
+=======
+>>>>>>> refs/remotes/origin/main
 echo "------------------------------------------------------------"
 
 cat > "${RESULTS_ROOT}/launcher_settings.txt" <<EOF
@@ -171,6 +203,14 @@ CLEANUP_PARTITION=${CLEANUP_PARTITION}
 CLEANUP_NODES=${CLEANUP_NODES[*]}
 CONDA_SH=${CONDA_SH}
 CONDA_ENV=${CONDA_ENV}
+<<<<<<< HEAD
+WANDB_ENABLED=${WANDB_ENABLED}
+WANDB_PROJECT=${WANDB_PROJECT}
+WANDB_ENTITY=${WANDB_ENTITY}
+WANDB_MODE=${WANDB_MODE}
+WANDB_RUN_GROUP=${WANDB_RUN_GROUP}
+=======
+>>>>>>> refs/remotes/origin/main
 EOF
 
 #==========================================================================#
@@ -279,7 +319,10 @@ SETUP_SCRIPT="${GENERATED_DIR}/setup_node_local_scratch.sh"
 
 cat > "$SETUP_SCRIPT" <<'SETUP'
 #!/bin/bash
+<<<<<<< HEAD
+=======
 #SBATCH -account worm-species
+>>>>>>> refs/remotes/origin/main
 #SBATCH -N 1
 #SBATCH -n 1
 
@@ -342,7 +385,10 @@ chmod +x "$SETUP_SCRIPT"
 
 cat > "$GPU_ARRAY_SCRIPT" <<'GPUJOB'
 #!/bin/bash
+<<<<<<< HEAD
+=======
 #SBATCH -account worm-species
+>>>>>>> refs/remotes/origin/main
 #SBATCH -N 1
 #SBATCH -n 1
 #SBATCH --gres=gpu:1
@@ -361,6 +407,13 @@ set -euo pipefail
 : "${TRAIN_SCRIPT:?}"
 : "${CONDA_SH:?}"
 : "${CONDA_ENV:?}"
+<<<<<<< HEAD
+: "${WANDB_ENABLED:?}"
+: "${WANDB_PROJECT:?}"
+: "${WANDB_MODE:?}"
+: "${WANDB_RUN_GROUP:?}"
+=======
+>>>>>>> refs/remotes/origin/main
 
 RUN_INDEX="${SLURM_ARRAY_TASK_ID}"
 RUN_NAME=$(printf "run_%03d" "$RUN_INDEX")
@@ -411,7 +464,12 @@ printf '  %q\n' "${OVERRIDE_ARGS[@]}"
 
 source "$CONDA_SH"
 conda activate "$CONDA_ENV"
+<<<<<<< HEAD
+export WANDB_PROJECT WANDB_ENTITY WANDB_MODE WANDB_RUN_GROUP
+export WANDB_NAME="$RUN_NAME"
+=======
 
+>>>>>>> refs/remotes/origin/main
 echo "Python: $(which python)"
 echo "Python version: $(python --version)"
 echo "CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-unset}"
@@ -430,6 +488,14 @@ print("GPU count:", torch.cuda.device_count())
 
 if torch.cuda.is_available():
     print("GPU name:", torch.cuda.get_device_name(0))
+<<<<<<< HEAD
+if os.getenv("WANDB_ENABLED", "true").lower() in {"1", "true", "yes", "on"}:
+    import wandb
+    print("Weights & Biases:", wandb.__version__)
+else:
+    print("Weights & Biases: disabled")
+=======
+>>>>>>> refs/remotes/origin/main
 PY
 
 cd "$SCRATCH_PROJECT"
@@ -541,6 +607,15 @@ srun python "$TRAIN_SCRIPT" \
         data.metadata_csv="$SCRATCH_DATA/01_Segmented/global_metadata.csv" \
         output.out_dir="$RUN_SCRATCH_OUT" \
         sweep.enabled=false \
+<<<<<<< HEAD
+        wandb.enabled="$WANDB_ENABLED" \
+        wandb.project="$WANDB_PROJECT" \
+        wandb.entity="$WANDB_ENTITY" \
+        wandb.group="$WANDB_RUN_GROUP" \
+        wandb.name="$RUN_NAME" \
+        wandb.mode="$WANDB_MODE" \
+=======
+>>>>>>> refs/remotes/origin/main
         cache.root_dir_cache="$SCRATCH_ROOT" \
         cache.dir="$CACHE_ROOT" \
         split.predefined_split_dir="$SCRATCH_PROJECT" \
@@ -563,7 +638,10 @@ chmod +x "$GPU_ARRAY_SCRIPT"
 
 cat > "$CLEANUP_SCRIPT" <<'CLEANUP'
 #!/bin/bash
+<<<<<<< HEAD
+=======
 #SBATCH -account worm-species
+>>>>>>> refs/remotes/origin/main
 #SBATCH -N 1
 #SBATCH -n 1
 
@@ -639,7 +717,11 @@ ARRAY_JOB_ID=$(
         --output="${SLURM_LOG_DIR}/gpu_%A_%a.out" \
         --error="${SLURM_LOG_DIR}/gpu_%A_%a.err" \
         --export=ALL,PROJECT_SRC="$PROJECT_SRC",DATA_SRC="$DATA_SRC",RUN_SPECS_DIR="$RUN_SPECS_DIR",SCRATCH_ROOT="$SCRATCH_ROOT",SCRATCH_PROJECT="$SCRATCH_PROJECT",SCRATCH_DATA="$SCRATCH_DATA",SCRATCH_OUTPUTS="$SCRATCH_OUTPUTS",RESULTS_ROOT="$RESULTS_ROOT",BASE_CONFIG="$BASE_CONFIG",TRAIN_SCRIPT="$TRAIN_SCRIPT",CONDA_SH="$CONDA_SH",CONDA_ENV="$CONDA_ENV" \
+<<<<<<< HEAD
+        $GPU_EXTRA_SBATCH_ARGS WANDB_MODE="$WANDB_MODE",WANDB_RUN_GROUP="$WANDB_RUN_GROUP"\
+=======
         $GPU_EXTRA_SBATCH_ARGS \
+>>>>>>> refs/remotes/origin/main
         "$GPU_ARRAY_SCRIPT"
 )
 
