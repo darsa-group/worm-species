@@ -67,15 +67,62 @@ def parse_sweep_item(item: str) -> tuple[str, list]:
     return key, vals
 
 
+def generate_colour_retention_values(cfg: dict) -> list[float]:
+    """Generate an inclusive colour-retention sequence from percentages.
+
+    Example: start_percent=100, stop_percent=0, step_percent=1 produces
+    [1.00, 0.99, ..., 0.01, 0.00].
+    """
+    ablation_cfg = cfg.get("colour_ablation", {}) or {}
+    if not ablation_cfg.get("enabled", False):
+        return []
+
+    start = int(ablation_cfg.get("start_percent", 100))
+    stop = int(ablation_cfg.get("stop_percent", 0))
+    step = int(ablation_cfg.get("step_percent", 1))
+
+    if not 0 <= start <= 100 or not 0 <= stop <= 100:
+        raise ValueError("Colour-ablation percentages must be between 0 and 100.")
+    if step <= 0:
+        raise ValueError("colour_ablation.step_percent must be greater than zero.")
+
+    if start >= stop:
+        percentages = list(range(start, stop - 1, -step))
+    else:
+        percentages = list(range(start, stop + 1, step))
+
+    # Include the requested endpoint even when the interval is not divisible by step.
+    if not percentages or percentages[-1] != stop:
+        percentages.append(stop)
+
+    return [percentage / 100.0 for percentage in percentages]
+
+
 def get_sweep_parameters_from_config(cfg: dict) -> dict:
-    sweep_cfg = cfg.get("sweep", {})
-    if not sweep_cfg.get("enabled", False):
-        return {}
-    params = sweep_cfg.get("parameters", {})
-    if params is None:
-        return {}
-    if not isinstance(params, dict):
-        raise ValueError("sweep.parameters must be a dictionary.")
+    sweep_cfg = cfg.get("sweep", {}) or {}
+    params = {}
+
+    if sweep_cfg.get("enabled", False):
+        configured_params = sweep_cfg.get("parameters", {}) or {}
+        if not isinstance(configured_params, dict):
+            raise ValueError("sweep.parameters must be a dictionary.")
+        params = copy.deepcopy(configured_params)
+
+    colour_values = generate_colour_retention_values(cfg)
+    if colour_values:
+        ablation_cfg = cfg.get("colour_ablation", {}) or {}
+        if params and not ablation_cfg.get("combine_with_sweep", False):
+            raise ValueError(
+                "Colour ablation is enabled while an ordinary parameter sweep is also enabled. "
+                "Disable sweep.enabled for a controlled colour-only experiment, or set "
+                "colour_ablation.combine_with_sweep=true intentionally."
+            )
+        if "data.colour_retention" in params:
+            raise ValueError(
+                "data.colour_retention is defined both by sweep.parameters and colour_ablation."
+            )
+        params["data.colour_retention"] = colour_values
+
     return params
 
 
@@ -306,8 +353,23 @@ def make_loaders(cfg: dict):
     label_to_index_by_task, index_to_label_by_task = build_label_maps(train_df, target_cols)
 
     image_size = cfg["data"]["image_size"]
-    train_tf = build_transforms(image_size=image_size, train=True)
-    eval_tf = build_transforms(image_size=image_size, train=False)
+    colour_retention = float(cfg.get("data", {}).get("colour_retention", 1.0))
+    print(f"Using colour_retention={colour_retention} for data augmentation.")
+    if not 0.0 <= colour_retention <= 1.0:
+        raise ValueError(
+            f"data.colour_retention must be between 0 and 1, got {colour_retention}."
+        )
+
+    train_tf = build_transforms(
+        image_size=image_size,
+        train=True,
+        colour_retention=colour_retention,
+    )
+    eval_tf = build_transforms(
+        image_size=image_size,
+        train=False,
+        colour_retention=colour_retention,
+    )
 
     common_kwargs = dict(
         root_dir=cfg["data"]["root_dir"],
@@ -354,6 +416,8 @@ def make_loaders(cfg: dict):
     )
 
     split_summary = {
+        "colour_retention": colour_retention,
+        "colour_percent": int(round(colour_retention * 100)),
         "target_cols": target_cols,
         "split_target_col": split_target_col,
         "num_classes_by_task": {
@@ -845,13 +909,68 @@ def _score_for_selection(metrics: dict, selection_metric: str) -> float:
     return value
 
 
+def get_colour_metadata(cfg: dict) -> tuple[float, int]:
+    retention = float(cfg.get("data", {}).get("colour_retention", 1.0))
+    if not 0.0 <= retention <= 1.0:
+        raise ValueError(
+            f"data.colour_retention must be between 0 and 1, got {retention}."
+        )
+    return retention, int(round(retention * 100))
+
+
+def make_experiment_run_name(cfg: dict) -> str:
+    base_name = make_run_name(cfg)
+    if "colour_retention" not in cfg.get("data", {}):
+        return base_name
+
+    _, colour_percent = get_colour_metadata(cfg)
+    suffix = f"colour_{colour_percent:03d}pct"
+    if suffix in base_name:
+        return base_name
+    return f"{base_name}_{suffix}"
+
+def create_wandb_confusion_matrix(
+    y_true,
+    y_pred,
+    class_names,
+    title: str,
+):
+    """Create a W&B confusion matrix while excluding missing labels."""
+
+    y_true = np.asarray(y_true, dtype=int)
+    y_pred = np.asarray(y_pred, dtype=int)
+
+    # Assumes missing/invalid labels are encoded as -1
+    valid = (
+        (y_true >= 0)
+        & (y_pred >= 0)
+        & (y_true < len(class_names))
+        & (y_pred < len(class_names))
+    )
+
+    if not valid.any():
+        return None
+
+    return wandb.plot.confusion_matrix(
+        y_true=y_true[valid].tolist(),
+        preds=y_pred[valid].tolist(),
+        class_names=list(class_names),
+        title=title,
+    )
+
 def train_one_run(cfg: dict) -> dict:
     set_seed(cfg["seed"])
     print(f"Using device: {torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'CPU'}")
     print(f"Starting training")
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    run_name = make_run_name(cfg)
+    colour_retention, colour_percent = get_colour_metadata(cfg)
+    print(f"Colour retention in data: {cfg['data'].get('colour_retention', 1.0)}")
+    run_name = make_experiment_run_name(cfg)
+    print(
+        f"Colour retention: {colour_retention:.2f} "
+        f"({colour_percent}% chromatic information retained)"
+    )
     out_dir = Path(cfg["output"]["out_dir"]) / run_name
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -1043,6 +1162,8 @@ def train_one_run(cfg: dict) -> dict:
                         "best_val_score": best_val_score,
                         "selection_metric": selection_metric,
                         "best_epoch": best_epoch,
+                        "colour_retention": colour_retention,
+                        "colour_percent": colour_percent,
                     },
                     out_dir / "best_model.pt",
                 )
@@ -1126,12 +1247,49 @@ def train_one_run(cfg: dict) -> dict:
         pd.DataFrame(cm, index=label_names, columns=label_names).to_csv(
             out_dir / f"confusion_matrix_{task}.csv"
         )
-
+        wandb_run.log({
+            f"confusion_matrix_{task}": create_wandb_confusion_matrix(
+                y_true=y_true,
+                y_pred=y_pred,
+                class_names=label_names,
+                title=f"Confusion Matrix ({task})"),
+        })
     save_json(test_metrics, out_dir / "test_metrics.json")
+    test_mean_macro_f1 = test_metrics.get("mean_macro_f1", float("nan"))
+    test_mean_macro_f1 = float(test_mean_macro_f1)
+
+    wandb_run.log({
+        "test/mean_macro_f1": test_mean_macro_f1,
+    })
+
+    if test_mean_macro_f1 >= 0.90:
+        wandb_run.alert(
+            title="Test macro-F1 reached 0.90",
+            text=(
+                f"Run {wandb_run.name} achieved "
+                f"test/mean_macro_f1 = {test_mean_macro_f1:.4f}"
+            ),
+        )
+    run_result = {
+        "run_name": run_name,
+        "out_dir": str(out_dir),
+        "colour_retention": colour_retention,
+        "colour_percent": colour_percent,
+        "best_epoch": best_epoch,
+        "best_val_score": best_val_score,
+        "selection_metric": selection_metric,
+        **{f"test_{k}": v for k, v in test_metrics.items()},
+    }
+    # Save locally before optional external logging, so the SLURM collector can
+    # still recover the completed result if W&B logging fails afterwards.
+    save_json(run_result, out_dir / "run_summary.json")
+
     if wandb_run is not None:
         wandb_run.log(_wandb_metrics("test", test_metrics))
         for key, value in _wandb_metrics("test", test_metrics).items():
             wandb_run.summary[key] = value
+        wandb_run.summary["colour_retention"] = colour_retention
+        wandb_run.summary["colour_percent"] = colour_percent
 
         if bool((cfg.get("wandb", {}) or {}).get("log_model", False)):
             model_artifact = wandb.Artifact(
@@ -1141,6 +1299,8 @@ def train_one_run(cfg: dict) -> dict:
                     "best_epoch": best_epoch,
                     "best_val_score": best_val_score,
                     "selection_metric": selection_metric,
+                    "colour_retention": colour_retention,
+                    "colour_percent": colour_percent,
                 },
             )
             model_artifact.add_file(str(out_dir / "best_model.pt"))
@@ -1150,13 +1310,7 @@ def train_one_run(cfg: dict) -> dict:
     print("\nTest metrics:")
     print(test_metrics)
 
-    return {
-        "run_name": run_name,
-        "out_dir": str(out_dir),
-        "best_val_score": best_val_score,
-        "selection_metric": selection_metric,
-        **{f"test_{k}": v for k, v in test_metrics.items()},
-    }
+    return run_result
 
 
 # ---------------------------------------------------------------------
@@ -1208,6 +1362,10 @@ def main():
     out_dir.mkdir(parents=True, exist_ok=True)
 
     results_df = pd.DataFrame(all_results)
+    if "colour_percent" in results_df.columns:
+        results_df = results_df.sort_values(
+            "colour_percent", ascending=False
+        ).reset_index(drop=True)
     results_df.to_csv(out_dir / "multi_run_results.csv", index=False)
 
     print("\nAll runs finished.")

@@ -30,6 +30,10 @@ __pycache__/
 *.so
 
 *.vscode
+#for wandb
+wandb/
+*.wandb/*
+*.wandb
 
 
 # Distribution / packaging

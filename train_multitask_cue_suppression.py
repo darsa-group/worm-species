@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import copy
+import json
 import itertools
 import math
 from pathlib import Path
@@ -31,6 +32,8 @@ from src.dataset_multitask import (
     MISSING_LABEL,
     MultiTaskWormImageDataset,
     build_transforms,
+    build_condition_transform,
+    build_test_condition_transform,
     get_target_cols,
     prepare_metadata,
 )
@@ -67,15 +70,62 @@ def parse_sweep_item(item: str) -> tuple[str, list]:
     return key, vals
 
 
+def generate_colour_retention_values(cfg: dict) -> list[float]:
+    """Generate an inclusive colour-retention sequence from percentages.
+
+    Example: start_percent=100, stop_percent=0, step_percent=1 produces
+    [1.00, 0.99, ..., 0.01, 0.00].
+    """
+    ablation_cfg = cfg.get("colour_ablation", {}) or {}
+    if not ablation_cfg.get("enabled", False):
+        return []
+
+    start = int(ablation_cfg.get("start_percent", 100))
+    stop = int(ablation_cfg.get("stop_percent", 0))
+    step = int(ablation_cfg.get("step_percent", 1))
+
+    if not 0 <= start <= 100 or not 0 <= stop <= 100:
+        raise ValueError("Colour-ablation percentages must be between 0 and 100.")
+    if step <= 0:
+        raise ValueError("colour_ablation.step_percent must be greater than zero.")
+
+    if start >= stop:
+        percentages = list(range(start, stop - 1, -step))
+    else:
+        percentages = list(range(start, stop + 1, step))
+
+    # Include the requested endpoint even when the interval is not divisible by step.
+    if not percentages or percentages[-1] != stop:
+        percentages.append(stop)
+
+    return [percentage / 100.0 for percentage in percentages]
+
+
 def get_sweep_parameters_from_config(cfg: dict) -> dict:
-    sweep_cfg = cfg.get("sweep", {})
-    if not sweep_cfg.get("enabled", False):
-        return {}
-    params = sweep_cfg.get("parameters", {})
-    if params is None:
-        return {}
-    if not isinstance(params, dict):
-        raise ValueError("sweep.parameters must be a dictionary.")
+    sweep_cfg = cfg.get("sweep", {}) or {}
+    params = {}
+
+    if sweep_cfg.get("enabled", False):
+        configured_params = sweep_cfg.get("parameters", {}) or {}
+        if not isinstance(configured_params, dict):
+            raise ValueError("sweep.parameters must be a dictionary.")
+        params = copy.deepcopy(configured_params)
+
+    colour_values = generate_colour_retention_values(cfg)
+    if colour_values:
+        ablation_cfg = cfg.get("colour_ablation", {}) or {}
+        if params and not ablation_cfg.get("combine_with_sweep", False):
+            raise ValueError(
+                "Colour ablation is enabled while an ordinary parameter sweep is also enabled. "
+                "Disable sweep.enabled for a controlled colour-only experiment, or set "
+                "colour_ablation.combine_with_sweep=true intentionally."
+            )
+        if "data.colour_retention" in params:
+            raise ValueError(
+                "data.colour_retention is defined both by sweep.parameters and colour_ablation."
+            )
+        params["data.colour_retention"] = colour_values
+
     return params
 
 
@@ -306,8 +356,25 @@ def make_loaders(cfg: dict):
     label_to_index_by_task, index_to_label_by_task = build_label_maps(train_df, target_cols)
 
     image_size = cfg["data"]["image_size"]
-    train_tf = build_transforms(image_size=image_size, train=True)
-    eval_tf = build_transforms(image_size=image_size, train=False)
+    colour_retention = float(cfg.get("data", {}).get("colour_retention", 1.0))
+    if not 0.0 <= colour_retention <= 1.0:
+        raise ValueError(
+            f"data.colour_retention must be between 0 and 1, got {colour_retention}."
+        )
+
+    input_condition = get_input_condition(cfg)
+    train_tf = build_condition_transform(
+        image_size=image_size,
+        train=True,
+        condition=input_condition,
+        original_colour_retention=colour_retention,
+    )
+    eval_tf = build_condition_transform(
+        image_size=image_size,
+        train=False,
+        condition=input_condition,
+        original_colour_retention=colour_retention,
+    )
 
     common_kwargs = dict(
         root_dir=cfg["data"]["root_dir"],
@@ -353,7 +420,20 @@ def make_loaders(cfg: dict):
         **eval_loader_kwargs,
     )
 
+    test_loader_context = {
+        "test_df": test_df,
+        "dataset_kwargs": common_kwargs,
+        "batch_size": batch_size,
+        "loader_kwargs": eval_loader_kwargs,
+        "image_size": image_size,
+        "original_colour_retention": colour_retention,
+        "training_condition": input_condition,
+    }
+
     split_summary = {
+        "colour_retention": colour_retention,
+        "training_condition": input_condition,
+        "colour_percent": int(round(colour_retention * 100)),
         "target_cols": target_cols,
         "split_target_col": split_target_col,
         "num_classes_by_task": {
@@ -389,6 +469,7 @@ def make_loaders(cfg: dict):
         split_summary,
         train_df,
         target_cols,
+        test_loader_context,
     )
 
 
@@ -766,6 +847,374 @@ def run_epoch(
     return metrics, all_true, all_pred
 
 
+
+# ---------------------------------------------------------------------
+# Test-time cue suppression
+# ---------------------------------------------------------------------
+
+
+def _inclusive_float_sequence(start: float, stop: float, step: float) -> list[float]:
+    """Return an inclusive, rounded sequence in either direction."""
+    start = float(start)
+    stop = float(stop)
+    step = abs(float(step))
+    if step == 0:
+        raise ValueError("Sequence step must be greater than zero.")
+
+    direction = -1.0 if start > stop else 1.0
+    values = []
+    current = start
+    tolerance = step * 1e-6
+    if direction < 0:
+        while current >= stop - tolerance:
+            values.append(round(current, 10))
+            current -= step
+    else:
+        while current <= stop + tolerance:
+            values.append(round(current, 10))
+            current += step
+
+    if not values or not math.isclose(values[-1], stop, abs_tol=tolerance):
+        values.append(stop)
+    return values
+
+
+def generate_test_cue_conditions(cfg: dict) -> list[dict]:
+    """Create deterministic test conditions from ``test_cue_suppression``."""
+    cue_cfg = cfg.get("test_cue_suppression", {}) or {}
+    if not bool(cue_cfg.get("enabled", False)):
+        return []
+
+    conditions: list[dict] = []
+
+    saturation_cfg = cue_cfg.get("saturation", {}) or {}
+    if bool(saturation_cfg.get("enabled", True)):
+        values = saturation_cfg.get("values")
+        if values is None:
+            values = _inclusive_float_sequence(
+                saturation_cfg.get("start", 1.0),
+                saturation_cfg.get("stop", 0.0),
+                saturation_cfg.get("step", 0.01),
+            )
+        for retention in values:
+            retention = float(retention)
+            if not 0.0 <= retention <= 1.0:
+                raise ValueError(
+                    f"Saturation retention values must be in [0, 1], got {retention}."
+                )
+            percentage = int(round(retention * 100))
+            conditions.append({
+                "condition": f"saturation_{percentage:03d}pct",
+                "feature": "colour",
+                "transform": "saturation",
+                "strength": round(float(1.0 - retention), 10),
+                "retention": retention,
+            })
+
+    grayscale_cfg = cue_cfg.get("grayscale", {}) or {}
+    if bool(grayscale_cfg.get("enabled", True)):
+        conditions.append({
+            "condition": "grayscale",
+            "feature": "colour",
+            "transform": "grayscale",
+            "strength": 1.0,
+            "retention": 0.0,
+        })
+
+    channel_cfg = cue_cfg.get("channel_shuffle", {}) or {}
+    if bool(channel_cfg.get("enabled", True)):
+        orders = channel_cfg.get("orders", [[2, 0, 1]])
+        for order in orders:
+            order = [int(i) for i in order]
+            conditions.append({
+                "condition": "channel_shuffle_" + "".join(str(i) for i in order),
+                "feature": "colour",
+                "transform": "channel_shuffle",
+                "strength": 1.0,
+                "order": order,
+            })
+
+    bilateral_cfg = cue_cfg.get("bilateral_filter", {}) or {}
+    if bool(bilateral_cfg.get("enabled", True)):
+        settings = bilateral_cfg.get("settings", [
+            {"diameter": 5, "sigma_colour": 25, "sigma_space": 25},
+            {"diameter": 7, "sigma_colour": 50, "sigma_space": 50},
+            {"diameter": 9, "sigma_colour": 100, "sigma_space": 100},
+        ])
+        for setting in settings:
+            diameter = int(setting["diameter"])
+            sigma_colour = float(setting["sigma_colour"])
+            sigma_space = float(setting["sigma_space"])
+            conditions.append({
+                "condition": (
+                    f"bilateral_d{diameter}_c{sigma_colour:g}_s{sigma_space:g}"
+                ),
+                "feature": "texture",
+                "transform": "bilateral_filter",
+                "strength": sigma_colour,
+                "diameter": diameter,
+                "sigma_colour": sigma_colour,
+                "sigma_space": sigma_space,
+            })
+
+    gaussian_cfg = cue_cfg.get("gaussian_blur", {}) or {}
+    if bool(gaussian_cfg.get("enabled", True)):
+        for sigma in gaussian_cfg.get("sigmas", [0.5, 1.0, 2.0, 4.0]):
+            sigma = float(sigma)
+            conditions.append({
+                "condition": f"gaussian_sigma_{sigma:g}",
+                "feature": "texture",
+                "transform": "gaussian_blur",
+                "strength": sigma,
+                "sigma": sigma,
+            })
+
+    patch_cfg = cue_cfg.get("patch_shuffle", {}) or {}
+    if bool(patch_cfg.get("enabled", True)):
+        seed = int(patch_cfg.get("seed", cfg.get("seed", 0)))
+        for grid_size in patch_cfg.get("grid_sizes", [2, 4, 8]):
+            grid_size = int(grid_size)
+            conditions.append({
+                "condition": f"patch_shuffle_grid_{grid_size}",
+                "feature": "shape",
+                "transform": "patch_shuffle",
+                "strength": grid_size,
+                "grid_size": grid_size,
+                "seed": seed,
+            })
+
+    names = [condition["condition"] for condition in conditions]
+    if len(names) != len(set(names)):
+        duplicates = sorted({name for name in names if names.count(name) > 1})
+        raise ValueError(f"Duplicate test cue condition names: {duplicates}")
+    return conditions
+
+
+def _test_condition_signature(condition: dict, original_colour_retention: float) -> str:
+    """Identify conditions that produce exactly the same transformed input."""
+    transform_name = condition["transform"]
+    if transform_name == "original":
+        return f"colour_retention:{original_colour_retention:.10f}"
+    if transform_name == "saturation":
+        return f"colour_retention:{float(condition['retention']):.10f}"
+    if transform_name == "grayscale":
+        return "colour_retention:0.0000000000"
+    return json.dumps(condition, sort_keys=True)
+
+
+def make_test_condition_loader(test_loader_context: dict, condition: dict) -> DataLoader:
+    transform = build_test_condition_transform(
+        image_size=int(test_loader_context["image_size"]),
+        condition=condition,
+        original_colour_retention=float(
+            test_loader_context["original_colour_retention"]
+        ),
+    )
+    dataset = MultiTaskWormImageDataset(
+        test_loader_context["test_df"],
+        transform=transform,
+        **test_loader_context["dataset_kwargs"],
+    )
+    return DataLoader(
+        dataset,
+        batch_size=int(test_loader_context["batch_size"]),
+        shuffle=False,
+        **test_loader_context["loader_kwargs"],
+    )
+
+
+def evaluate_test_cue_suppression(
+    *,
+    cfg: dict,
+    run_name: str,
+    out_dir: Path,
+    model: nn.Module,
+    baseline_metrics: dict,
+    test_loader_context: dict,
+    criteria: dict[str, nn.Module],
+    target_cols: dict[str, str],
+    device: torch.device,
+    use_amp: bool,
+    task_loss_weights: dict[str, float],
+    normalize_loss_by_active_tasks: bool,
+    hierarchy_cfg: dict,
+    child_to_parent_matrix: torch.Tensor | None,
+    wandb_run=None,
+) -> dict:
+    """Evaluate one fixed checkpoint under all configured test manipulations."""
+    conditions = generate_test_cue_conditions(cfg)
+    if not conditions:
+        return {
+            "enabled": False,
+            "n_conditions": 0,
+        }
+
+    cue_dir = out_dir / "cue_suppression"
+    cue_dir.mkdir(parents=True, exist_ok=True)
+    save_json(
+        cfg.get("test_cue_suppression", {}) or {},
+        cue_dir / "cue_suppression_config.json",
+    )
+
+    original_colour_retention = float(
+        test_loader_context["original_colour_retention"]
+    )
+    original_condition = {
+        "condition": "original",
+        "feature": "baseline",
+        "transform": "original",
+        "strength": 0.0,
+        "retention": original_colour_retention,
+    }
+
+    metric_cache = {
+        _test_condition_signature(
+            original_condition,
+            original_colour_retention,
+        ): baseline_metrics
+    }
+
+    condition_metric_rows = []
+    ratio_rows = []
+
+    def record_condition(condition: dict, metrics: dict, reused: bool) -> None:
+        condition_metric_rows.append({
+            "run_name": run_name,
+            "model": cfg.get("model", {}).get("name"),
+            "condition": condition["condition"],
+            "feature": condition["feature"],
+            "transform": condition["transform"],
+            "strength": condition.get("strength"),
+            "parameters": json.dumps(
+                {
+                    key: value
+                    for key, value in condition.items()
+                    if key not in {"condition", "feature", "transform", "strength"}
+                },
+                sort_keys=True,
+            ),
+            "reused_identical_evaluation": bool(reused),
+            **metrics,
+        })
+
+        for task in target_cols:
+            metric_key = f"{task}_macro_f1"
+            transformed_score = float(metrics.get(metric_key, float("nan")))
+            original_score = float(baseline_metrics.get(metric_key, float("nan")))
+            if (
+                math.isnan(transformed_score)
+                or math.isnan(original_score)
+                or original_score == 0.0
+            ):
+                ratio = float("nan")
+            else:
+                ratio = transformed_score / original_score
+
+            ratio_rows.append({
+                "run_name": run_name,
+                "model": cfg.get("model", {}).get("name"),
+                "task": task,
+                "condition": condition["condition"],
+                "feature": condition["feature"],
+                "transform": condition["transform"],
+                "strength": condition.get("strength"),
+                "parameters": json.dumps(
+                    {
+                        key: value
+                        for key, value in condition.items()
+                        if key not in {"condition", "feature", "transform", "strength"}
+                    },
+                    sort_keys=True,
+                ),
+                "n": metrics.get(f"{task}_n"),
+                "macro_f1": transformed_score,
+                "original_macro_f1": original_score,
+                "ratio_to_original": ratio,
+                "relative_drop": 1.0 - ratio if not math.isnan(ratio) else float("nan"),
+            })
+
+    record_condition(original_condition, baseline_metrics, reused=True)
+
+    for condition_index, condition in enumerate(conditions, start=1):
+        signature = _test_condition_signature(
+            condition,
+            original_colour_retention,
+        )
+        reused = signature in metric_cache
+        if reused:
+            metrics = metric_cache[signature]
+            print(
+                f"Cue test {condition_index}/{len(conditions)}: "
+                f"{condition['condition']} reuses an identical evaluation."
+            )
+        else:
+            print(
+                f"Cue test {condition_index}/{len(conditions)}: "
+                f"{condition['condition']}"
+            )
+            condition_loader = make_test_condition_loader(
+                test_loader_context,
+                condition,
+            )
+            metrics, _, _ = run_epoch(
+                model=model,
+                loader=condition_loader,
+                criteria=criteria,
+                optimizer=None,
+                device=device,
+                train=False,
+                scaler=None,
+                use_amp=use_amp,
+                task_loss_weights=task_loss_weights,
+                normalize_loss_by_active_tasks=normalize_loss_by_active_tasks,
+                hierarchy_cfg=hierarchy_cfg,
+                child_to_parent_matrix=child_to_parent_matrix,
+            )
+            metric_cache[signature] = metrics
+
+        record_condition(condition, metrics, reused=reused)
+
+    condition_metrics_df = pd.DataFrame(condition_metric_rows)
+    ratios_df = pd.DataFrame(ratio_rows)
+    condition_metrics_path = cue_dir / "test_condition_metrics.csv"
+    ratios_path = cue_dir / "macro_f1_ratios.csv"
+    condition_metrics_df.to_csv(condition_metrics_path, index=False)
+    ratios_df.to_csv(ratios_path, index=False)
+
+    feature_summary = (
+        ratios_df[ratios_df["condition"] != "original"]
+        .groupby(["model", "task", "feature", "transform"], dropna=False)
+        .agg(
+            mean_ratio_to_original=("ratio_to_original", "mean"),
+            minimum_ratio_to_original=("ratio_to_original", "min"),
+            mean_relative_drop=("relative_drop", "mean"),
+            n_conditions=("condition", "count"),
+        )
+        .reset_index()
+    )
+    feature_summary_path = cue_dir / "transform_summary.csv"
+    feature_summary.to_csv(feature_summary_path, index=False)
+
+    if wandb_run is not None and wandb is not None:
+        try:
+            wandb_run.log({
+                "cue_suppression/macro_f1_ratios": wandb.Table(dataframe=ratios_df),
+                "cue_suppression/transform_summary": wandb.Table(dataframe=feature_summary),
+            })
+        except Exception as exc:
+            print(f"Warning: could not log cue-suppression tables to W&B: {exc}")
+
+    print(f"Saved cue-suppression metrics to {cue_dir}")
+    return {
+        "enabled": True,
+        "n_conditions": int(len(condition_metric_rows)),
+        "n_unique_evaluations": int(len(metric_cache)),
+        "condition_metrics_path": str(condition_metrics_path),
+        "macro_f1_ratios_path": str(ratios_path),
+        "transform_summary_path": str(feature_summary_path),
+    }
+
+
 # ---------------------------------------------------------------------
 # Training
 # ---------------------------------------------------------------------
@@ -845,13 +1294,113 @@ def _score_for_selection(metrics: dict, selection_metric: str) -> float:
     return value
 
 
+def get_input_condition(cfg: dict) -> dict:
+    """Return the deterministic condition applied to train/val/test in this run."""
+    raw = copy.deepcopy(cfg.get("input_condition", {}) or {})
+    if not bool(raw.get("enabled", False)):
+        return {
+            "condition": "original",
+            "feature": "baseline",
+            "transform": "original",
+            "strength": 0.0,
+        }
+
+    transform_name = str(raw.get("transform", "original")).lower()
+    condition_name = str(raw.get("condition") or raw.get("name") or transform_name)
+    condition = {
+        "condition": condition_name,
+        "feature": str(raw.get("feature", "baseline")),
+        "transform": transform_name,
+        "strength": float(raw.get("strength", 0.0)),
+    }
+
+    parameter_keys = {
+        "retention", "order", "diameter", "sigma_colour", "sigma_space",
+        "sigma", "grid_size", "seed",
+    }
+    for key in parameter_keys:
+        if key in raw and raw[key] is not None:
+            condition[key] = raw[key]
+
+    if transform_name == "saturation":
+        retention = float(condition.get("retention", 1.0))
+        if not 0.0 <= retention <= 1.0:
+            raise ValueError(
+                f"input_condition.retention must be in [0, 1], got {retention}."
+            )
+        condition["retention"] = retention
+    elif transform_name == "channel_shuffle":
+        order = condition.get("order", [2, 0, 1])
+        if isinstance(order, str):
+            order = [int(x.strip()) for x in order.split(",")]
+        condition["order"] = [int(x) for x in order]
+    elif transform_name == "bilateral_filter":
+        condition["diameter"] = int(condition["diameter"])
+        condition["sigma_colour"] = float(condition["sigma_colour"])
+        condition["sigma_space"] = float(condition["sigma_space"])
+    elif transform_name == "gaussian_blur":
+        condition["sigma"] = float(condition["sigma"])
+    elif transform_name == "patch_shuffle":
+        condition["grid_size"] = int(condition["grid_size"])
+        condition["seed"] = int(condition.get("seed", cfg.get("seed", 0)))
+    elif transform_name not in {"original", "grayscale"}:
+        raise ValueError(f"Unsupported input condition transform: {transform_name!r}.")
+
+    return condition
+
+
+def get_colour_metadata(cfg: dict) -> tuple[float, int]:
+    retention = float(cfg.get("data", {}).get("colour_retention", 1.0))
+    if not 0.0 <= retention <= 1.0:
+        raise ValueError(
+            f"data.colour_retention must be between 0 and 1, got {retention}."
+        )
+    return retention, int(round(retention * 100))
+
+
+def make_experiment_run_name(cfg: dict) -> str:
+    base_name = make_run_name(cfg)
+    input_condition = get_input_condition(cfg)
+    condition_suffix = str(input_condition["condition"]).replace(" ", "_")
+    suffixes = []
+
+    if "colour_retention" in cfg.get("data", {}):
+        _, colour_percent = get_colour_metadata(cfg)
+        suffixes.append(f"basecolour_{colour_percent:03d}pct")
+
+    suffixes.append(f"train_{condition_suffix}")
+    suffix = "_".join(suffixes)
+    if suffix in base_name:
+        return base_name
+    return f"{base_name}_{suffix}"
+
+
 def train_one_run(cfg: dict) -> dict:
     set_seed(cfg["seed"])
     print(f"Using device: {torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'CPU'}")
     print(f"Starting training")
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    run_name = make_run_name(cfg)
+    colour_retention, colour_percent = get_colour_metadata(cfg)
+    input_condition = get_input_condition(cfg)
+    cue_eval_enabled = bool(
+        (cfg.get("test_cue_suppression", {}) or {}).get("enabled", False)
+    )
+    if cue_eval_enabled and input_condition["transform"] != "original":
+        print(
+            "Warning: the full test-condition battery is normally reserved for "
+            "the original RGB-trained baseline, but this run is trained under "
+            f"{input_condition['condition']!r}."
+        )
+    run_name = make_experiment_run_name(cfg)
+    print(
+        f"Base colour retention: {colour_retention:.2f} "
+        f"({colour_percent}% chromatic information retained)"
+    )
+    print(
+        "Matched train/validation/test condition: "
+        f"{input_condition['condition']} ({input_condition['transform']})"
+    )
     out_dir = Path(cfg["output"]["out_dir"]) / run_name
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -869,6 +1418,7 @@ def train_one_run(cfg: dict) -> dict:
         split_summary,
         train_df,
         target_cols,
+        test_loader_context,
     ) = make_loaders(cfg)
 
     save_json(split_summary, out_dir / "split_summary.json")
@@ -1043,6 +1593,9 @@ def train_one_run(cfg: dict) -> dict:
                         "best_val_score": best_val_score,
                         "selection_metric": selection_metric,
                         "best_epoch": best_epoch,
+                        "colour_retention": colour_retention,
+                        "colour_percent": colour_percent,
+                        "training_condition": input_condition,
                     },
                     out_dir / "best_model.pt",
                 )
@@ -1128,10 +1681,67 @@ def train_one_run(cfg: dict) -> dict:
         )
 
     save_json(test_metrics, out_dir / "test_metrics.json")
+
+    cue_suppression_result = evaluate_test_cue_suppression(
+        cfg=cfg,
+        run_name=run_name,
+        out_dir=out_dir,
+        model=model,
+        baseline_metrics=test_metrics,
+        test_loader_context=test_loader_context,
+        criteria=criteria,
+        target_cols=target_cols,
+        device=device,
+        use_amp=use_amp,
+        task_loss_weights=task_loss_weights,
+        normalize_loss_by_active_tasks=normalize_loss_by_active_tasks,
+        hierarchy_cfg=hierarchy_cfg,
+        child_to_parent_matrix=child_to_parent_matrix,
+        wandb_run=wandb_run,
+    )
+
+    run_result = {
+        "run_name": run_name,
+        "model": cfg.get("model", {}).get("name"),
+        "out_dir": str(out_dir),
+        "colour_retention": colour_retention,
+        "colour_percent": colour_percent,
+        "train_condition": input_condition["condition"],
+        "train_feature": input_condition["feature"],
+        "train_transform": input_condition["transform"],
+        "train_strength": input_condition.get("strength"),
+        "train_condition_parameters": json.dumps(
+            {
+                key: value
+                for key, value in input_condition.items()
+                if key not in {"condition", "feature", "transform", "strength"}
+            },
+            sort_keys=True,
+        ),
+        "best_epoch": best_epoch,
+        "best_val_score": best_val_score,
+        "selection_metric": selection_metric,
+        "cue_suppression_enabled": cue_suppression_result["enabled"],
+        "cue_suppression_n_conditions": cue_suppression_result["n_conditions"],
+        "cue_suppression_n_unique_evaluations": cue_suppression_result.get(
+            "n_unique_evaluations", 0
+        ),
+        **{f"test_{k}": v for k, v in test_metrics.items()},
+    }
+    # Save locally before optional external logging, so the SLURM collector can
+    # still recover the completed result if W&B logging fails afterwards.
+    save_json(run_result, out_dir / "run_summary.json")
+
     if wandb_run is not None:
         wandb_run.log(_wandb_metrics("test", test_metrics))
         for key, value in _wandb_metrics("test", test_metrics).items():
             wandb_run.summary[key] = value
+        wandb_run.summary["colour_retention"] = colour_retention
+        wandb_run.summary["colour_percent"] = colour_percent
+        wandb_run.summary["train_condition"] = input_condition["condition"]
+        wandb_run.summary["train_feature"] = input_condition["feature"]
+        wandb_run.summary["train_transform"] = input_condition["transform"]
+        wandb_run.summary["train_strength"] = input_condition.get("strength")
 
         if bool((cfg.get("wandb", {}) or {}).get("log_model", False)):
             model_artifact = wandb.Artifact(
@@ -1141,6 +1751,9 @@ def train_one_run(cfg: dict) -> dict:
                     "best_epoch": best_epoch,
                     "best_val_score": best_val_score,
                     "selection_metric": selection_metric,
+                    "colour_retention": colour_retention,
+                    "colour_percent": colour_percent,
+                    "training_condition": input_condition,
                 },
             )
             model_artifact.add_file(str(out_dir / "best_model.pt"))
@@ -1150,13 +1763,7 @@ def train_one_run(cfg: dict) -> dict:
     print("\nTest metrics:")
     print(test_metrics)
 
-    return {
-        "run_name": run_name,
-        "out_dir": str(out_dir),
-        "best_val_score": best_val_score,
-        "selection_metric": selection_metric,
-        **{f"test_{k}": v for k, v in test_metrics.items()},
-    }
+    return run_result
 
 
 # ---------------------------------------------------------------------
@@ -1208,6 +1815,10 @@ def main():
     out_dir.mkdir(parents=True, exist_ok=True)
 
     results_df = pd.DataFrame(all_results)
+    if "colour_percent" in results_df.columns:
+        results_df = results_df.sort_values(
+            "colour_percent", ascending=False
+        ).reset_index(drop=True)
     results_df.to_csv(out_dir / "multi_run_results.csv", index=False)
 
     print("\nAll runs finished.")

@@ -1,6 +1,6 @@
 #!/bin/bash
 #--------------------------------------------------------------------------#
-# Config-based sweep with NODE-LOCAL scratch caching
+# Model sweep with test-time cue suppression and NODE-LOCAL scratch caching
 #
 # Use this when /scratch is NOT shared between nodes.
 #
@@ -38,7 +38,9 @@ PROJECT_SRC="${PROJECT_SRC:-$(pwd)}"
 DATA_SRC="${DATA_SRC:-/usr/home/qgg/mehrot/petridish-worm-images}"
 
 BASE_CONFIG="${BASE_CONFIG:-config.yaml}"
-TRAIN_SCRIPT="${TRAIN_SCRIPT:-train_multitask_masked_hloss.py}"
+TRAIN_SCRIPT="${TRAIN_SCRIPT:-train_multitask_cue_suppression.py}"
+RUN_SPEC_GENERATOR="${RUN_SPEC_GENERATOR:-generate_dual_cue_run_specs.py}"
+RESULT_COLLECTOR="${RESULT_COLLECTOR:-collect_dual_cue_results.py}"
 
 CONDA_SH="${CONDA_SH:-/usr/home/qgg/mehrot/miniconda3/etc/profile.d/conda.sh}"
 CONDA_ENV="${CONDA_ENV:-wormspecies}"
@@ -59,6 +61,11 @@ CLEANUP_PARTITION="${CLEANUP_PARTITION:-$GPU_PARTITION}"
 CLEANUP_CPUS_PER_TASK="${CLEANUP_CPUS_PER_TASK:-1}"
 CLEANUP_MEM="${CLEANUP_MEM:-2048}"
 CLEANUP_TIME="${CLEANUP_TIME:-00:30:00}"
+
+# Small post-processing job that merges all run_summary.json files into one CSV.
+COLLECT_CPUS_PER_TASK="${COLLECT_CPUS_PER_TASK:-1}"
+COLLECT_MEM="${COLLECT_MEM:-4096}"
+COLLECT_TIME="${COLLECT_TIME:-00:20:00}"
 
 
 WANDB_ENABLED="${WANDB_ENABLED:-true}"
@@ -98,6 +105,7 @@ GENERATED_DIR="${RESULTS_ROOT}/generated_slurm"
 
 GPU_ARRAY_SCRIPT="${GENERATED_DIR}/gpu_array_node_local_scratch.sh"
 CLEANUP_SCRIPT="${GENERATED_DIR}/cleanup_node_local_scratch.sh"
+COLLECT_SCRIPT="${GENERATED_DIR}/collect_test_cue_suppression_results.sh"
 
 # Extra sbatch arguments if needed.
 GPU_EXTRA_SBATCH_ARGS="${GPU_EXTRA_SBATCH_ARGS:-}"
@@ -129,6 +137,16 @@ if [[ ! -f "${PROJECT_SRC}/${TRAIN_SCRIPT}" ]]; then
     exit 1
 fi
 
+if [[ ! -f "${PROJECT_SRC}/${RUN_SPEC_GENERATOR}" ]]; then
+    echo "ERROR: Run-spec generator not found: ${PROJECT_SRC}/${RUN_SPEC_GENERATOR}" >&2
+    exit 1
+fi
+
+if [[ ! -f "${PROJECT_SRC}/${RESULT_COLLECTOR}" ]]; then
+    echo "ERROR: Result collector not found: ${PROJECT_SRC}/${RESULT_COLLECTOR}" >&2
+    exit 1
+fi
+
 if [[ ! -f "$CONDA_SH" ]]; then
     echo "ERROR: CONDA_SH not found: $CONDA_SH" >&2
     exit 1
@@ -152,6 +170,8 @@ echo "PROJECT_SRC: $PROJECT_SRC"
 echo "DATA_SRC: $DATA_SRC"
 echo "BASE_CONFIG: $BASE_CONFIG"
 echo "TRAIN_SCRIPT: $TRAIN_SCRIPT"
+echo "RUN_SPEC_GENERATOR: $RUN_SPEC_GENERATOR"
+echo "RESULT_COLLECTOR: $RESULT_COLLECTOR"
 echo "RESULTS_ROOT: $RESULTS_ROOT"
 echo "SCRATCH_ROOT: $SCRATCH_ROOT"
 echo "MAX_ACTIVE: $MAX_ACTIVE"
@@ -169,6 +189,8 @@ PROJECT_SRC=${PROJECT_SRC}
 DATA_SRC=${DATA_SRC}
 BASE_CONFIG=${BASE_CONFIG}
 TRAIN_SCRIPT=${TRAIN_SCRIPT}
+RUN_SPEC_GENERATOR=${RUN_SPEC_GENERATOR}
+RESULT_COLLECTOR=${RESULT_COLLECTOR}
 RESULTS_ROOT=${RESULTS_ROOT}
 SCRATCH_ID=${SCRATCH_ID}
 SCRATCH_ROOT=${SCRATCH_ROOT}
@@ -189,99 +211,29 @@ WANDB_RUN_GROUP=${WANDB_RUN_GROUP}
 EOF
 
 #==========================================================================#
-# GENERATE RUN SPECS FROM config.yaml
+# GENERATE MATCHED-CONDITION RUN SPECS
 #==========================================================================#
 
 source "$CONDA_SH"
 conda activate "$CONDA_ENV"
 
-echo "Generating sweep specs from ${PROJECT_SRC}/${BASE_CONFIG}"
+echo "Generating dual cue experiment specs from ${PROJECT_SRC}/${BASE_CONFIG}"
 
 N_RUNS=$(
-python - "${PROJECT_SRC}/${BASE_CONFIG}" "$RUN_SPECS_DIR" "${RESULTS_ROOT}/sweep_plan.tsv" <<'PY'
-from __future__ import annotations
-
-import itertools
-import sys
-from pathlib import Path
-from typing import Any
-
-try:
-    import yaml
-except ImportError as e:
-    raise SystemExit(
-        "PyYAML is required. Install it in the conda environment, e.g. conda install pyyaml"
-    ) from e
-
-config_path = Path(sys.argv[1])
-run_specs_dir = Path(sys.argv[2])
-sweep_plan_path = Path(sys.argv[3])
-
-with config_path.open("r") as f:
-    cfg = yaml.safe_load(f)
-
-sweep_cfg = cfg.get("sweep", {}) or {}
-enabled = bool(sweep_cfg.get("enabled", False))
-params = sweep_cfg.get("parameters", {}) or {}
-
-run_specs_dir.mkdir(parents=True, exist_ok=True)
-
-def format_value(value: Any) -> str:
-    if isinstance(value, bool):
-        return "true" if value else "false"
-    if value is None:
-        return "null"
-    return str(value)
-
-if not enabled or len(params) == 0:
-    (run_specs_dir / "run_000.args").write_text("")
-    sweep_plan_path.write_text(
-        "run_index\trun_name\toverrides\n"
-        "0\trun_000\t<no sweep enabled>\n"
-    )
-    print(1)
-    raise SystemExit(0)
-
-if not isinstance(params, dict):
-    raise TypeError("sweep.parameters must be a dictionary.")
-
-keys = list(params.keys())
-values = []
-
-for key in keys:
-    vals = params[key]
-    if not isinstance(vals, list):
-        raise TypeError(f"sweep.parameters.{key} must be a list.")
-    if len(vals) == 0:
-        raise ValueError(f"sweep.parameters.{key} is empty.")
-    values.append(vals)
-
-plan_lines = ["run_index\trun_name\toverrides"]
-
-n = 0
-for n, combo in enumerate(itertools.product(*values)):
-    run_name = f"run_{n:03d}"
-    override_lines = [
-        f"{key}={format_value(value)}"
-        for key, value in zip(keys, combo)
-    ]
-
-    # One override per line avoids quoting problems.
-    (run_specs_dir / f"{run_name}.args").write_text(
-        "\n".join(override_lines) + "\n"
-    )
-
-    plan_lines.append(
-        f"{n}\t{run_name}\t" + " ".join(override_lines)
-    )
-
-sweep_plan_path.write_text("\n".join(plan_lines) + "\n")
-print(n + 1)
-PY
+    python "${PROJECT_SRC}/${RUN_SPEC_GENERATOR}" \
+        "${PROJECT_SRC}/${BASE_CONFIG}" \
+        "$RUN_SPECS_DIR" \
+        "${RESULTS_ROOT}/sweep_plan.tsv"
 )
 
-echo "Number of runs: $N_RUNS"
+if [[ ! "$N_RUNS" =~ ^[0-9]+$ ]] || (( N_RUNS < 1 )); then
+    echo "ERROR: invalid number of generated runs: $N_RUNS" >&2
+    exit 1
+fi
+
+echo "Number of matched-condition training runs: $N_RUNS"
 echo "Sweep plan: ${RESULTS_ROOT}/sweep_plan.tsv"
+echo "Experiment plan: ${RESULTS_ROOT}/dual_cue_experiment_plan.json"
 
 ARRAY_MAX=$((N_RUNS - 1))
 
@@ -380,7 +332,16 @@ set -euo pipefail
 : "${WANDB_RUN_GROUP:?}"
 
 RUN_INDEX="${SLURM_ARRAY_TASK_ID}"
-RUN_NAME=$(printf "run_%03d" "$RUN_INDEX")
+RUN_NAME=$(
+    awk -F '\t' -v idx="$RUN_INDEX" 'NR > 1 && $1 == idx {print $2; exit}' \
+        "${RESULTS_ROOT}/sweep_plan.tsv"
+)
+
+if [[ -z "$RUN_NAME" ]]; then
+    echo "ERROR: could not resolve run name for array index $RUN_INDEX" >&2
+    exit 1
+fi
+
 RUN_SPEC_FILE="${RUN_SPECS_DIR}/${RUN_NAME}.args"
 
 RUN_SCRATCH_OUT="${SCRATCH_OUTPUTS}/${RUN_NAME}"
@@ -564,6 +525,7 @@ srun python "$TRAIN_SCRIPT" \
         data.metadata_csv="$SCRATCH_DATA/01_Segmented/global_metadata.csv" \
         output.out_dir="$RUN_SCRATCH_OUT" \
         sweep.enabled=false \
+        colour_ablation.enabled=false \
         wandb.enabled="$WANDB_ENABLED" \
         wandb.project="$WANDB_PROJECT" \
         wandb.entity="$WANDB_ENTITY" \
@@ -612,6 +574,32 @@ echo "Cleanup complete on node $(hostname)."
 CLEANUP
 
 chmod +x "$CLEANUP_SCRIPT"
+
+#==========================================================================#
+# WRITE RESULT-COLLECTION SCRIPT
+#==========================================================================#
+
+cat > "$COLLECT_SCRIPT" <<'COLLECT'
+#!/bin/bash
+#SBATCH -N 1
+#SBATCH -n 1
+
+set -euo pipefail
+
+: "${RESULTS_ROOT:?}"
+: "${PROJECT_SRC:?}"
+: "${RESULT_COLLECTOR:?}"
+: "${CONDA_SH:?}"
+: "${CONDA_ENV:?}"
+
+source "$CONDA_SH"
+conda activate "$CONDA_ENV"
+
+python "${PROJECT_SRC}/${RESULT_COLLECTOR}" "$RESULTS_ROOT"
+COLLECT
+
+chmod +x "$COLLECT_SCRIPT"
+
 
 #==========================================================================#
 # SUBMIT SETUP JOBS, ONE PER GPU NODE
@@ -666,12 +654,28 @@ ARRAY_JOB_ID=$(
         --job-name="worm_sweep" \
         --output="${SLURM_LOG_DIR}/gpu_%A_%a.out" \
         --error="${SLURM_LOG_DIR}/gpu_%A_%a.err" \
-        --export=ALL,PROJECT_SRC="$PROJECT_SRC",DATA_SRC="$DATA_SRC",RUN_SPECS_DIR="$RUN_SPECS_DIR",SCRATCH_ROOT="$SCRATCH_ROOT",SCRATCH_PROJECT="$SCRATCH_PROJECT",SCRATCH_DATA="$SCRATCH_DATA",SCRATCH_OUTPUTS="$SCRATCH_OUTPUTS",RESULTS_ROOT="$RESULTS_ROOT",BASE_CONFIG="$BASE_CONFIG",TRAIN_SCRIPT="$TRAIN_SCRIPT",CONDA_SH="$CONDA_SH",CONDA_ENV="$CONDA_ENV" \
-        $GPU_EXTRA_SBATCH_ARGS WANDB_MODE="$WANDB_MODE",WANDB_RUN_GROUP="$WANDB_RUN_GROUP"\
+        --export=ALL,PROJECT_SRC="$PROJECT_SRC",DATA_SRC="$DATA_SRC",RUN_SPECS_DIR="$RUN_SPECS_DIR",SCRATCH_ROOT="$SCRATCH_ROOT",SCRATCH_PROJECT="$SCRATCH_PROJECT",SCRATCH_DATA="$SCRATCH_DATA",SCRATCH_OUTPUTS="$SCRATCH_OUTPUTS",RESULTS_ROOT="$RESULTS_ROOT",BASE_CONFIG="$BASE_CONFIG",TRAIN_SCRIPT="$TRAIN_SCRIPT",CONDA_SH="$CONDA_SH",CONDA_ENV="$CONDA_ENV",WANDB_ENABLED="$WANDB_ENABLED",WANDB_PROJECT="$WANDB_PROJECT",WANDB_ENTITY="$WANDB_ENTITY",WANDB_MODE="$WANDB_MODE",WANDB_RUN_GROUP="$WANDB_RUN_GROUP" \
+        $GPU_EXTRA_SBATCH_ARGS \
         "$GPU_ARRAY_SCRIPT"
 )
 
 echo "GPU array job ID: $ARRAY_JOB_ID"
+
+echo "Submitting result-collection job..."
+COLLECT_JOB_ID=$(
+    sbatch --parsable \
+        -p "$CLEANUP_PARTITION" \
+        --cpus-per-task="$COLLECT_CPUS_PER_TASK" \
+        --mem="$COLLECT_MEM" \
+        -t "$COLLECT_TIME" \
+        --dependency="afterany:${ARRAY_JOB_ID}" \
+        --job-name="worm_colour_collect" \
+        --output="${SLURM_LOG_DIR}/collect_%j.out" \
+        --error="${SLURM_LOG_DIR}/collect_%j.err" \
+        --export=ALL,RESULTS_ROOT="$RESULTS_ROOT",PROJECT_SRC="$PROJECT_SRC",RESULT_COLLECTOR="$RESULT_COLLECTOR",CONDA_SH="$CONDA_SH",CONDA_ENV="$CONDA_ENV" \
+        "$COLLECT_SCRIPT"
+)
+echo "Result-collection job ID: $COLLECT_JOB_ID"
 
 #==========================================================================#
 # SUBMIT ONE CLEANUP JOB PER GPU NODE
@@ -682,6 +686,7 @@ echo "Submitting cleanup jobs, one per GPU node, after GPU array finishes..."
 : > "${RESULTS_ROOT}/submitted_jobs.tsv"
 echo -e "name\tjob_id\tnode" >> "${RESULTS_ROOT}/submitted_jobs.tsv"
 echo -e "gpu_array\t${ARRAY_JOB_ID}\tNA" >> "${RESULTS_ROOT}/submitted_jobs.tsv"
+echo -e "result_collection\t${COLLECT_JOB_ID}\tNA" >> "${RESULTS_ROOT}/submitted_jobs.tsv"
 
 cleanup_job_ids=()
 
@@ -711,8 +716,9 @@ done
 
 echo "------------------------------------------------------------"
 echo "Submitted:"
-echo "  GPU array: ${ARRAY_JOB_ID}"
-echo "  cleanup:   ${cleanup_job_ids[*]}"
+echo "  GPU array:       ${ARRAY_JOB_ID}"
+echo "  result collector: ${COLLECT_JOB_ID}"
+echo "  cleanup:         ${cleanup_job_ids[*]}"
 echo
 echo "Array range:"
 echo "  0-${ARRAY_MAX}%${MAX_ACTIVE}"
@@ -724,7 +730,7 @@ echo "Scratch path used independently on each node:"
 echo "  ${SCRATCH_ROOT}"
 echo
 echo "Monitor:"
-echo "  squeue -j ${ARRAY_JOB_ID},$(IFS=,; echo "${cleanup_job_ids[*]}")"
+echo "  squeue -j ${ARRAY_JOB_ID},${COLLECT_JOB_ID},$(IFS=,; echo "${cleanup_job_ids[*]}")"
 echo
 echo "Logs:"
 echo "  ${SLURM_LOG_DIR}"
