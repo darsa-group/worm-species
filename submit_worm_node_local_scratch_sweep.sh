@@ -44,12 +44,20 @@ CONDA_SH="${CONDA_SH:-/usr/home/qgg/mehrot/miniconda3/etc/profile.d/conda.sh}"
 CONDA_ENV="${CONDA_ENV:-wormspecies}"
 
 # At most this many 1-GPU array tasks run at once.
+<<<<<<< HEAD
 MAX_ACTIVE="${MAX_ACTIVE:-2}"
+=======
+MAX_ACTIVE="${MAX_ACTIVE:-10}"
+>>>>>>> refs/remotes/origin/main
 
 
 # GPU job resources.
 GPU_PARTITION="${GPU_PARTITION:-ghpc_gpu}"
+<<<<<<< HEAD
 GPU_CPUS_PER_TASK="${GPU_CPUS_PER_TASK:-16}"
+=======
+GPU_CPUS_PER_TASK="${GPU_CPUS_PER_TASK:-8}"
+>>>>>>> refs/remotes/origin/main
 GPU_MEM="${GPU_MEM:-16384}"
 GPU_TIME="${GPU_TIME:-04:00:00}"
 
@@ -279,6 +287,10 @@ SETUP_SCRIPT="${GENERATED_DIR}/setup_node_local_scratch.sh"
 
 cat > "$SETUP_SCRIPT" <<'SETUP'
 #!/bin/bash
+<<<<<<< HEAD
+=======
+#SBATCH -account worm-species
+>>>>>>> refs/remotes/origin/main
 #SBATCH -N 1
 #SBATCH -n 1
 
@@ -341,6 +353,10 @@ chmod +x "$SETUP_SCRIPT"
 
 cat > "$GPU_ARRAY_SCRIPT" <<'GPUJOB'
 #!/bin/bash
+<<<<<<< HEAD
+=======
+#SBATCH -account worm-species
+>>>>>>> refs/remotes/origin/main
 #SBATCH -N 1
 #SBATCH -n 1
 #SBATCH --gres=gpu:1
@@ -561,6 +577,10 @@ chmod +x "$GPU_ARRAY_SCRIPT"
 
 cat > "$CLEANUP_SCRIPT" <<'CLEANUP'
 #!/bin/bash
+<<<<<<< HEAD
+=======
+#SBATCH -account worm-species
+>>>>>>> refs/remotes/origin/main
 #SBATCH -N 1
 #SBATCH -n 1
 
