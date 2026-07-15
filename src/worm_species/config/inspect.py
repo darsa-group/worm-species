@@ -56,23 +56,131 @@ def identify_experiment_type(config: dict[str, Any]) -> str:
     return "ordinary_training"
 
 
+def _fixed_rgb_test_conditions(config: dict[str, Any]) -> tuple[list[str], list[str]]:
+    from ..evaluation.cue_suppression import generate_test_cue_conditions
+
+    cue = config.get("test_cue_suppression", {}) or {}
+    if not isinstance(cue, dict):
+        return [], []
+    catalogue_config = dict(config)
+    catalogue_cue = dict(cue)
+    catalogue_cue["enabled"] = True
+    catalogue_config["test_cue_suppression"] = catalogue_cue
+    configured = [
+        condition["condition"]
+        for condition in generate_test_cue_conditions(catalogue_config)
+    ]
+    effective = configured if bool(cue.get("enabled", False)) else []
+    return configured, effective
+
+
+def _slurm_inspection(config: dict[str, Any]) -> dict[str, Any] | None:
+    slurm = config.get("slurm")
+    if not isinstance(slurm, dict):
+        return None
+    resource_keys = (
+        "account",
+        "partition",
+        "nodes",
+        "ntasks",
+        "cpus_per_task",
+        "memory",
+        "time_limit",
+        "gpus_per_task",
+    )
+    resources = {key: slurm[key] for key in resource_keys if key in slurm}
+    array = slurm.get("array", {}) or {}
+    if isinstance(array, dict) and "max_active" in array:
+        resources["array_max_active"] = array["max_active"]
+    return {
+        "enabled": slurm.get("enabled"),
+        "cluster_profile": slurm.get("cluster_profile"),
+        "resources": resources,
+        "paths": dict(slurm.get("paths", {}) or {}),
+    }
+
+
 def inspection_summary(config: dict[str, Any], workflow: str) -> dict[str, Any]:
     # Lazy imports keep config loading and --help lightweight.
     from ..experiments.conditions import generate_conditions, sweep_combinations
+    from .sweeps import generate_colour_retention_values
 
     combinations = sweep_combinations(config)
     matched = config.get("matched_condition_training", {}) or {}
-    if isinstance(matched, dict) and bool(matched.get("enabled", False)):
+    colour = config.get("colour_ablation", {}) or {}
+    input_condition = config.get("input_condition", {}) or {}
+    input_condition_enabled = isinstance(input_condition, dict) and bool(
+        input_condition.get("enabled", False)
+    )
+    matched_plan_enabled = isinstance(matched, dict) and bool(
+        matched.get("enabled", False)
+    )
+    if input_condition_enabled:
+        conditions = [{
+            "condition": str(
+                input_condition.get("condition")
+                or input_condition.get("name")
+                or input_condition.get("transform", "original")
+            ),
+            "transform": str(input_condition.get("transform", "original")),
+        }]
+    elif matched_plan_enabled:
         conditions = generate_conditions(config)
+    elif isinstance(colour, dict) and bool(colour.get("enabled", False)):
+        conditions = [
+            {
+                "condition": f"colour_{int(round(retention * 100)):03d}pct",
+                "transform": "saturation",
+            }
+            for retention in generate_colour_retention_values(config)
+        ]
     else:
         conditions = [{"condition": "original", "transform": "original"}]
 
-    base_model = str((config.get("model", {}) or {}).get("name", "model"))
+    model = config.get("model", {}) or {}
+    base_model = str(model.get("name", "model"))
     models = {
         str(combination.get("model.name", base_model))
         for combination in combinations
     }
-    return {
+    pretrained_values = {
+        bool(combination.get("model.pretrained", model.get("pretrained", True)))
+        for combination in combinations
+    }
+    freeze_values = {
+        bool(combination.get(
+            "model.freeze_backbone", model.get("freeze_backbone", False)
+        ))
+        for combination in combinations
+    }
+    target_cols = dict((config.get("data", {}) or {}).get("target_cols", {}) or {})
+    multi_task = config.get("multi_task", {}) or {}
+    configured_weights = multi_task.get("loss_weights", {}) or {}
+    effective_weights = {
+        task: configured_weights.get(task, 1.0) for task in target_cols
+    }
+    training = config.get("training", {}) or {}
+    wandb = config.get("wandb", {}) or {}
+    cue = config.get("test_cue_suppression", {}) or {}
+    configured_test_names, effective_test_names = _fixed_rgb_test_conditions(config)
+
+    dimensions = []
+    if bool((config.get("sweep", {}) or {}).get("enabled", False)):
+        dimensions.append("sweep")
+    if isinstance(colour, dict) and bool(colour.get("enabled", False)):
+        dimensions.append("colour_ablation")
+    if matched_plan_enabled:
+        dimensions.append("matched_condition_training")
+    if "matched_condition_training" in dimensions:
+        expansion_owner = "matched_condition_training"
+    elif "colour_ablation" in dimensions:
+        expansion_owner = "colour_ablation"
+    elif "sweep" in dimensions:
+        expansion_owner = "sweep"
+    else:
+        expansion_owner = "none"
+
+    summary = {
         "experiment_type": identify_experiment_type(config),
         "workflow": workflow,
         "expected_model_count": len(models),
@@ -81,7 +189,62 @@ def inspection_summary(config: dict[str, Any], workflow: str) -> dict[str, Any]:
         "expected_total_run_count": len(combinations) * len(conditions),
         "models": sorted(models),
         "condition_names": [condition["condition"] for condition in conditions],
+        "model": {
+            "configured_name": base_model,
+            "planned_names": sorted(models),
+            "pretrained": model.get("pretrained", True),
+            "freeze_backbone": model.get("freeze_backbone", False),
+            "planned_pretrained_values": sorted(pretrained_values),
+            "planned_freeze_backbone_values": sorted(freeze_values),
+        },
+        "data": {
+            "image_size": (config.get("data", {}) or {}).get("image_size"),
+        },
+        "tasks": {
+            "target_columns": target_cols,
+            "loss_weights": effective_weights,
+        },
+        "training": {
+            "epochs": training.get("epochs"),
+            "batch_size": training.get("batch_size"),
+            "learning_rate": training.get("lr"),
+            "weight_decay": training.get("weight_decay"),
+            "class_weight": training.get("class_weight", True),
+            "use_amp": training.get("use_amp", True),
+            "use_masked_labels": training.get("use_masked_labels", True),
+        },
+        "wandb": {
+            key: wandb.get(key)
+            for key in ("enabled", "mode", "project", "entity", "group", "name")
+        },
+        "matched_training": {
+            "enabled": matched_plan_enabled or input_condition_enabled,
+            "planning_enabled": matched_plan_enabled,
+            "resolved_input_condition_enabled": input_condition_enabled,
+            "requested_condition_names": matched.get("condition_names"),
+            "resolved_condition_names": [
+                condition["condition"] for condition in conditions
+            ] if matched_plan_enabled or input_condition_enabled else [],
+        },
+        "fixed_rgb_test": {
+            "enabled": bool(cue.get("enabled", False)),
+            "requested_condition_names": cue.get("condition_names"),
+            "configured_condition_names": configured_test_names,
+            "effective_condition_names": effective_test_names,
+        },
+        "expansion": {
+            "owner": expansion_owner,
+            "dimensions": dimensions,
+            "sweep_combination_count": len(combinations),
+            "training_condition_count": len(conditions),
+            "expected_total_run_count": len(combinations) * len(conditions),
+            "expected_internal_training_runs_per_resolved_spec": 1,
+        },
     }
+    slurm_summary = _slurm_inspection(config)
+    if slurm_summary is not None:
+        summary["slurm"] = slurm_summary
+    return summary
 
 
 def main(argv: list[str] | None = None) -> int:

@@ -9,14 +9,17 @@ from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 
 from src.worm_species.config.inspect import main as inspect_main
+from src.worm_species.config.inspect import inspection_summary
 from src.worm_species.config.loading import ConfigLoadError
 from src.worm_species.config.loading import deep_merge
 from src.worm_species.config.loading import load_config
+from src.worm_species.slurm.config import load_submission_config
 
 
 ROOT = Path(__file__).resolve().parents[1]
 ROOT_CONFIG = ROOT / "config.yaml"
 DUAL_CUE = ROOT / "configs" / "experiments" / "dual_cue.yaml"
+LOCAL_CLUSTER = ROOT / "configs" / "clusters" / "local.yaml"
 
 
 class ExtendedConfigurationLoadingContracts(unittest.TestCase):
@@ -40,6 +43,32 @@ class ExtendedConfigurationLoadingContracts(unittest.TestCase):
         self.assertEqual(summary["expected_sweep_combination_count"], 1)
         self.assertEqual(summary["expected_condition_count"], 1)
         self.assertEqual(summary["expected_total_run_count"], 1)
+        self.assertEqual(summary["model"]["configured_name"], "efficientnet_b0")
+        self.assertTrue(summary["model"]["pretrained"])
+        self.assertFalse(summary["model"]["freeze_backbone"])
+        self.assertEqual(summary["model"]["planned_pretrained_values"], [True])
+        self.assertEqual(
+            summary["model"]["planned_freeze_backbone_values"], [False]
+        )
+        self.assertEqual(summary["data"]["image_size"], 224)
+        self.assertEqual(summary["tasks"]["loss_weights"]["age"], 2.0)
+        self.assertEqual(summary["training"]["epochs"], 200)
+        self.assertEqual(summary["training"]["batch_size"], 256)
+        self.assertEqual(summary["training"]["learning_rate"], 0.0005)
+        self.assertEqual(summary["training"]["weight_decay"], 0.0001)
+        self.assertTrue(summary["training"]["class_weight"])
+        self.assertTrue(summary["training"]["use_amp"])
+        self.assertEqual(summary["wandb"]["mode"], "offline")
+        self.assertFalse(summary["matched_training"]["enabled"])
+        self.assertFalse(summary["fixed_rgb_test"]["enabled"])
+        self.assertEqual(summary["fixed_rgb_test"]["effective_condition_names"], [])
+        self.assertEqual(summary["expansion"]["owner"], "none")
+        self.assertEqual(
+            summary["expansion"][
+                "expected_internal_training_runs_per_resolved_spec"
+            ],
+            1,
+        )
 
     def test_relative_inheritance_recursively_merges_without_reordering(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -172,9 +201,53 @@ class ExtendedConfigurationLoadingContracts(unittest.TestCase):
             )
         self.assertEqual(status, 0, stderr.getvalue())
         payload = json.loads(stdout.getvalue())
-        self.assertEqual(payload["summary"]["expected_model_count"], 2)
-        self.assertEqual(payload["summary"]["expected_condition_count"], 112)
-        self.assertEqual(payload["summary"]["expected_total_run_count"], 224)
+        summary = payload["summary"]
+        self.assertEqual(summary["expected_model_count"], 2)
+        self.assertEqual(summary["expected_condition_count"], 112)
+        self.assertEqual(summary["expected_total_run_count"], 224)
+        self.assertEqual(summary["expansion"]["owner"], "matched_condition_training")
+        self.assertEqual(
+            summary["matched_training"]["resolved_condition_names"],
+            summary["condition_names"],
+        )
+        self.assertEqual(summary["wandb"]["project"], "worm-species-cues")
+        self.assertEqual(summary["wandb"]["mode"], "online")
+
+    def test_inspection_exposes_resolved_cluster_resources_and_paths(self) -> None:
+        config = load_submission_config(DUAL_CUE, LOCAL_CLUSTER)
+        summary = inspection_summary(config, "run_specs")
+        slurm = summary["slurm"]
+        self.assertFalse(slurm["enabled"])
+        self.assertEqual(slurm["cluster_profile"], "local")
+        self.assertEqual(slurm["resources"]["cpus_per_task"], 1)
+        self.assertEqual(slurm["resources"]["gpus_per_task"], 0)
+        self.assertEqual(slurm["resources"]["array_max_active"], 1)
+        self.assertEqual(slurm["paths"]["results_root"], "outputs_slurm")
+
+    def test_inspection_exposes_one_externally_resolved_training_condition(self) -> None:
+        config = load_config(ROOT_CONFIG)
+        config["input_condition"] = {
+            "enabled": True,
+            "condition": "patch_shuffle_grid_4",
+            "feature": "shape",
+            "transform": "patch_shuffle",
+            "strength": 4,
+            "grid_size": 4,
+            "seed": 2026,
+        }
+        summary = inspection_summary(config, "training")
+        self.assertEqual(summary["condition_names"], ["patch_shuffle_grid_4"])
+        self.assertTrue(summary["matched_training"]["enabled"])
+        self.assertFalse(summary["matched_training"]["planning_enabled"])
+        self.assertTrue(
+            summary["matched_training"]["resolved_input_condition_enabled"]
+        )
+        self.assertEqual(
+            summary["matched_training"]["resolved_condition_names"],
+            ["patch_shuffle_grid_4"],
+        )
+        self.assertEqual(summary["expansion"]["owner"], "none")
+        self.assertEqual(summary["expected_total_run_count"], 1)
 
 
 if __name__ == "__main__":

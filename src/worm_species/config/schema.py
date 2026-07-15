@@ -156,6 +156,7 @@ CONFIG_FIELDS: tuple[ConfigField, ...] = (
     _field("colour_ablation.step_percent", int, default=1, range_description="> 0", consumers=("sweeps",)),
     _field("colour_ablation.combine_with_sweep", bool, default=False, consumers=("sweeps",)),
     _field("test_cue_suppression.enabled", bool, default=False, consumers=("fixed RGB evaluation",)),
+    _field("test_cue_suppression.condition_names", list, consumers=("fixed RGB evaluation",)),
     _field("test_cue_suppression.saturation.enabled", bool, default=True, consumers=("conditions",)),
     _field("test_cue_suppression.saturation.start", int, float, default=1.0, range_description="[0, 1]", consumers=("conditions",)),
     _field("test_cue_suppression.saturation.stop", int, float, default=0.0, range_description="[0, 1]", consumers=("conditions",)),

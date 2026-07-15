@@ -159,6 +159,42 @@ def generate_test_cue_conditions(cfg: dict) -> list[dict]:
     if len(names) != len(set(names)):
         duplicates = sorted({name for name in names if names.count(name) > 1})
         raise ValueError(f"Duplicate test cue condition names: {duplicates}")
+
+    requested_names = cue_cfg.get("condition_names")
+    if requested_names is not None:
+        if not isinstance(requested_names, list) or not requested_names:
+            raise ValueError(
+                "test_cue_suppression.condition_names must be a non-empty list"
+            )
+        if any(
+            not isinstance(name, str) or not name.strip()
+            for name in requested_names
+        ):
+            raise ValueError(
+                "test_cue_suppression.condition_names must contain non-empty "
+                "condition-name strings"
+            )
+        duplicate_requests = sorted({
+            name for name in requested_names if requested_names.count(name) > 1
+        })
+        if duplicate_requests:
+            raise ValueError(
+                "Duplicate test_cue_suppression.condition_names: "
+                f"{duplicate_requests}"
+            )
+        available_names = set(names)
+        unknown = sorted(set(requested_names) - available_names)
+        if unknown:
+            raise ValueError(
+                "Unknown test_cue_suppression.condition_names: "
+                f"{unknown}; available conditions: {names}"
+            )
+        requested = set(requested_names)
+        conditions = [
+            condition
+            for condition in conditions
+            if condition["condition"] in requested
+        ]
     return conditions
 
 

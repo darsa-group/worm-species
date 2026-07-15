@@ -183,6 +183,11 @@ test_cue_suppression:
   # input_condition; matched original + stress uses matched_and_rgb_stress.
   enabled: false
 
+  # Optional fixed-RGB test-only allow-list. Names must exactly match enabled
+  # catalogue entries below. This is independent from the matched-training
+  # allow-list at matched_condition_training.condition_names.
+  # condition_names: [gaussian_sigma_2, patch_shuffle_grid_4]
+
   saturation:
     enabled: true
     start: 1.0

@@ -162,12 +162,59 @@ def _validate_unique_values(
             first_index[value] = index
 
 
+def _validate_test_condition_names(
+    config: dict[str, Any],
+    cue: dict[str, Any],
+    issues: list[ValidationIssue],
+    *,
+    catalogue_parameters_valid: bool,
+) -> None:
+    requested = cue.get("condition_names", _ABSENT)
+    if requested is _ABSENT:
+        return
+    path = "test_cue_suppression.condition_names"
+    if not isinstance(requested, list) or not requested:
+        issues.append(ValidationIssue(path, "must be a non-empty list"))
+        return
+
+    valid_names: list[str] = []
+    for index, name in enumerate(requested):
+        if not isinstance(name, str) or not name.strip():
+            issues.append(ValidationIssue(
+                f"{path}[{index}]", "must be a non-empty condition-name string"
+            ))
+        else:
+            valid_names.append(name)
+    duplicates = sorted({
+        name for name in valid_names if valid_names.count(name) > 1
+    })
+    if duplicates:
+        issues.append(ValidationIssue(path, f"contains duplicate names: {duplicates}"))
+    if len(valid_names) != len(requested) or duplicates or not catalogue_parameters_valid:
+        return
+
+    # Validate the allow-list against the complete enabled catalogue even when
+    # fixed-RGB evaluation is currently disabled. This keeps a preconfigured
+    # allow-list safe to enable later without conflating it with matched training.
+    catalogue_config = dict(config)
+    catalogue_cue = dict(cue)
+    catalogue_cue["enabled"] = True
+    catalogue_config["test_cue_suppression"] = catalogue_cue
+    try:
+        from ..evaluation.cue_suppression import generate_test_cue_conditions
+
+        generate_test_cue_conditions(catalogue_config)
+    except (KeyError, TypeError, ValueError) as exc:
+        issues.append(ValidationIssue(path, str(exc)))
+
+
 def _validate_transform_parameters(
     config: dict[str, Any], issues: list[ValidationIssue]
 ) -> None:
     cue = config.get("test_cue_suppression", {}) or {}
     if not isinstance(cue, dict):
         return
+    initial_issue_count = len(issues)
 
     saturation = cue.get("saturation", {}) or {}
     if isinstance(saturation, dict):
@@ -333,6 +380,13 @@ def _validate_transform_parameters(
                 "test_cue_suppression.patch_shuffle.grid_sizes",
                 valid_grids,
             )
+
+    _validate_test_condition_names(
+        config,
+        cue,
+        issues,
+        catalogue_parameters_valid=len(issues) == initial_issue_count,
+    )
 
     raw = config.get("input_condition", {}) or {}
     if not isinstance(raw, dict):

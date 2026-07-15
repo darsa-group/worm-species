@@ -9,6 +9,8 @@ from src.worm_species.config.loading import load_config
 from src.worm_species.config.validation import ConfigValidationError
 from src.worm_species.config.validation import validate_config
 from src.worm_species.config.validation import validate_override_items
+from src.worm_species.evaluation.cue_suppression import generate_test_cue_conditions
+from src.worm_species.experiments.conditions import generate_conditions
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -303,6 +305,86 @@ class ConfigurationValidationContracts(unittest.TestCase):
                     {"test_cue_suppression": catalogue},
                     "must contain unique values",
                 )
+
+    def test_fixed_rgb_condition_allow_list_is_separate_and_deterministic(self) -> None:
+        config = {
+            "seed": 42,
+            "test_cue_suppression": {
+                "enabled": True,
+                "condition_names": [
+                    "patch_shuffle_grid_4",
+                    "patch_shuffle_grid_2",
+                ],
+                "saturation": {"enabled": False},
+                "grayscale": {"enabled": False},
+                "channel_shuffle": {"enabled": False},
+                "bilateral_filter": {"enabled": False},
+                "gaussian_blur": {"enabled": False},
+                "patch_shuffle": {
+                    "enabled": True,
+                    "grid_sizes": [2, 4],
+                    "seed": 2026,
+                },
+            },
+            "matched_condition_training": {
+                "enabled": True,
+                "include_original": False,
+                "condition_names": ["patch_shuffle_grid_2"],
+            },
+        }
+        validate_config(
+            config,
+            workflow="saved",
+            check_paths=False,
+            check_model_registry=False,
+        )
+        self.assertEqual(
+            [item["condition"] for item in generate_test_cue_conditions(config)],
+            ["patch_shuffle_grid_2", "patch_shuffle_grid_4"],
+        )
+        self.assertEqual(
+            [item["condition"] for item in generate_conditions(config)],
+            ["patch_shuffle_grid_2"],
+        )
+
+    def test_fixed_rgb_condition_allow_list_fails_clearly(self) -> None:
+        base = {
+            "test_cue_suppression": {
+                "enabled": False,
+                "saturation": {"enabled": False},
+                "grayscale": {"enabled": False},
+                "channel_shuffle": {"enabled": False},
+                "bilateral_filter": {"enabled": False},
+                "gaussian_blur": {"enabled": False},
+                "patch_shuffle": {"enabled": True, "grid_sizes": [2, 4]},
+            }
+        }
+        cases = (
+            ([], "must be a non-empty list", "must be a non-empty list"),
+            (
+                ["patch_shuffle_grid_2", "patch_shuffle_grid_2"],
+                "contains duplicate names",
+                "Duplicate test_cue_suppression.condition_names",
+            ),
+            (
+                ["patch_shuffle_grid_8"],
+                "Unknown test_cue_suppression.condition_names",
+                "Unknown test_cue_suppression.condition_names",
+            ),
+            (
+                [""],
+                "must be a non-empty condition-name string",
+                "must contain non-empty condition-name strings",
+            ),
+        )
+        for names, expected, runtime_expected in cases:
+            with self.subTest(names=names):
+                config = copy.deepcopy(base)
+                config["test_cue_suppression"]["condition_names"] = names
+                self.assert_invalid(config, expected)
+                config["test_cue_suppression"]["enabled"] = True
+                with self.assertRaisesRegex(ValueError, runtime_expected):
+                    generate_test_cue_conditions(config)
 
 
 if __name__ == "__main__":
