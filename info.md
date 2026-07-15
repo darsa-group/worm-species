@@ -9,7 +9,7 @@ active scientific analysis code and are not legacy.
 
 | Goal | Preferred entry point |
 | --- | --- |
-| Understand configuration | [`docs/configuration.md`](docs/configuration.md) |
+| Understand configuration | [`config.md`](config.md) |
 | Choose an experiment/cluster file | [`configs/README.md`](configs/README.md) |
 | Validate a plan | `make validate` |
 | Inspect resolved choices and counts | `make inspect` |

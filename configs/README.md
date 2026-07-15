@@ -113,5 +113,5 @@ Use `--check-paths` with the config validator only on a machine where the data
 and predefined split paths should exist. Dry-run and cluster planning leave this
 off so a login node does not need the full dataset tree.
 
-See [the full configuration reference](../docs/configuration.md) for every
+See [the full configuration reference](../config.md) for every
 important switch, condition semantics, resource field, and worked example.

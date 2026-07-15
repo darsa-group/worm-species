@@ -40,7 +40,7 @@ from `configs/defaults/base.yaml`. Scientific variants are child files beneath
 beneath `configs/clusters/`.
 
 See [configs/README.md](configs/README.md) for the file map and
-[docs/configuration.md](docs/configuration.md) for every important key,
+[config.md](config.md) for every important key,
 constraint, transform, and worked example.
 
 ## One trainer, explicit switches

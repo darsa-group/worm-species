@@ -480,6 +480,154 @@ that order. Confirm the resolved model list, condition list, run count, internal
 runs per task, output root, scratch root, and cluster resources. Only then use
 the explicitly submitting command.
 
+## Exact key registry
+
+This registry names the complete public configuration surface. Keys containing
+`<task>` or `<name>` are mapping entries rather than fixed literal names.
+
+### Core, data, and splits
+
+| Key | Value |
+| --- | --- |
+| `extends` | Parent YAML path, resolved relative to the child. |
+| `seed` | Integer random seed. |
+| `data.root_dir`, `data.metadata_csv` | Dataset and metadata paths. |
+| `data.image_col`, `data.mask_col`, `data.barcode_col`, `data.group_col` | Metadata column names. |
+| `data.image_size` | Positive square image size; patch grids must divide it. |
+| `data.colour_retention` | Number in `[0, 1]`. |
+| `data.crop_to_foreground`, `data.crop_pad` | Foreground crop switch and non-negative pad fraction. |
+| `data.strip_final_number_from_group` | Boolean barcode grouping rule. |
+| `data.min_individuals_per_class` | Positive default rare-class threshold. |
+| `data.min_individuals_per_class_by_task.<task>` | Positive per-task threshold. |
+| `data.target_col`, `data.split_target_col` | Primary task and stratification columns. |
+| `data.target_cols.<task>` | Task-to-metadata-column mapping. |
+| `data.species_requires_binomial` | Boolean species-label validation rule. |
+| `data.taxonomic_uncertainty.uncertain_species_labels` | Explicit uncertain-label list. |
+| `data.taxonomic_uncertainty.uncertain_species_patterns` | Regular-expression list for uncertain labels. |
+| `data.taxonomic_uncertainty.resolved_species_label_overrides.<name>` | Explicit resolved species label. |
+| `data.taxonomic_uncertainty.life_stage_overrides.<name>` | Explicit life-stage label. |
+| `split.use_predefined_splits`, `split.predefined_split_dir` | Select and locate predefined CSV membership. |
+| `split.save_splits` | Permit recording newly generated splits; never rewrites predefined links. |
+| `split.test_size`, `split.val_size` | Fractions in `(0, 1)` whose sum is below `1`. |
+
+### Model, optimisation, tasks, and outputs
+
+| Key | Value |
+| --- | --- |
+| `model.name` | Supported torchvision architecture name. |
+| `model.pretrained`, `model.freeze_backbone` | Independent boolean weight and fine-tuning switches. |
+| `training.mode` | Currently `multitask`. |
+| `training.use_masked_labels` | Boolean missing-label masking switch. |
+| `training.epochs`, `training.batch_size`, `training.num_workers`, `training.val_interval` | Positive integers, except workers may be zero. |
+| `training.lr` | Positive learning rate. |
+| `training.weight_decay` | Non-negative number. |
+| `training.use_amp`, `training.class_weight` | Boolean AMP and class-weight switches. |
+| `multi_task.loss_weights.<task>` | Finite non-negative task weight; at least one selected task is positive. |
+| `multi_task.normalize_loss_by_active_tasks` | Boolean active-task normalization. |
+| `multi_task.selection_metric` | Best-checkpoint metric name. |
+| `multi_task.hierarchy_loss.enabled` | Boolean hierarchy consistency switch. |
+| `multi_task.hierarchy_loss.parent_task`, `multi_task.hierarchy_loss.child_task` | Distinct selected task names. |
+| `multi_task.hierarchy_loss.weight` | Non-negative hierarchy weight. |
+| `early_stopping.enabled`, `early_stopping.monitor` | Switch and monitored metric. |
+| `early_stopping.mode` | `max` or `min`. |
+| `early_stopping.patience`, `early_stopping.min_delta` | Non-negative stopping controls. |
+| `output.out_dir` | Scientific run-output root. |
+| `cache.enabled`, `cache.rebuild` | Cache use and explicit rebuild switches. |
+| `cache.dir`, `cache.root_dir_cache`, `cache.format`, `cache.num_workers` | Cache paths, format, and positive worker count. |
+
+### Experiment and transform switches
+
+| Key | Value |
+| --- | --- |
+| `experiment.type` | `standard`, `matched_condition`, `rgb_stress_test`, or `matched_and_rgb_stress`. |
+| `input_condition.enabled` | Apply one resolved training condition. |
+| `input_condition.condition`, `input_condition.feature`, `input_condition.transform` | Assigned condition identity. |
+| `input_condition.strength`, `input_condition.seed` | Condition parameter and optional deterministic seed. |
+| `matched_condition_training.enabled` | Enable external matched-condition planning. |
+| `matched_condition_training.include_original` | Include original RGB in that plan. |
+| `matched_condition_training.deduplicate_equivalent_conditions` | Remove equivalent endpoint conditions. |
+| `matched_condition_training.evaluate_original_model_on_all_test_conditions` | Enable fixed-RGB stress only for the original-trained checkpoint. |
+| `test_cue_suppression.enabled`, `test_cue_suppression.condition_names` | Stress-battery switch and optional non-empty allow-list. |
+| `test_cue_suppression.saturation.enabled` | Include saturation conditions. |
+| `test_cue_suppression.saturation.start`, `test_cue_suppression.saturation.stop`, `test_cue_suppression.saturation.step` | Inclusive `[0,1]` range and positive step. |
+| `test_cue_suppression.grayscale.enabled` | Include explicit greyscale. |
+| `test_cue_suppression.channel_shuffle.enabled`, `test_cue_suppression.channel_shuffle.orders` | Switch and RGB permutation list. |
+| `test_cue_suppression.bilateral_filter.enabled`, `test_cue_suppression.bilateral_filter.settings` | Switch and positive odd-diameter/sigma mappings. |
+| `test_cue_suppression.gaussian_blur.enabled`, `test_cue_suppression.gaussian_blur.sigmas` | Switch and positive sigma list. |
+| `test_cue_suppression.patch_shuffle.enabled`, `test_cue_suppression.patch_shuffle.grid_sizes`, `test_cue_suppression.patch_shuffle.seed` | Switch, dividing grids, and deterministic seed. |
+| `condition_matrix_evaluation.enabled`, `condition_matrix_evaluation.condition_names`, `condition_matrix_evaluation.write_reports` | Cross-evaluation switch, conditions, and report-output switch. |
+| `colour_ablation.enabled`, `colour_ablation.start_percent`, `colour_ablation.stop_percent`, `colour_ablation.step_percent` | External colour range with endpoint inclusion. |
+| `colour_ablation.combine_with_sweep` | Permit model sweep × colour values in the external planner. |
+| `sweep.enabled`, `sweep.parameters.<key>` | External sweep switch and non-empty value lists. |
+
+### W&B
+
+| Key | Value |
+| --- | --- |
+| `wandb.enabled` | Independent logging switch. |
+| `wandb.project`, `wandb.entity`, `wandb.group`, `wandb.name` | Run identity fields; nullable where supported. |
+| `wandb.job_type`, `wandb.tags` | Job label and tag list. |
+| `wandb.mode` | `online`, `offline`, `disabled`, `dryrun`, `run`, `shared`, or null. |
+| `wandb.save_code`, `wandb.log_model` | Boolean artifact switches. |
+
+### SLURM and cluster keys
+
+| Key family | Values |
+| --- | --- |
+| `slurm.enabled`, `slurm.cluster_profile` | Scheduler switch and profile name. |
+| `slurm.account`, `slurm.partition` | Cluster allocation fields. |
+| `slurm.nodes`, `slurm.ntasks`, `slurm.cpus_per_task`, `slurm.gpus_per_task` | Positive resource counts. |
+| `slurm.memory`, `slurm.time_limit` | Memory quantity and `HH:MM:SS` limit. |
+| `slurm.array.max_active` | Positive array-concurrency limit. |
+| `slurm.setup.*`, `slurm.collection.*`, `slurm.cleanup.*` | Each supports `enabled`, `cpus_per_task`, `memory`, `time_limit`; setup/cleanup may use `per_node`, collection may set `partition` and `kind`. |
+| `slurm.scratch.mode` | `none`, `job_local`, `node_local`, or `persistent_cache` as supported by the selected profile. |
+| `slurm.scratch.root`, `slurm.scratch.nodes` | Scratch path and explicit node list. |
+| `slurm.scratch.unique_per_submission`, `slurm.scratch.submission_id` | Unique-root safety controls. |
+| `slurm.scratch.copy_project`, `.copy_data`, `.data_include` | Scratch copy switches and include patterns. |
+| `slurm.scratch.reuse_ready_cache`, `.ready_marker` | Cache-reuse marker controls. |
+| `slurm.scratch.copy_cache_to_tmp`, `.tmp_reserve_gb` | Temporary-cache mode and reserved space. |
+| `slurm.scratch.cleanup_after_run` | Cleanup switch; validation still rejects unsafe roots. |
+| `slurm.environment.conda_sh`, `.conda_env` | Runtime environment activation. |
+| `slurm.paths.project_root`, `.data_root`, `.metadata_csv` | Runtime input paths. |
+| `slurm.paths.results_root`, `.cache_root` | Result and cache paths. |
+| `slurm.logging.directory`, `.separate_stdout_stderr` | Scheduler log settings. |
+| `slurm.monitoring.enabled`, `.interval_seconds` | Resource-profiling switch and positive interval. |
+| `slurm.planning.experiment_type`, `.external_expansion` | Planner identity and sole sweep owner. |
+| `slurm.submission.extra_sbatch_args`, `.exclude_nodes` | Validated additional scheduler arguments and excluded-node list. |
+
+## Override examples
+
+Override values are parsed as YAML-like scalars; quote lists and shell-sensitive
+values. Configuration files are never edited in place.
+
+```bash
+# Architecture, image size, optimisation, and task weights.
+python train.py --config config.yaml --dry-run --single-run --override \
+  model.name=resnet50 \
+  model.pretrained=true \
+  data.image_size=224 \
+  training.epochs=50 \
+  training.lr=0.0001 \
+  multi_task.loss_weights.genus=1.0 \
+  multi_task.loss_weights.species=1.0 \
+  multi_task.loss_weights.age=0.5
+
+# Turn hierarchy and W&B off without changing any other choice.
+python train.py --config config.yaml --dry-run --single-run --override \
+  multi_task.hierarchy_loss.enabled=false \
+  wandb.enabled=false
+
+# Inspect only two fixed-RGB stress conditions.
+PYTHONPATH=src python -m worm_species.config.inspect \
+  --config configs/experiments/dual_cue.yaml --workflow training \
+  --override \
+    'test_cue_suppression.condition_names=[gaussian_sigma_2,patch_shuffle_grid_4]'
+
+# Change concurrency without editing the experiment or cluster YAML.
+make dry-run EXPERIMENT=dual_cue \
+  CLUSTER=configs/clusters/genome.yaml MAX_ACTIVE=4
+```
+
 ## Scientific safety contracts
 
 - Training-time conditions and test-only stress conditions remain separate.
