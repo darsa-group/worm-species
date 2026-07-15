@@ -1,22 +1,32 @@
-# Safe one-run quick start. Detailed defaults and transform catalogues live in
-# configs/defaults/base.yaml; experiment plans live in configs/experiments/.
+# Safe one-run quick start. Detailed defaults and experiment children live in configs/.
 extends: configs/defaults/base.yaml
-
 seed: 42
 
-# Common data paths and input resolution.
+# Data locations and the segmented RGB input column come from the inherited defaults.
 data:
   root_dir: "../petridish-worm-images"
   metadata_csv: "../petridish-worm-images/01_Segmented/global_metadata.csv"
-  image_size: 224
 
-# Architecture and pretrained/fine-tuning switches.
+# Deterministic preprocessing applies to train, validation, and test.
+preprocessing:
+  image_size: 224
+  normalisation:
+    enabled: true
+    mean: [0.485, 0.456, 0.406]
+    std: [0.229, 0.224, 0.225]
+
+# Augmentation is train-only; each operation can be disabled independently.
+augmentation:
+  enabled: true
+  horizontal_flip: {enabled: true, probability: 0.5}
+  vertical_flip: {enabled: true, probability: 0.5}
+  rotation: {enabled: true, degrees: 270}
+
 model:
   name: efficientnet_b0
   pretrained: true
   freeze_backbone: false
 
-# Optimisation choices for one canonical trainer process.
 training:
   mode: multitask
   use_masked_labels: true
@@ -27,39 +37,32 @@ training:
   use_amp: true
   class_weight: true
 
-# Task and hierarchy weights; age is an ordinary selected task.
 multi_task:
-  loss_weights:
-    genus: 1.0
-    species: 0.5
-    age: 2.0
-  hierarchy_loss:
-    enabled: true
-    weight: 0.5
+  loss_weights: {genus: 1.0, species: 0.5, age: 2.0}
+  hierarchy_loss: {enabled: true, weight: 0.5}
 
-# W&B can be disabled independently; offline mode never contacts the service.
+# W&B is optional; offline mode never requires network access.
 wandb:
   enabled: true
   project: worm-species-cues
   mode: offline
 
-output:
-  out_dir: outputs
+output: {out_dir: outputs}
+cache: {enabled: true, dir: cache/images}
 
-cache:
-  enabled: true
-  dir: cache/images
-
-# These are separate features. Keep all disabled for this one-run baseline.
+# A submitted run receives exactly one complete training condition here.
 input_condition:
   enabled: false
-test_cue_suppression:
-  enabled: false
-condition_matrix_evaluation:
-  enabled: false
-matched_condition_training:
-  enabled: false
-colour_ablation:
-  enabled: false
-sweep:
-  enabled: false
+  name: original
+  feature: baseline
+  transform: original
+  strength: 0.0
+  parameters: {}
+
+# Evaluation reuses checkpoints and never adds model fits.
+evaluation:
+  test_conditions: {enabled: false, conditions: [], evaluate_original_training: false}
+  condition_matrix: {enabled: false, conditions: [], write_reports: true}
+
+# Training expansion is parameter product x complete condition objects.
+sweep: {enabled: false, parameters: {}}

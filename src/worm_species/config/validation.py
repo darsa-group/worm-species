@@ -847,6 +847,13 @@ def _validate_evaluation(config: dict[str, Any], issues: list[ValidationIssue]) 
         if not isinstance(conditions, list):
             issues.append(ValidationIssue(f"{path}.conditions", "must be a list"))
             continue
+        try:
+            from .normalization import normalize_condition_references
+
+            conditions = normalize_condition_references(conditions)
+        except (TypeError, ValueError) as exc:
+            issues.append(ValidationIssue(f"{path}.conditions", str(exc)))
+            continue
         if bool(raw.get("enabled", False)) and not conditions:
             issues.append(ValidationIssue(
                 f"{path}.conditions", "must be non-empty when enabled"

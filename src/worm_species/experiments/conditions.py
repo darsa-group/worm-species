@@ -47,6 +47,30 @@ def format_override(value: Any) -> str:
 
 
 def generate_conditions(config: dict) -> list[dict]:
+    # Canonical experiment files declare complete training conditions directly.
+    # Keep this historical helper as a thin spelling adapter for callers that
+    # still consume the legacy runtime shape; expansion remains owned by the
+    # config normalizer and generic sweep engine.
+    sweep_config = config.get("sweep", {}) or {}
+    canonical_conditions = (
+        sweep_config.get("conditions")
+        if isinstance(sweep_config, dict)
+        else None
+    )
+    if canonical_conditions:
+        from ..config.normalization import normalize_conditions
+
+        return [
+            {
+                "condition": condition["name"],
+                "feature": condition.get("feature", "baseline"),
+                "transform": condition["transform"],
+                "strength": condition.get("strength", 0.0),
+                **dict(condition.get("parameters", {}) or {}),
+            }
+            for condition in normalize_conditions(canonical_conditions)
+        ]
+
     matched_config = config.get("matched_condition_training", {}) or {}
     if not bool(matched_config.get("enabled", False)):
         return [{

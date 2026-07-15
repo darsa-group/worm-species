@@ -105,6 +105,15 @@ def _range_conditions(raw: Mapping[str, Any], path: str) -> list[dict[str, Any]]
             value,
             prefer_float=number_range.prefer_float,
         )
+        if (
+            "strength" not in condition
+            and transform == "saturation"
+            and parameter == "retention"
+        ):
+            condition["strength"] = decimal_to_number(
+                1 - value,
+                prefer_float=True,
+            )
         conditions.append(condition)
     return conditions
 
@@ -143,6 +152,24 @@ def normalize_conditions(raw_conditions: Any) -> list[dict[str, Any]]:
             )
         first_index[name] = index
     return conditions
+
+
+def normalize_condition_references(raw_conditions: Any) -> list[Any]:
+    """Expand complete/range objects while preserving named references."""
+    if not isinstance(raw_conditions, list):
+        raise ConfigNormalizationError("conditions must be a list")
+    resolved: list[Any] = []
+    for item in raw_conditions:
+        if isinstance(item, str):
+            resolved.append(item)
+        else:
+            resolved.extend(normalize_conditions([item]))
+    identifiers = [
+        item if isinstance(item, str) else item["name"] for item in resolved
+    ]
+    if len(identifiers) != len(set(identifiers)):
+        raise ConfigNormalizationError("conditions contains duplicate identifiers")
+    return resolved
 
 
 def _warning(path: str, canonical_path: str) -> CompatibilityWarning:
@@ -541,6 +568,14 @@ def normalize_config_with_report(config: dict[str, Any]) -> NormalizationResult:
         raise ConfigNormalizationError("sweep must be a mapping")
     if "conditions" in sweep:
         sweep["conditions"] = normalize_conditions(sweep["conditions"])
+    evaluation = normalized.get("evaluation", {}) or {}
+    if isinstance(evaluation, dict):
+        for section_name in ("test_conditions", "condition_matrix"):
+            section = evaluation.get(section_name)
+            if isinstance(section, dict) and "conditions" in section:
+                section["conditions"] = normalize_condition_references(
+                    section["conditions"]
+                )
     return NormalizationResult(normalized, result.warnings)
 
 
@@ -560,6 +595,7 @@ __all__ = [
     "NormalizationResult",
     "normalise_config",
     "normalize_conditions",
+    "normalize_condition_references",
     "normalize_config",
     "normalize_config_with_report",
 ]

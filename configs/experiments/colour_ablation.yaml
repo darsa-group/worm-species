@@ -15,25 +15,18 @@ multi_task:
 wandb:
   enabled: true
 
-matched_condition_training:
-  enabled: false
-
-test_cue_suppression:
-  enabled: false
-
-colour_ablation:
-  enabled: true
-  start_percent: 100
-  stop_percent: 0
-  step_percent: 1
-  combine_with_sweep: true
-
 sweep:
   enabled: true
   parameters:
     model.name:
       - convnext_base
       - vit_b_16
+  conditions:
+    - name_template: colour_{percent:03d}pct
+      feature: colour
+      transform: saturation
+      parameter: retention
+      range: {start: 1.0, stop: 0.0, step: -0.01}
 
 slurm:
   planning:

@@ -69,15 +69,17 @@ def _canonical_test_conditions(cfg: dict) -> list[dict] | None:
     schedule = evaluation.get("test_conditions", {}) or {}
     if not isinstance(schedule, dict):
         raise TypeError("evaluation.test_conditions must be a mapping")
-    if not bool(schedule.get("enabled", False)):
-        legacy = cfg.get("test_cue_suppression", {}) or {}
-        if (
-            not schedule.get("conditions")
-            and isinstance(legacy, dict)
-            and bool(legacy.get("enabled", False))
-        ):
-            return None
+    legacy = cfg.get("test_cue_suppression", {}) or {}
+    legacy_enabled = isinstance(legacy, dict) and bool(legacy.get("enabled", False))
+    if not bool(schedule.get("enabled", False)) and not legacy_enabled:
         return []
+
+    # Transitional resolved run specs may still carry the historical boolean
+    # override while their condition catalogue already lives under evaluation.
+    # In that case the alias enables the canonical catalogue; it does not
+    # regenerate a second legacy condition sequence.
+    if not schedule.get("conditions") and legacy_enabled:
+        return None
 
     configured = schedule.get("conditions", [])
     if not isinstance(configured, list) or not configured:

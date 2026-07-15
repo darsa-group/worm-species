@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import copy
 import hashlib
 import unittest
 from pathlib import Path
@@ -9,6 +8,7 @@ import yaml
 
 from src.worm_species.config.inspect import inspection_summary
 from src.worm_species.config.loading import load_config
+from src.worm_species.config.normalization import normalize_config
 from src.worm_species.config.validation import validate_config
 
 
@@ -18,17 +18,16 @@ BASE_CONFIG = ROOT / "configs" / "defaults" / "base.yaml"
 EXPERIMENTS = ROOT / "configs" / "experiments"
 MATRIX_EXPERIMENT = "patch_shuffle_matrix.yaml"
 
-# Captured immediately after the condition-matrix feature landed and before the
-# hierarchy move. Non-matrix configs are compared after removing the one
-# explicitly permitted default-equivalent disabled matrix block.
-PRE_HIERARCHY_HASHES = {
-    "config.yaml": "f4bb26f6be1fe7bf7baff138dbd75fef9ddd5bc7bf92a65a7ff2c3027e6a7231",
-    "colour_ablation.yaml": "50eea5718454d72794c85672abfb64a1b7415e8649dcc8ddbc560ecba1384fdb",
-    "dual_cue.yaml": "2c8664c024c0a7e6cf72604665e156c5723b575b5fc58b955370c9fabade355d",
-    MATRIX_EXPERIMENT: "f2f70ad06258c7cca8597122df3f7c9db59a8ace01c362c9659350a66dd1705a",
-    "persistent_hierarchy.yaml": "d296ef8c9cde69ee6bacc9e364de510dc727fab05493ff8b75e62a2fc57c5375",
-    "persistent_hierarchy_wandb.yaml": "18a4c91d7a5526089183a12e39c8f555691d2ad0ac9579319c5dacc6ce141043",
-    "standard.yaml": "f779bf5982c8cea557fc9a5fe70828d59f3fe2878cb8a12105d54d13b71955d5",
+# Canonical resolved-configuration snapshots. Scientific expansion is protected
+# separately by exact run-spec hashes and count contracts.
+CANONICAL_CONFIG_HASHES = {
+    "config.yaml": "fe4533abc51c8e7645354aa4d0a4c1508144368cf457d8a8763de8991dd51751",
+    "colour_ablation.yaml": "d76c960db01430c2c6f081e0199eeaa99a85b7df0ae74991c9f4f9fb36718244",
+    "dual_cue.yaml": "eb247799f25baa47ed45062000bf12518bb8a444c7e788cc9b7293f2de376f9c",
+    MATRIX_EXPERIMENT: "5495fe07e3210d5e575e38b081215712e4bc4d50334286443fe832bbd797a92e",
+    "persistent_hierarchy.yaml": "561e4b945e1214bc65e7d1d4b46fe4602d6788e6f733feee5d3445396bae6798",
+    "persistent_hierarchy_wandb.yaml": "9bfa46a89bfa70ba2c9f0fa71717cac234727366f3a88a59ac44ebb0395949a8",
+    "standard.yaml": "25a1dbe92c9bb42e0f1f4e69be51574c19d484514b2172823b2b52b011ef23ed",
 }
 
 
@@ -50,6 +49,8 @@ class SimplifiedConfigurationHierarchyContracts(unittest.TestCase):
                 "extends",
                 "seed",
                 "data",
+                "preprocessing",
+                "augmentation",
                 "model",
                 "training",
                 "multi_task",
@@ -57,42 +58,25 @@ class SimplifiedConfigurationHierarchyContracts(unittest.TestCase):
                 "output",
                 "cache",
                 "input_condition",
-                "test_cue_suppression",
-                "condition_matrix_evaluation",
-                "matched_condition_training",
-                "colour_ablation",
+                "evaluation",
                 "sweep",
             },
         )
-        self.assertEqual(set(raw["data"]), {"root_dir", "metadata_csv", "image_size"})
+        self.assertEqual(set(raw["data"]), {"root_dir", "metadata_csv"})
+        self.assertEqual(raw["preprocessing"]["image_size"], 224)
         self.assertNotIn("split", raw)
         self.assertNotIn("early_stopping", raw)
-        for section in (
-            "input_condition",
-            "test_cue_suppression",
-            "condition_matrix_evaluation",
-            "matched_condition_training",
-            "colour_ablation",
-            "sweep",
-        ):
-            self.assertEqual(raw[section], {"enabled": False})
+        self.assertFalse(raw["input_condition"]["enabled"])
+        self.assertFalse(raw["evaluation"]["test_conditions"]["enabled"])
+        self.assertFalse(raw["evaluation"]["condition_matrix"]["enabled"])
+        self.assertEqual(raw["sweep"], {"enabled": False, "parameters": {}})
 
-    def test_resolved_scientific_configs_match_pre_move_hashes(self) -> None:
+    def test_resolved_configs_match_canonical_snapshots(self) -> None:
         paths = {"config.yaml": ROOT_CONFIG}
-        paths.update({name: EXPERIMENTS / name for name in PRE_HIERARCHY_HASHES if name != "config.yaml"})
-        for name, expected_hash in PRE_HIERARCHY_HASHES.items():
+        paths.update({name: EXPERIMENTS / name for name in CANONICAL_CONFIG_HASHES if name != "config.yaml"})
+        for name, expected_hash in CANONICAL_CONFIG_HASHES.items():
             with self.subTest(config=name):
                 resolved = load_config(paths[name])
-                if name != MATRIX_EXPERIMENT:
-                    resolved = copy.deepcopy(resolved)
-                    self.assertEqual(
-                        resolved.pop("condition_matrix_evaluation"),
-                        {
-                            "enabled": False,
-                            "condition_names": ["original"],
-                            "write_reports": True,
-                        },
-                    )
                 self.assertEqual(_canonical_hash(resolved), expected_hash)
 
     def test_experiment_extends_graph_still_flows_through_root(self) -> None:
@@ -151,11 +135,12 @@ class SimplifiedConfigurationHierarchyContracts(unittest.TestCase):
 
     def test_patch_matrix_block_and_order_remain_exact(self) -> None:
         config = load_config(EXPERIMENTS / MATRIX_EXPERIMENT)
+        canonical = normalize_config(config)
         self.assertEqual(
-            config["condition_matrix_evaluation"],
+            canonical["evaluation"]["condition_matrix"],
             {
                 "enabled": True,
-                "condition_names": [
+                "conditions": [
                     "original",
                     "patch_shuffle_grid_2",
                     "patch_shuffle_grid_4",
@@ -163,9 +148,10 @@ class SimplifiedConfigurationHierarchyContracts(unittest.TestCase):
                 "write_reports": True,
             },
         )
-        keys = list(config)
-        self.assertLess(keys.index("sweep"), keys.index("condition_matrix_evaluation"))
-        self.assertLess(keys.index("condition_matrix_evaluation"), keys.index("slurm"))
+        raw = yaml.safe_load((EXPERIMENTS / MATRIX_EXPERIMENT).read_text())
+        keys = list(raw)
+        self.assertLess(keys.index("sweep"), keys.index("evaluation"))
+        self.assertLess(keys.index("evaluation"), keys.index("slurm"))
 
 
 if __name__ == "__main__":

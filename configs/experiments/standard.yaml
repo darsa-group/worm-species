@@ -15,15 +15,6 @@ multi_task:
 wandb:
   enabled: false
 
-matched_condition_training:
-  enabled: false
-
-colour_ablation:
-  enabled: false
-
-test_cue_suppression:
-  enabled: false
-
 sweep:
   enabled: true
   parameters:

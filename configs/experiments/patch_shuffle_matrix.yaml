@@ -16,60 +16,31 @@ sweep:
       - resnet50
       - efficientnet_b0
       - vit_b_16
-
-# Conditions are expanded by the launcher.  Every generated run specification
-# disables this switch before invoking the trainer, preserving one task = one
-# model training and preventing nested sweep expansion.
-matched_condition_training:
-  enabled: true
-  include_original: true
-  deduplicate_equivalent_conditions: true
-  evaluate_original_model_on_all_test_conditions: true
-  condition_names:
-    - original
-    - patch_shuffle_grid_2
-    - patch_shuffle_grid_4
-
-colour_ablation:
-  enabled: false
-
-input_condition:
-  enabled: false
-  condition: original
-  feature: baseline
-  transform: original
-  strength: 0.0
-
-# Only patch shuffle belongs to this experiment.  Original-trained checkpoints
-# are stress-tested at both grids; transformed-trained checkpoints retain their
-# matched train/validation/test condition and do not run the fixed-RGB battery.
-test_cue_suppression:
-  enabled: false
-  saturation:
-    enabled: false
-  grayscale:
-    enabled: false
-  channel_shuffle:
-    enabled: false
-  bilateral_filter:
-    enabled: false
-  gaussian_blur:
-    enabled: false
-  patch_shuffle:
-    enabled: true
-    grid_sizes: [2, 4]
-    seed: 2026
+  conditions:
+    - {name: original, feature: baseline, transform: original, parameters: {}}
+    - name: patch_shuffle_grid_2
+      feature: shape
+      transform: patch_shuffle
+      strength: 2
+      parameters: {grid_size: 2, seed: 2026}
+    - name: patch_shuffle_grid_4
+      feature: shape
+      transform: patch_shuffle
+      strength: 4
+      parameters: {grid_size: 4, seed: 2026}
 
 # This is post-training evaluation, not another sweep. Each of the 12 selected
 # checkpoints is evaluated on all three test conditions, yielding 36 condition
 # cells (and 108 task rows for genus/species/age) without additional training.
-condition_matrix_evaluation:
-  enabled: true
-  condition_names:
-    - original
-    - patch_shuffle_grid_2
-    - patch_shuffle_grid_4
-  write_reports: true
+evaluation:
+  test_conditions:
+    enabled: false
+    conditions: [patch_shuffle_grid_2, patch_shuffle_grid_4]
+    evaluate_original_training: true
+  condition_matrix:
+    enabled: true
+    conditions: [original, patch_shuffle_grid_2, patch_shuffle_grid_4]
+    write_reports: true
 
 slurm:
   planning:
