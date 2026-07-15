@@ -9,6 +9,7 @@ from typing import Any
 import yaml
 
 from .loading import load_config
+from .normalization import normalize_config_with_report
 from .overrides import apply_overrides
 from .validation import (
     ConfigValidationError,
@@ -115,6 +116,16 @@ def inspection_summary(config: dict[str, Any], workflow: str) -> dict[str, Any]:
     matched_plan_enabled = isinstance(matched, dict) and bool(
         matched.get("enabled", False)
     )
+    canonical_sweep = config.get("sweep", {}) or {}
+    canonical_training_conditions = bool(
+        isinstance(canonical_sweep, dict)
+        and canonical_sweep.get("conditions")
+    )
+
+    def condition_name(condition: Any) -> str:
+        if isinstance(condition, dict):
+            return str(condition.get("condition") or condition.get("name"))
+        return str(condition)
     if input_condition_enabled:
         conditions = [{
             "condition": str(
@@ -133,6 +144,17 @@ def inspection_summary(config: dict[str, Any], workflow: str) -> dict[str, Any]:
                 "transform": "saturation",
             }
             for retention in generate_colour_retention_values(config)
+        ]
+    elif (
+        isinstance(canonical_sweep, dict)
+        and bool(canonical_sweep.get("enabled", False))
+        and "conditions" in canonical_sweep
+    ):
+        from .normalization import normalize_conditions
+
+        conditions = [
+            {"condition": item["name"], "transform": item["transform"]}
+            for item in normalize_conditions(canonical_sweep["conditions"])
         ]
     else:
         conditions = [{"condition": "original", "transform": "original"}]
@@ -162,13 +184,39 @@ def inspection_summary(config: dict[str, Any], workflow: str) -> dict[str, Any]:
     training = config.get("training", {}) or {}
     wandb = config.get("wandb", {}) or {}
     cue = config.get("test_cue_suppression", {}) or {}
-    configured_test_names, effective_test_names = _fixed_rgb_test_conditions(config)
+    canonical_evaluation = config.get("evaluation", {}) or {}
+    canonical_test = (
+        canonical_evaluation.get("test_conditions", {}) or {}
+        if isinstance(canonical_evaluation, dict)
+        else {}
+    )
+    if isinstance(canonical_test, dict) and "conditions" in canonical_test:
+        configured_test_names = [
+            str(item.get("name")) if isinstance(item, dict) else str(item)
+            for item in canonical_test.get("conditions", [])
+        ]
+        effective_test_names = (
+            configured_test_names
+            if bool(canonical_test.get("enabled", False))
+            else []
+        )
+    else:
+        configured_test_names, effective_test_names = _fixed_rgb_test_conditions(config)
     matrix = config.get("condition_matrix_evaluation", {}) or {}
+    canonical_matrix = (
+        canonical_evaluation.get("condition_matrix", {}) or {}
+        if isinstance(canonical_evaluation, dict)
+        else {}
+    )
+    if isinstance(canonical_matrix, dict) and canonical_matrix:
+        matrix = canonical_matrix
     matrix_enabled = isinstance(matrix, dict) and bool(matrix.get("enabled", False))
-    if matrix_enabled:
+    if matrix_enabled and "condition_names" in matrix:
         from ..evaluation.condition_matrix import resolve_condition_matrix_conditions
 
         matrix_conditions = resolve_condition_matrix_conditions(config)
+    elif matrix_enabled:
+        matrix_conditions = matrix.get("conditions", [])
     else:
         matrix_conditions = []
 
@@ -206,7 +254,11 @@ def inspection_summary(config: dict[str, Any], workflow: str) -> dict[str, Any]:
             "planned_freeze_backbone_values": sorted(freeze_values),
         },
         "data": {
-            "image_size": (config.get("data", {}) or {}).get("image_size"),
+            "image_size": (
+                (config.get("preprocessing", {}) or {}).get("image_size")
+                if "preprocessing" in config
+                else (config.get("data", {}) or {}).get("image_size")
+            ),
         },
         "tasks": {
             "target_columns": target_cols,
@@ -226,16 +278,16 @@ def inspection_summary(config: dict[str, Any], workflow: str) -> dict[str, Any]:
             for key in ("enabled", "mode", "project", "entity", "group", "name")
         },
         "matched_training": {
-            "enabled": matched_plan_enabled or input_condition_enabled,
-            "planning_enabled": matched_plan_enabled,
+            "enabled": matched_plan_enabled or input_condition_enabled or canonical_training_conditions,
+            "planning_enabled": matched_plan_enabled or canonical_training_conditions,
             "resolved_input_condition_enabled": input_condition_enabled,
             "requested_condition_names": matched.get("condition_names"),
             "resolved_condition_names": [
                 condition["condition"] for condition in conditions
-            ] if matched_plan_enabled or input_condition_enabled else [],
+            ] if matched_plan_enabled or input_condition_enabled or canonical_training_conditions else [],
         },
         "fixed_rgb_test": {
-            "enabled": bool(cue.get("enabled", False)),
+            "enabled": bool(cue.get("enabled", False)) or bool(canonical_test.get("enabled", False)),
             "requested_condition_names": cue.get("condition_names"),
             "configured_condition_names": configured_test_names,
             "effective_condition_names": effective_test_names,
@@ -243,7 +295,7 @@ def inspection_summary(config: dict[str, Any], workflow: str) -> dict[str, Any]:
         "condition_matrix_evaluation": {
             "enabled": matrix_enabled,
             "condition_names": [
-                condition["condition"] for condition in matrix_conditions
+                condition_name(condition) for condition in matrix_conditions
             ],
             "test_condition_count": len(matrix_conditions),
             "expected_condition_cells": (
@@ -277,6 +329,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         validate_override_items(args.override)
         config = apply_overrides(load_config(args.config), args.override)
+        normalization = normalize_config_with_report(config)
         workflow = resolve_workflow(config, args.workflow)
         validate_config(
             config,
@@ -293,6 +346,10 @@ def main(argv: list[str] | None = None) -> int:
         "summary": summary,
         "applied_overrides": list(args.override),
         "resolved_config": config,
+        "canonical_resolved_config": normalization.config,
+        "compatibility_warnings": [
+            warning.as_dict() for warning in normalization.warnings
+        ],
     }
     if args.format == "json":
         print(json.dumps(payload, indent=2))

@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Literal
 
+from .normalization import ConfigNormalizationError, normalize_conditions
 from .schema import CONFIG_FIELDS, MISSING_DEFAULT, field_for_path, is_known_config_path
 
 
@@ -389,58 +390,96 @@ def _validate_transform_parameters(
     )
 
     raw = config.get("input_condition", {}) or {}
-    if not isinstance(raw, dict):
-        return
+    if isinstance(raw, dict):
+        _validate_condition_object(
+            config,
+            raw,
+            "input_condition",
+            issues,
+            enabled=bool(raw.get("enabled", False)),
+        )
+
+
+def _validate_condition_object(
+    config: dict[str, Any],
+    raw: dict[str, Any],
+    path: str,
+    issues: list[ValidationIssue],
+    *,
+    enabled: bool,
+) -> None:
     transform = str(raw.get("transform", "original")).lower()
-    if not bool(raw.get("enabled", False)):
+    if not enabled:
         if transform != "original":
             issues.append(ValidationIssue(
-                "input_condition.transform",
-                "must be original when input_condition.enabled=false",
+                f"{path}.transform",
+                f"must be original when {path}.enabled=false",
             ))
         return
     if transform not in KNOWN_TRANSFORMS:
         issues.append(ValidationIssue(
-            "input_condition.transform",
+            f"{path}.transform",
             f"unknown transformation {transform!r}; expected one of {sorted(KNOWN_TRANSFORMS)!r}",
         ))
         return
+    parameters = raw.get("parameters", {}) or {}
+    if not isinstance(parameters, dict):
+        issues.append(ValidationIssue(f"{path}.parameters", "must be a mapping"))
+        parameters = {}
+
+    def parameter(key: str, default: Any = _ABSENT) -> tuple[Any, str]:
+        if key in parameters:
+            return parameters[key], f"{path}.parameters.{key}"
+        if key in raw:
+            return raw[key], f"{path}.{key}"
+        return default, f"{path}.parameters.{key}"
+
     if transform == "saturation":
-        if "retention" not in raw:
-            issues.append(ValidationIssue("input_condition.retention", "is required for saturation"))
+        retention, retention_path = parameter("retention")
+        if retention is _ABSENT:
+            issues.append(ValidationIssue(retention_path, "is required for saturation"))
         else:
-            _number(issues, "input_condition.retention", raw["retention"], minimum=0, maximum=1)
+            _number(issues, retention_path, retention, minimum=0, maximum=1)
     elif transform == "channel_shuffle":
-        _validate_channel_order(issues, "input_condition.order", raw.get("order", [2, 0, 1]))
+        order, order_path = parameter("order", [2, 0, 1])
+        _validate_channel_order(issues, order_path, order)
     elif transform == "gaussian_blur":
-        if "sigma" not in raw:
-            issues.append(ValidationIssue("input_condition.sigma", "is required for gaussian_blur"))
+        sigma, sigma_path = parameter("sigma")
+        if sigma is _ABSENT:
+            issues.append(ValidationIssue(sigma_path, "is required for gaussian_blur"))
         else:
-            _number(issues, "input_condition.sigma", raw["sigma"], minimum=0, exclusive_minimum=True)
+            _number(issues, sigma_path, sigma, minimum=0, exclusive_minimum=True)
     elif transform == "bilateral_filter":
+        resolved: dict[str, tuple[Any, str]] = {}
         for key in ("diameter", "sigma_colour", "sigma_space"):
-            if key not in raw:
-                issues.append(ValidationIssue(f"input_condition.{key}", "is required for bilateral_filter"))
-        diameter = raw.get("diameter")
-        if diameter is not None and (
+            resolved[key] = parameter(key)
+            if resolved[key][0] is _ABSENT:
+                issues.append(ValidationIssue(resolved[key][1], "is required for bilateral_filter"))
+        diameter, diameter_path = resolved["diameter"]
+        if diameter is not _ABSENT and (
             isinstance(diameter, bool) or not isinstance(diameter, int)
             or diameter <= 0 or diameter % 2 == 0
         ):
-            issues.append(ValidationIssue("input_condition.diameter", "must be a positive odd integer"))
+            issues.append(ValidationIssue(diameter_path, "must be a positive odd integer"))
         for key in ("sigma_colour", "sigma_space"):
-            if key in raw:
-                _number(issues, f"input_condition.{key}", raw[key], minimum=0, exclusive_minimum=True)
+            value, value_path = resolved[key]
+            if value is not _ABSENT:
+                _number(issues, value_path, value, minimum=0, exclusive_minimum=True)
     elif transform == "patch_shuffle":
-        grid = raw.get("grid_size", _ABSENT)
+        grid, grid_path = parameter("grid_size")
         if grid is _ABSENT:
-            issues.append(ValidationIssue("input_condition.grid_size", "is required for patch_shuffle"))
+            issues.append(ValidationIssue(grid_path, "is required for patch_shuffle"))
         elif isinstance(grid, bool) or not isinstance(grid, int) or grid < 2:
-            issues.append(ValidationIssue("input_condition.grid_size", "must be an integer >= 2"))
+            issues.append(ValidationIssue(grid_path, "must be an integer >= 2"))
         else:
-            image_size = _get(config, "data.image_size")
+            image_size = _get(config, "preprocessing.image_size")
+            image_size_path = "preprocessing.image_size"
+            if image_size is _ABSENT:
+                image_size = _get(config, "data.image_size")
+                image_size_path = "data.image_size"
             if isinstance(image_size, int) and image_size % grid != 0:
                 issues.append(ValidationIssue(
-                    "input_condition.grid_size", f"must divide data.image_size={image_size}"
+                    grid_path, f"must divide {image_size_path}={image_size}"
                 ))
 
 
@@ -473,6 +512,20 @@ def _validate_sweeps(
                         issues.append(ValidationIssue(
                             value_path, f"must be one of {list(field.choices)!r}"
                         ))
+    if isinstance(sweep, dict) and "conditions" in sweep:
+        try:
+            conditions = normalize_conditions(sweep["conditions"])
+        except ConfigNormalizationError as exc:
+            issues.append(ValidationIssue("sweep.conditions", str(exc)))
+        else:
+            for index, condition in enumerate(conditions):
+                _validate_condition_object(
+                    config,
+                    condition,
+                    f"sweep.conditions[{index}]",
+                    issues,
+                    enabled=True,
+                )
 
     colour = config.get("colour_ablation", {}) or {}
     if not isinstance(colour, dict) or not bool(colour.get("enabled", False)):
@@ -695,6 +748,136 @@ def _validate_canonical_training_switches(
         issues.append(ValidationIssue("training", str(exc)))
 
 
+def _validate_preprocessing_and_augmentation(
+    config: dict[str, Any], issues: list[ValidationIssue], workflow: str
+) -> None:
+    image_size = _get(config, "preprocessing.image_size")
+    legacy_image_size = _get(config, "data.image_size")
+    if image_size is _ABSENT:
+        image_size = legacy_image_size
+    if workflow == "training" and image_size is _ABSENT:
+        issues.append(ValidationIssue(
+            "preprocessing.image_size",
+            "is required for training (legacy data.image_size is also accepted)",
+        ))
+
+    preprocessing = config.get("preprocessing", {}) or {}
+    if not isinstance(preprocessing, dict):
+        return
+    normalisation = preprocessing.get("normalisation", {}) or {}
+    if not isinstance(normalisation, dict):
+        issues.append(ValidationIssue(
+            "preprocessing.normalisation", "must be a mapping"
+        ))
+    else:
+        mean = normalisation.get("mean", [0.485, 0.456, 0.406])
+        std = normalisation.get("std", [0.229, 0.224, 0.225])
+        valid_vectors = True
+        for name, values in (("mean", mean), ("std", std)):
+            path = f"preprocessing.normalisation.{name}"
+            if not isinstance(values, list) or not values:
+                issues.append(ValidationIssue(path, "must be a non-empty list"))
+                valid_vectors = False
+                continue
+            for index, value in enumerate(values):
+                if not _number(issues, f"{path}[{index}]", value):
+                    valid_vectors = False
+                elif name == "std" and float(value) <= 0:
+                    issues.append(ValidationIssue(
+                        f"{path}[{index}]", "must be greater than zero"
+                    ))
+                    valid_vectors = False
+        if valid_vectors and len(mean) != len(std):
+            issues.append(ValidationIssue(
+                "preprocessing.normalisation",
+                "mean and std must have equal lengths",
+            ))
+
+    augmentation = config.get("augmentation", {}) or {}
+    if not isinstance(augmentation, dict):
+        return
+    for flip in ("horizontal_flip", "vertical_flip"):
+        operation = augmentation.get(flip, {}) or {}
+        if not isinstance(operation, dict):
+            issues.append(ValidationIssue(f"augmentation.{flip}", "must be a mapping"))
+            continue
+        probability = operation.get("probability", 0.5)
+        _number(
+            issues,
+            f"augmentation.{flip}.probability",
+            probability,
+            minimum=0,
+            maximum=1,
+        )
+    rotation = augmentation.get("rotation", {}) or {}
+    if not isinstance(rotation, dict):
+        issues.append(ValidationIssue("augmentation.rotation", "must be a mapping"))
+    else:
+        _number(
+            issues,
+            "augmentation.rotation.degrees",
+            rotation.get("degrees", 270),
+            minimum=0,
+        )
+
+
+def _condition_identifier(value: Any) -> str | None:
+    if isinstance(value, str) and value.strip():
+        return value
+    if isinstance(value, dict):
+        name = value.get("name")
+        if isinstance(name, str) and name.strip():
+            return name
+    return None
+
+
+def _validate_evaluation(config: dict[str, Any], issues: list[ValidationIssue]) -> None:
+    evaluation = config.get("evaluation", {}) or {}
+    if not isinstance(evaluation, dict):
+        return
+    for section in ("test_conditions", "condition_matrix"):
+        raw = evaluation.get(section)
+        if raw is None:
+            continue
+        path = f"evaluation.{section}"
+        if not isinstance(raw, dict):
+            issues.append(ValidationIssue(path, "must be a mapping"))
+            continue
+        conditions = raw.get("conditions", [])
+        if not isinstance(conditions, list):
+            issues.append(ValidationIssue(f"{path}.conditions", "must be a list"))
+            continue
+        if bool(raw.get("enabled", False)) and not conditions:
+            issues.append(ValidationIssue(
+                f"{path}.conditions", "must be non-empty when enabled"
+            ))
+        identifiers: list[str] = []
+        for index, condition in enumerate(conditions):
+            identifier = _condition_identifier(condition)
+            if identifier is None:
+                issues.append(ValidationIssue(
+                    f"{path}.conditions[{index}]",
+                    "must be a non-empty name or complete condition mapping",
+                ))
+                continue
+            identifiers.append(identifier)
+            if isinstance(condition, dict):
+                _validate_condition_object(
+                    config,
+                    condition,
+                    f"{path}.conditions[{index}]",
+                    issues,
+                    enabled=True,
+                )
+        duplicates = sorted({
+            name for name in identifiers if identifiers.count(name) > 1
+        })
+        if duplicates:
+            issues.append(ValidationIssue(
+                f"{path}.conditions", f"contains duplicate names: {duplicates}"
+            ))
+
+
 def validate_config(
     config: dict[str, Any],
     *,
@@ -713,6 +896,7 @@ def validate_config(
         "model", "training", "output", "cache", "colour_ablation", "experiment",
         "test_cue_suppression", "condition_matrix_evaluation",
         "matched_condition_training", "sweep", "input_condition",
+        "preprocessing", "augmentation", "evaluation",
     ):
         value = config.get(section, _ABSENT)
         if value is not _ABSENT and value is not None and not isinstance(value, dict):
@@ -742,6 +926,7 @@ def validate_config(
         ("data.min_individuals_per_class", 0, None, False),
         ("data.crop_pad", 0, None, False),
         ("data.image_size", 0, None, True),
+        ("preprocessing.image_size", 0, None, True),
         ("training.epochs", 0, None, True),
         ("training.batch_size", 0, None, True),
         ("training.lr", 0, None, True),
@@ -787,8 +972,10 @@ def validate_config(
             issues.append(ValidationIssue(path, "must be a non-empty string"))
 
     _validate_tasks(config, issues)
+    _validate_preprocessing_and_augmentation(config, issues, resolved_workflow)
     _validate_transform_parameters(config, issues)
     _validate_sweeps(config, issues, resolved_workflow)
+    _validate_evaluation(config, issues)
     _validate_condition_matrix(config, issues, resolved_workflow)
     _validate_canonical_training_switches(config, issues)
 

@@ -1,6 +1,14 @@
 """Configuration loading, dotted overrides, and sweep expansion."""
 
 from .loading import ConfigLoadError, deep_merge, load_config
+from .normalization import (
+    CompatibilityWarning,
+    ConfigNormalizationError,
+    NormalizationResult,
+    normalize_conditions,
+    normalize_config,
+    normalize_config_with_report,
+)
 from .overrides import apply_overrides, parse_scalar, set_nested
 from .sweeps import (
     generate_colour_retention_values,
@@ -24,7 +32,9 @@ __all__ = [
     "CONFIG_FIELDS",
     "ConfigField",
     "ConfigLoadError",
+    "ConfigNormalizationError",
     "ConfigValidationError",
+    "CompatibilityWarning",
     "deep_merge",
     "generate_colour_retention_values",
     "generate_sweep_configs",
@@ -32,6 +42,10 @@ __all__ = [
     "get_sweep_parameters_from_cli",
     "get_sweep_parameters_from_config",
     "load_config",
+    "NormalizationResult",
+    "normalize_conditions",
+    "normalize_config",
+    "normalize_config_with_report",
     "parse_scalar",
     "parse_sweep_item",
     "set_nested",
