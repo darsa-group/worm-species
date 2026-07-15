@@ -46,6 +46,27 @@ Ambient historical launcher variables are ignored unless `--legacy-env` is
 requested. Cluster files contain machine resources and paths; they must not
 change scientific run-spec hashes.
 
+## Canonical scientific layers
+
+New child configs should use four independent layers:
+
+- `preprocessing` for deterministic resize and normalization on every split;
+- `augmentation` for train-only random flips and rotation;
+- `sweep.parameters` × `sweep.conditions` for external training expansion;
+- `evaluation.test_conditions` and `evaluation.condition_matrix` for
+  checkpoint evaluation that never creates another fit.
+
+Each `sweep.conditions` item is a complete object with `name`, `feature`,
+`transform`, optional `strength`, and transform-specific `parameters`. Numeric
+condition families can use `name_template`, `parameter`, and an inclusive
+`range`. The planner resolves one object into one run specification and then
+disables expansion before invoking the trainer.
+
+Historical condition sections are accepted as migration input, but they are
+normalized into these layers and are not uploaded as duplicate W&B config
+columns. See [the full configuration reference](../config.md) for syntax and
+examples.
+
 ## Which file to use
 
 | Goal | Experiment configuration | Typical count |

@@ -5,8 +5,8 @@ validation, experiment planning, local training, and SLURM rendering all use the
 same resolved dictionary. No configuration framework or hidden training profile
 is involved.
 
-The safe starting point is [`config.yaml`](../config.yaml). It inherits detailed
-defaults from [`configs/defaults/base.yaml`](../configs/defaults/base.yaml).
+The safe starting point is [`config.yaml`](config.yaml). It inherits detailed
+defaults from [`configs/defaults/base.yaml`](configs/defaults/base.yaml).
 Experiment files change scientific choices; cluster files change only machine,
 resource, scratch, and path choices.
 
@@ -111,7 +111,9 @@ submission.
 | `data.metadata_csv` | path string | Global metadata table. Checked only when appropriate to the workflow. |
 | `data.image_col` | column name | Usually `rel_path_seg`; `rel_path_raw` and `rel_path_segmask` are documented alternatives. |
 | `data.mask_col` | column name | Segmentation-mask path column. |
-| `data.image_size` | positive integer | Square image side used by transforms and the model. Patch grids must divide it. |
+| `preprocessing.image_size` | positive integer | Square image side used by transforms and the model. Patch grids must divide it. The legacy `data.image_size` spelling is normalized. |
+| `preprocessing.normalisation.enabled` | boolean | Apply the configured mean/std after tensor conversion on every split. |
+| `preprocessing.normalisation.mean`, `.std` | three finite numbers; standard deviations positive | RGB channel normalisation applied consistently to train, validation, and test. |
 | `data.colour_retention` | number in `[0, 1]` | `1.0` is RGB identity; `0.0` removes saturation. |
 | `data.crop_to_foreground` | boolean | Enable mask-derived foreground cropping. |
 | `data.crop_pad` | number at least `0` | Fractional padding around a foreground crop. |
@@ -130,6 +132,28 @@ submission.
 `split_csv/*.csv` links are external scientific inputs and must not be rewritten.
 `split.save_splits` controls whether a newly resolved split is recorded; it does
 not authorize changing predefined membership.
+
+### Transform layers and order
+
+The canonical composer keeps responsibilities explicit while preserving the
+established pixel pipeline:
+
+```text
+resize
+  -> train-only horizontal flip
+  -> train-only vertical flip
+  -> train-only random rotation
+  -> tensor conversion
+  -> the one assigned input condition
+  -> normalisation
+```
+
+Validation and test omit augmentation. They retain resize, the selected
+evaluation condition, and normalization. Setting `augmentation.enabled: false`
+disables all three random operations; each child operation can also be disabled
+independently. Flip probabilities must be in `[0,1]`, rotation degrees must be
+non-negative, and a fixed seed preserves the existing deterministic behavior.
+Changing an operation or its order is a scientific change, not a layout choice.
 
 ## Model, tasks, and loss
 
@@ -196,6 +220,14 @@ fully local. When enabled, important fields are `project`, `entity`, `group`,
 `online`, `offline`, `disabled`, `dryrun`, `run`, `shared`, and `null`. Use
 `offline` for normal network-free operation and mock or disable W&B in CPU tests.
 
+The adapter uploads one canonical resolved configuration. Every setting has one
+slash-delimited W&B key, such as `training/lr` or
+`input_condition/parameters/sigma`. Legacy aliases and historical
+double-underscore flattened keys are normalized before upload, so they do not
+create repeated columns. Canonical values win if both spellings are present.
+Metric aliases required by historical dashboards remain logging keys, not
+duplicated configuration columns.
+
 ## Training modes are explicit switches
 
 The following switches replace historical script profiles:
@@ -206,11 +238,9 @@ The following switches replace historical script profiles:
 | `multi_task.hierarchy_loss.enabled` | Add the configured parent/child consistency term. |
 | `wandb.enabled` | Enable W&B logging in the configured mode. |
 | `input_condition.enabled` | Apply exactly one already-resolved training condition. |
-| `matched_condition_training.enabled` | Ask the external planner to generate matched-condition run specs. |
-| `test_cue_suppression.enabled` | After original-RGB training, run the fixed-RGB transformed-test battery. |
-| `condition_matrix_evaluation.enabled` | Evaluate selected checkpoints across selected test conditions without fitting again. |
-| `colour_ablation.enabled` | Ask the external planner for colour-retention run specs. |
-| `sweep.enabled` | Ask the external planner to expand listed hyperparameter values. |
+| `evaluation.test_conditions.enabled` | Run the configured post-training transformed-test battery. |
+| `evaluation.condition_matrix.enabled` | Evaluate selected checkpoints across selected test conditions without fitting again. |
+| `sweep.enabled` | Ask the external planner to expand parameter values × complete condition objects. |
 
 `experiment.type`, where present, is one of `standard`, `matched_condition`,
 `rgb_stress_test`, or `matched_and_rgb_stress`. It describes the resolved run;
@@ -223,33 +253,37 @@ A generated run specification contains one explicit condition:
 ```yaml
 input_condition:
   enabled: true
-  condition: patch_shuffle_grid_4
+  name: patch_shuffle_grid_4
   feature: spatial_layout
   transform: patch_shuffle
   strength: 4
-  seed: 2026
+  parameters:
+    grid_size: 4
+    seed: 2026
 ```
 
 Train and validation use this assigned condition for matched-condition runs.
 Test-only fixed-RGB stress transforms remain a separate evaluation path. A
 resolved submitted task must always report one internal training run.
 
-### Fixed-RGB test allow-list
+### Fixed-RGB test schedule
 
-`test_cue_suppression.enabled` enables post-training stress evaluation for an
-original-RGB checkpoint. An optional `condition_names` list restricts evaluation
-to named catalogue conditions, for example:
+`evaluation.test_conditions` defines post-training stress evaluation.
+Conditions may be complete objects or names referring to `sweep.conditions`.
+The schedule is evaluation only and never adds a model fit:
 
 ```yaml
-test_cue_suppression:
-  enabled: true
-  condition_names:
-    - gaussian_sigma_2
-    - patch_shuffle_grid_4
+evaluation:
+  test_conditions:
+    enabled: true
+    evaluate_original_training: true
+    conditions: [gaussian_sigma_2, patch_shuffle_grid_4]
 ```
 
-The allow-list must be non-empty, unique, and resolve to known conditions. It is
-not a list of additional training runs.
+The list must be non-empty, unique, and resolve to known conditions. The
+`evaluate_original_training` switch lets the planner enable the battery only
+for the original-RGB training condition. Historical `test_cue_suppression`
+input is accepted and migrated, but new child configs should use this section.
 
 ## Transform catalogue and parameter validation
 
@@ -263,25 +297,22 @@ The exact canonical transform names are:
 | `channel_shuffle` | `order` is a permutation of `[0, 1, 2]` | Explicit order is deterministic. |
 | `bilateral_filter` | positive odd `diameter`; positive `sigma_colour` and `sigma_space` | Preserves image shape and dtype. |
 | `gaussian_blur` | `sigma` greater than `0` | Preserves image shape and dtype. |
-| `patch_shuffle` | integer `grid_size >= 2` that divides `data.image_size`; integer `seed` | Fixed seed gives a reproducible patch permutation. |
+| `patch_shuffle` | integer `grid_size >= 2` that divides `preprocessing.image_size`; integer `seed` | Fixed seed gives a reproducible patch permutation. |
 
-Unknown names and invalid parameter combinations fail validation. The detailed
-catalogue beneath `test_cue_suppression` controls available saturation values,
-channel orders, bilateral settings, Gaussian sigmas, and patch grids. A
-`condition_names` allow-list selects from that catalogue without redefining it.
+Unknown names and invalid parameter combinations fail validation. Complete
+condition objects keep their transform parameters together beneath
+`parameters`; range objects generate complete conditions before planning.
 
 ## Condition-matrix semantics
 
-`condition_matrix_evaluation` is post-training evaluation only:
+`evaluation.condition_matrix` is post-training evaluation only:
 
 ```yaml
-condition_matrix_evaluation:
-  enabled: true
-  condition_names:
-    - original
-    - patch_shuffle_grid_2
-    - patch_shuffle_grid_4
-  write_reports: true
+evaluation:
+  condition_matrix:
+    enabled: true
+    conditions: [original, patch_shuffle_grid_2, patch_shuffle_grid_4]
+    write_reports: true
 ```
 
 For every evaluated train/test pair, the relation is recorded as:
@@ -328,9 +359,45 @@ one generated run specification
     = one model fit
 ```
 
+The generic plan is the Cartesian product of non-empty parameter lists and the
+complete condition list. This child config creates four trainings:
+
+```yaml
+extends: ../../config.yaml
+sweep:
+  enabled: true
+  parameters:
+    model.name: [resnet18, efficientnet_b0]
+  conditions:
+    - {name: original, feature: baseline, transform: original, parameters: {}}
+    - name: patch_shuffle_grid_4
+      feature: shape
+      transform: patch_shuffle
+      strength: 4
+      parameters: {grid_size: 4, seed: 2026}
+```
+
+Endpoint-safe numeric ranges are also declarative. This creates 101 complete
+saturation conditions from 100% through 0%, inclusive:
+
+```yaml
+sweep:
+  enabled: true
+  conditions:
+    - name_template: saturation_{percent:03d}pct
+      feature: colour
+      transform: saturation
+      parameter: retention
+      range: {start: 1.0, stop: 0.0, step: -0.01}
+```
+
+Range items and explicit items may be mixed. Identifiers must remain unique.
+The planner validates the resulting count, run identifiers, output paths, and
+one-fit-per-spec invariant before it can submit anything.
+
 Generated run configurations resolve the assigned model and condition, then
-disable `sweep`, `colour_ablation`, and `matched_condition_training` before
-calling the trainer. Planning fails before submission if an external run spec
+disable all expansion controls before calling the trainer. Planning fails
+before submission if an external run spec
 would retain an internal expansion, a run resolves to more than one fit, run IDs
 are duplicated, result paths collide, or the run-spec count differs from the
 array size.
@@ -392,27 +459,27 @@ label, transform, or experiment semantics.
 
 ### Local
 
-[`configs/clusters/local.yaml`](../configs/clusters/local.yaml) disables real
+[`configs/clusters/local.yaml`](configs/clusters/local.yaml) disables real
 SLURM submission and uses one CPU, no GPU, `4G` memory, a one-hour limit, no
 scratch copy, and local relative paths. It is the preferred profile for planning
 and tests.
 
 ### Genome
 
-[`configs/clusters/genome.yaml`](../configs/clusters/genome.yaml) selects the
+[`configs/clusters/genome.yaml`](configs/clusters/genome.yaml) selects the
 Genome GPU partitions, one GPU, 12 CPUs, 12,384 MiB memory, a 90-minute limit,
 and at most 12 active array tasks. It uses a per-job temporary cache under
 `/tmp/${USER}/worm_species` and a `CACHE_READY` marker. Project, data, results,
 cache, conda, collection, and logging paths are declared in the profile.
 
-[`configs/clusters/genome_persistent.yaml`](../configs/clusters/genome_persistent.yaml)
+[`configs/clusters/genome_persistent.yaml`](configs/clusters/genome_persistent.yaml)
 inherits Genome, selects persistent-cache scratch semantics, uses eight CPUs,
 and carries the historical excluded-node choice. Use it with a persistent-cache
 experiment instead of editing the experiment YAML.
 
 ### GHPC
 
-[`configs/clusters/ghpc.yaml`](../configs/clusters/ghpc.yaml) uses one GPU and
+[`configs/clusters/ghpc.yaml`](configs/clusters/ghpc.yaml) uses one GPU and
 node-local `/scratch`. Setup and cleanup are per-node jobs. A GHPC plan must
 provide a non-empty, explicit GPU-node list, and its scratch root must be unique
 per submission. Static or ambiguous scratch cleanup fails before rendering.
@@ -466,13 +533,12 @@ PYTHONPATH=src python -m worm_species.training \
   --config config.yaml --single-run \
   --override \
     input_condition.enabled=true \
-    input_condition.condition=gaussian_sigma_2 \
+    input_condition.name=gaussian_sigma_2 \
     input_condition.feature=texture \
     input_condition.transform=gaussian_blur \
     input_condition.strength=2.0 \
-    sweep.enabled=false \
-    colour_ablation.enabled=false \
-    matched_condition_training.enabled=false
+    input_condition.parameters.sigma=2.0 \
+    sweep.enabled=false
 ```
 
 Before a costly run, use `make validate`, `make inspect`, and `make dry-run` in
@@ -493,7 +559,12 @@ This registry names the complete public configuration surface. Keys containing
 | `seed` | Integer random seed. |
 | `data.root_dir`, `data.metadata_csv` | Dataset and metadata paths. |
 | `data.image_col`, `data.mask_col`, `data.barcode_col`, `data.group_col` | Metadata column names. |
-| `data.image_size` | Positive square image size; patch grids must divide it. |
+| `preprocessing.image_size` | Positive square image size; patch grids must divide it. |
+| `preprocessing.normalisation.enabled`, `.mean`, `.std` | Shared split preprocessing and RGB normalization values. |
+| `augmentation.enabled` | Master train-only augmentation switch. |
+| `augmentation.horizontal_flip.enabled`, `.probability` | Train-only horizontal flip and probability in `[0,1]`. |
+| `augmentation.vertical_flip.enabled`, `.probability` | Train-only vertical flip and probability in `[0,1]`. |
+| `augmentation.rotation.enabled`, `.degrees` | Train-only random rotation switch and non-negative bound. |
 | `data.colour_retention` | Number in `[0, 1]`. |
 | `data.crop_to_foreground`, `data.crop_pad` | Foreground crop switch and non-negative pad fraction. |
 | `data.strip_final_number_from_group` | Boolean barcode grouping rule. |
@@ -541,24 +612,28 @@ This registry names the complete public configuration surface. Keys containing
 | --- | --- |
 | `experiment.type` | `standard`, `matched_condition`, `rgb_stress_test`, or `matched_and_rgb_stress`. |
 | `input_condition.enabled` | Apply one resolved training condition. |
-| `input_condition.condition`, `input_condition.feature`, `input_condition.transform` | Assigned condition identity. |
-| `input_condition.strength`, `input_condition.seed` | Condition parameter and optional deterministic seed. |
-| `matched_condition_training.enabled` | Enable external matched-condition planning. |
-| `matched_condition_training.include_original` | Include original RGB in that plan. |
-| `matched_condition_training.deduplicate_equivalent_conditions` | Remove equivalent endpoint conditions. |
-| `matched_condition_training.evaluate_original_model_on_all_test_conditions` | Enable fixed-RGB stress only for the original-trained checkpoint. |
-| `test_cue_suppression.enabled`, `test_cue_suppression.condition_names` | Stress-battery switch and optional non-empty allow-list. |
-| `test_cue_suppression.saturation.enabled` | Include saturation conditions. |
-| `test_cue_suppression.saturation.start`, `test_cue_suppression.saturation.stop`, `test_cue_suppression.saturation.step` | Inclusive `[0,1]` range and positive step. |
-| `test_cue_suppression.grayscale.enabled` | Include explicit greyscale. |
-| `test_cue_suppression.channel_shuffle.enabled`, `test_cue_suppression.channel_shuffle.orders` | Switch and RGB permutation list. |
-| `test_cue_suppression.bilateral_filter.enabled`, `test_cue_suppression.bilateral_filter.settings` | Switch and positive odd-diameter/sigma mappings. |
-| `test_cue_suppression.gaussian_blur.enabled`, `test_cue_suppression.gaussian_blur.sigmas` | Switch and positive sigma list. |
-| `test_cue_suppression.patch_shuffle.enabled`, `test_cue_suppression.patch_shuffle.grid_sizes`, `test_cue_suppression.patch_shuffle.seed` | Switch, dividing grids, and deterministic seed. |
-| `condition_matrix_evaluation.enabled`, `condition_matrix_evaluation.condition_names`, `condition_matrix_evaluation.write_reports` | Cross-evaluation switch, conditions, and report-output switch. |
-| `colour_ablation.enabled`, `colour_ablation.start_percent`, `colour_ablation.stop_percent`, `colour_ablation.step_percent` | External colour range with endpoint inclusion. |
-| `colour_ablation.combine_with_sweep` | Permit model sweep × colour values in the external planner. |
-| `sweep.enabled`, `sweep.parameters.<key>` | External sweep switch and non-empty value lists. |
+| `input_condition.name`, `.feature`, `.transform`, `.strength` | Assigned complete condition identity. |
+| `input_condition.parameters.<name>` | Transform-specific parameter such as retention, sigma, order, grid size, or seed. |
+| `evaluation.test_conditions.enabled` | Post-training transformed-test switch. |
+| `evaluation.test_conditions.conditions` | Non-empty unique condition names or complete condition/range objects. |
+| `evaluation.test_conditions.evaluate_original_training` | Restrict the stress battery to original-RGB training when externally planning matched conditions. |
+| `evaluation.condition_matrix.enabled`, `.conditions`, `.write_reports` | Cross-evaluation switch, condition list, and report-output switch. |
+| `sweep.enabled`, `sweep.parameters.<key>` | External sweep switch and non-empty parameter value lists. |
+| `sweep.conditions` | Non-empty complete condition objects and/or declarative range objects. |
+| `sweep.conditions[].name`, `.feature`, `.transform`, `.strength`, `.parameters` | One explicit atomic training condition. |
+| `sweep.conditions[].name_template`, `.parameter`, `.range` | One endpoint-aware condition range. Range keys are `start`, `stop`, and signed non-zero `step`. |
+
+The loader still accepts `input_condition.condition`,
+`test_cue_suppression`, `condition_matrix_evaluation`,
+`matched_condition_training`, and `colour_ablation` when reading historical
+saved configs. The migration command maps them to the canonical structure:
+
+```bash
+PYTHONPATH=src python -m worm_species.config migrate old-config.yaml
+```
+
+They are compatibility inputs, not additional active planners, and they are
+removed from the normalized dictionary before W&B upload.
 
 ### W&B
 
@@ -605,7 +680,7 @@ values. Configuration files are never edited in place.
 python train.py --config config.yaml --dry-run --single-run --override \
   model.name=resnet50 \
   model.pretrained=true \
-  data.image_size=224 \
+  preprocessing.image_size=224 \
   training.epochs=50 \
   training.lr=0.0001 \
   multi_task.loss_weights.genus=1.0 \
@@ -617,11 +692,11 @@ python train.py --config config.yaml --dry-run --single-run --override \
   multi_task.hierarchy_loss.enabled=false \
   wandb.enabled=false
 
-# Inspect only two fixed-RGB stress conditions.
+# Inspect a child config that names two fixed-RGB stress conditions.
 PYTHONPATH=src python -m worm_species.config.inspect \
   --config configs/experiments/dual_cue.yaml --workflow training \
   --override \
-    'test_cue_suppression.condition_names=[gaussian_sigma_2,patch_shuffle_grid_4]'
+    'evaluation.test_conditions.conditions=[gaussian_sigma_2,patch_shuffle_grid_4]'
 
 # Change concurrency without editing the experiment or cluster YAML.
 make dry-run EXPERIMENT=dual_cue \
@@ -641,5 +716,5 @@ make dry-run EXPERIMENT=dual_cue \
 - Dry-run, status, collection, and dashboard discovery never load full model
   checkpoints or modify live result directories.
 
-For the compact file map, see [`configs/README.md`](../configs/README.md). For
-the repository-wide entry-point map, see [`info.md`](../info.md).
+For the compact file map, see [`configs/README.md`](configs/README.md). For
+the repository-wide entry-point map, see [`info.md`](info.md).

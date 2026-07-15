@@ -74,10 +74,13 @@ wandb:
 input_condition:
   enabled: false
 
-test_cue_suppression:
-  enabled: false
+evaluation:
+  test_conditions:
+    enabled: false
+  condition_matrix:
+    enabled: false
 
-condition_matrix_evaluation:
+sweep:
   enabled: false
 ```
 
@@ -100,13 +103,12 @@ PYTHONPATH=src python -m worm_species.training \
   --config config.yaml --single-run --override \
     model.name=convnext_base \
     input_condition.enabled=true \
-    input_condition.condition=gaussian_sigma_2 \
+    input_condition.name=gaussian_sigma_2 \
     input_condition.feature=texture \
     input_condition.transform=gaussian_blur \
     input_condition.strength=2.0 \
-    sweep.enabled=false \
-    colour_ablation.enabled=false \
-    matched_condition_training.enabled=false
+    input_condition.parameters.sigma=2.0 \
+    sweep.enabled=false
 ```
 
 Training-time conditions, original-RGB transformed-test stress evaluation, and
