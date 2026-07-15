@@ -1,0 +1,23 @@
+extends: ../../config.yaml
+
+matched_condition_training:
+  enabled: false
+
+colour_ablation:
+  enabled: false
+
+test_cue_suppression:
+  enabled: false
+
+slurm:
+  planning:
+    experiment_type: standard
+    external_expansion: sweep
+    training_profile: masked
+  cpus_per_task: 8
+  memory: 16384
+  time_limit: "04:00:00"
+  array:
+    max_active: 10
+  collection:
+    enabled: false

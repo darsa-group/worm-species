@@ -1,0 +1,30 @@
+extends: ../../config.yaml
+
+matched_condition_training:
+  enabled: false
+
+test_cue_suppression:
+  enabled: false
+
+colour_ablation:
+  enabled: true
+  start_percent: 100
+  stop_percent: 0
+  step_percent: 1
+  combine_with_sweep: true
+
+slurm:
+  planning:
+    experiment_type: colour_ablation
+    external_expansion: colour_ablation
+    training_profile: colour_ablation
+  cpus_per_task: 16
+  memory: 16384
+  time_limit: "04:00:00"
+  array:
+    max_active: 2
+  collection:
+    enabled: true
+    cpus_per_task: 1
+    memory: 4096
+    time_limit: "00:20:00"
