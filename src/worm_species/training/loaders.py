@@ -34,6 +34,27 @@ class LoaderBundle:
     test_loader_context: dict | None = None
 
 
+def require_complete_task_labels(
+    split_frames: dict[str, object],
+    target_cols: dict[str, str],
+) -> None:
+    """Fail rather than changing samples when label masking is disabled."""
+    missing = []
+    for split_name, frame in split_frames.items():
+        for task, column in target_cols.items():
+            if column not in frame.columns:
+                missing.append(f"{split_name}.{task}: missing column {column!r}")
+                continue
+            count = int(frame[column].isna().sum())
+            if count:
+                missing.append(f"{split_name}.{task}: {count} missing labels")
+    if missing:
+        raise ValueError(
+            "training.use_masked_labels=false requires every selected task "
+            "label to be present; no rows were dropped. " + "; ".join(missing)
+        )
+
+
 def get_input_condition(cfg: dict) -> dict:
     raw = copy.deepcopy(cfg.get("input_condition", {}) or {})
     if not bool(raw.get("enabled", False)):
@@ -161,6 +182,12 @@ def make_profile_loaders(cfg: dict, profile: TrainingProfile) -> LoaderBundle:
         )
         test_df = test_df[test_df["_cached_image_path"].notna()].reset_index(
             drop=True
+        )
+
+    if not profile.masked_labels:
+        require_complete_task_labels(
+            {"train": train_df, "val": val_df, "test": test_df},
+            target_cols,
         )
 
     label_to_index_by_task, index_to_label_by_task = build_label_maps(

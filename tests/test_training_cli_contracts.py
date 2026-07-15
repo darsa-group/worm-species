@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import contextlib
 import importlib
 import io
@@ -11,6 +12,7 @@ from pathlib import Path
 from unittest import mock
 
 import yaml
+import pandas as pd
 import torch
 
 from src.worm_species.training.checkpoints import build_checkpoint_payload
@@ -18,7 +20,10 @@ from src.worm_species.training.checkpoints import checkpoint_keys
 from src.worm_species.training.checkpoints import load_checkpoint
 from src.worm_species.training.checkpoints import save_checkpoint
 from src.worm_species.training.cli import execute, resolve_plan
+from src.worm_species.training.loaders import require_complete_task_labels
 from src.worm_species.training.modes import get_profile
+from src.worm_species.training.modes import infer_experiment_type
+from src.worm_species.training.modes import resolve_configured_profile
 from src.worm_species.training.runner import initialise_wandb_run
 
 
@@ -60,6 +65,105 @@ def minimal_config(output_dir: Path) -> dict:
 
 
 class CanonicalTrainingCliContracts(unittest.TestCase):
+    def test_preferred_cli_resolves_features_without_a_named_profile(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            root = Path(temporary_dir)
+            config = minimal_config(root / "outputs")
+            config["training"] = {
+                "mode": "multitask",
+                "use_masked_labels": True,
+            }
+            config_path = root / "config.yaml"
+            config_path.write_text(yaml.safe_dump(config), encoding="utf-8")
+
+            profile, configs, experiment_types = resolve_plan(
+                str(config_path), [], [], None
+            )
+
+        self.assertEqual(profile.name, "configured")
+        self.assertEqual(profile.loader_mode, "standard")
+        self.assertTrue(profile.hierarchy)
+        self.assertFalse(profile.wandb)
+        self.assertTrue(profile.masked_labels)
+        self.assertEqual(len(configs), 1)
+        self.assertEqual(experiment_types, ["standard"])
+
+    def test_explicit_switches_select_condition_and_colour_contracts(self) -> None:
+        base = minimal_config(Path("outputs"))
+        base["training"] = {"use_masked_labels": False}
+        base["wandb"]["enabled"] = True
+
+        stress = copy.deepcopy(base)
+        stress["test_cue_suppression"]["enabled"] = True
+        stress_profile = resolve_configured_profile(stress)
+        self.assertEqual(stress_profile.loader_mode, "condition")
+        self.assertTrue(stress_profile.stress_evaluation)
+        self.assertTrue(stress_profile.wandb)
+        self.assertFalse(stress_profile.masked_labels)
+
+        matched_stress = copy.deepcopy(stress)
+        matched_stress["input_condition"] = {
+            "enabled": True,
+            "condition": "original",
+            "transform": "original",
+        }
+        self.assertEqual(
+            infer_experiment_type(matched_stress), "matched_and_rgb_stress"
+        )
+
+        colour = copy.deepcopy(base)
+        colour["colour_ablation"]["enabled"] = True
+        colour_profile = resolve_configured_profile(colour)
+        self.assertEqual(colour_profile.loader_mode, "colour")
+        self.assertTrue(colour_profile.colour_sweep)
+        self.assertFalse(colour_profile.stress_evaluation)
+
+        matched = copy.deepcopy(base)
+        matched["input_condition"] = {
+            "enabled": True,
+            "condition": "grayscale",
+            "transform": "grayscale",
+        }
+        matched_profile = resolve_configured_profile(matched)
+        self.assertEqual(matched_profile.loader_mode, "condition")
+        self.assertFalse(matched_profile.stress_evaluation)
+
+    def test_unmasked_mode_fails_without_dropping_incomplete_rows(self) -> None:
+        complete = pd.DataFrame(
+            {"genus": ["Lumbricus"], "species": ["L. terrestris"]}
+        )
+        incomplete = pd.DataFrame(
+            {"genus": ["Lumbricus"], "species": [pd.NA]}
+        )
+        target_cols = {"genus": "genus", "species": "species"}
+
+        require_complete_task_labels({"train": complete}, target_cols)
+        with self.assertRaisesRegex(
+            ValueError,
+            r"use_masked_labels=false.*no rows were dropped.*train.species",
+        ):
+            require_complete_task_labels(
+                {"train": incomplete, "val": complete, "test": complete},
+                target_cols,
+            )
+        self.assertEqual(len(incomplete), 1)
+
+    def test_config_driven_stress_rejects_transformed_training(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            root = Path(temporary_dir)
+            config = minimal_config(root / "outputs")
+            config["input_condition"] = {
+                "enabled": True,
+                "condition": "greyscale",
+                "transform": "grayscale",
+            }
+            config["test_cue_suppression"] = {"enabled": True}
+            config_path = root / "config.yaml"
+            config_path.write_text(yaml.safe_dump(config), encoding="utf-8")
+
+            with self.assertRaisesRegex(ValueError, "Fixed-RGB stress"):
+                resolve_plan(str(config_path), [], [], None)
+
     def test_legacy_wrappers_select_their_explicit_profiles(self) -> None:
         for module_name, expected_profile in LEGACY_PROFILES.items():
             root_module = importlib.import_module(module_name)

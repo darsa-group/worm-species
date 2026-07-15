@@ -10,10 +10,12 @@ from pathlib import Path
 from ..config.loading import load_config
 from ..config.overrides import apply_overrides
 from ..config.sweeps import generate_sweep_configs
-from .modes import DEFAULT_PROFILE
 from .modes import PROFILES
 from .modes import get_profile
+from .modes import infer_experiment_type
+from .modes import resolve_configured_profile
 from .modes import resolved_run_name
+from .modes import validate_training_semantics
 
 
 def _legacy_parser() -> argparse.ArgumentParser:
@@ -57,12 +59,9 @@ def resolve_plan(
 ):
     source = load_config(config_path)
     overridden = apply_overrides(source, overrides)
-    chosen = (
-        explicit_profile
-        or overridden.get("training", {}).get("profile")
-        or DEFAULT_PROFILE
-    )
-    profile = get_profile(str(chosen))
+    chosen = explicit_profile or overridden.get("training", {}).get("profile")
+    compatibility_profile = get_profile(str(chosen)) if chosen else None
+    profile = compatibility_profile or resolve_configured_profile(overridden)
     expanded = generate_sweep_configs(
         overridden,
         sweep,
@@ -73,6 +72,19 @@ def resolve_plan(
 
     for item in expanded:
         cfg = copy.deepcopy(item)
+        if compatibility_profile is None:
+            item_profile = resolve_configured_profile(cfg)
+            if item_profile != profile:
+                raise ValueError(
+                    "One canonical invocation cannot sweep over training feature "
+                    "switches that resolve to different loader or output contracts"
+                )
+            experiment_type = infer_experiment_type(cfg)
+            validate_training_semantics(cfg, item_profile, experiment_type)
+            resolved.append(cfg)
+            resolved_types.append(experiment_type)
+            continue
+
         condition = cfg.get("input_condition", {}) or {}
         transformed = bool(condition.get("enabled", False)) and str(
             condition.get("transform", "original")
@@ -185,6 +197,7 @@ def _plan_summary(profile, configs, experiment_types):
     )
     return {
         "selected_profile": profile.name,
+        "configuration_driven": profile.name == "configured",
         "loader_mode": profile.loader_mode,
         "experiment_type": experiment_types[0],
         "expected_internal_training_runs": len(configs),
@@ -200,6 +213,7 @@ def _plan_summary(profile, configs, experiment_types):
         "wandb_enabled": bool(
             profile.wandb and first.get("wandb", {}).get("enabled", False)
         ),
+        "masked_labels": profile.masked_labels,
         "condition_count": len(conditions),
         "resolved_training_conditions": conditions,
         "post_training_rgb_stress": bool(

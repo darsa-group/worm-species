@@ -68,6 +68,29 @@ class ConfigurationValidationContracts(unittest.TestCase):
             {"experiment": {"type": "combined_ambiguous_mode"}},
             "experiment.type: must be one of",
         )
+        self.assert_invalid(
+            {"training": {"mode": "script_specific_mode"}},
+            "training.mode: must be one of",
+        )
+
+    def test_config_driven_feature_contradictions_are_rejected(self) -> None:
+        self.assert_invalid(
+            {
+                "experiment": {"type": "standard"},
+                "input_condition": {
+                    "enabled": True,
+                    "transform": "original",
+                },
+            },
+            "experiment.type=standard cannot enable input_condition",
+        )
+        self.assert_invalid(
+            {
+                "experiment": {"type": "rgb_stress_test"},
+                "test_cue_suppression": {"enabled": False},
+            },
+            "requires test_cue_suppression.enabled=true",
+        )
 
     def test_sweep_values_must_be_non_empty_lists(self) -> None:
         config = {

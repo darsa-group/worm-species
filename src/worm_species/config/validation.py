@@ -473,6 +473,28 @@ def _validate_model_name(
             issues.append(ValidationIssue(path, f"unknown torchvision model {name!r}"))
 
 
+def _validate_canonical_training_switches(
+    config: dict[str, Any], issues: list[ValidationIssue]
+) -> None:
+    """Validate config-driven training without changing legacy profiles."""
+    legacy_profile = _get(config, "training.profile")
+    if legacy_profile is not _ABSENT:
+        return
+    try:
+        from ..training.modes import infer_experiment_type
+        from ..training.modes import resolve_configured_profile
+        from ..training.modes import validate_training_semantics
+
+        profile = resolve_configured_profile(config)
+        validate_training_semantics(
+            config,
+            profile,
+            infer_experiment_type(config),
+        )
+    except ValueError as exc:
+        issues.append(ValidationIssue("training", str(exc)))
+
+
 def validate_config(
     config: dict[str, Any],
     *,
@@ -567,6 +589,7 @@ def validate_config(
     _validate_tasks(config, issues)
     _validate_transform_parameters(config, issues)
     _validate_sweeps(config, issues, resolved_workflow)
+    _validate_canonical_training_switches(config, issues)
 
     if resolved_workflow == "run_specs" and _get(config, "input_condition.enabled") is True:
         issues.append(ValidationIssue(

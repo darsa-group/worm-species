@@ -1,6 +1,8 @@
 seed: 42
 
 wandb:
+  # W&B is an independent feature switch. Set false for a completely local run;
+  # no named training profile is required. Offline mode never contacts the service.
   enabled: true
   project: worm-species-cues
   entity: null
@@ -79,6 +81,9 @@ multi_task:
     age: 2.0
 
   hierarchy_loss:
+    # Adds genus/species consistency loss when both labels are present. This is
+    # independent of W&B and label masking, and requires distinct configured
+    # parent and child tasks plus a valid child-to-parent mapping.
     enabled: true
     parent_task: genus
     child_task: species
@@ -95,6 +100,10 @@ multi_task:
 
 
 colour_ablation:
+  # Local/internal expansion over data.colour_retention. Leave this false for a
+  # submitted resolved run: the SLURM planner expands conditions externally and
+  # enforces one run specification = one trainer process = one model training.
+  # Do not combine this with matched_condition_training or input_condition.
   enabled: false
   start_percent: 100
   stop_percent: 0
@@ -121,6 +130,16 @@ model:
   freeze_backbone: false
 
 training:
+  # Preferred trainer behaviour is selected by explicit switches in this file,
+  # not by training.profile. `mode` identifies the algorithm family.
+  mode: multitask
+
+  # true: preserve examples with partially missing task labels and mask only the
+  # unavailable task losses/metrics (the historical behaviour).
+  # false: require every selected task label in train/validation/test and fail
+  # clearly if one is missing. Rows and split membership are never changed.
+  use_masked_labels: true
+
   epochs: 200
   batch_size: 256
   lr: 0.0005
@@ -142,8 +161,30 @@ cache:
   num_workers: 6
 
 
+# Exactly one resolved matched-condition trainer process can enable this block.
+# `transform` accepts original, saturation, grayscale, channel_shuffle,
+# bilateral_filter, gaussian_blur, or patch_shuffle with its validated
+# parameters. A transformed condition cannot enable fixed-RGB stress below.
+input_condition:
+  enabled: false
+  condition: original
+  feature: baseline
+  transform: original
+  strength: 0.0
+
+# `experiment.type` is normally inferred from the switches above/below. It may
+# be made explicit as standard, matched_condition, rgb_stress_test, or
+# matched_and_rgb_stress. Explicit values must agree with the enabled training
+# condition and stress evaluation; leaving it absent is safest for run specs.
+# experiment:
+#   type: standard
+
+
 test_cue_suppression:
-  enabled: true
+  # Post-training transformed-test evaluation. When true, training must use the
+  # original/RGB input condition. It cannot be combined with a transformed
+  # input_condition; matched original + stress uses matched_and_rgb_stress.
+  enabled: false
 
   saturation:
     enabled: true
@@ -184,24 +225,22 @@ test_cue_suppression:
 
 
 matched_condition_training:
+  # External run-spec expansion across the condition registry. This is a
+  # planning switch, not a trainer-internal loop. Generated run specs disable it
+  # and set exactly one input_condition for each trainer process.
+  # It is incompatible with colour_ablation expansion and an already-resolved
+  # input_condition. Test-only RGB stress remains a separate evaluation step.
   enabled: true
   include_original: true
   deduplicate_equivalent_conditions: true
   evaluate_original_model_on_all_test_conditions: true
 
 sweep:
+  # Ordinary model/parameter expansion for local planning. Submitted run specs
+  # turn this off before invoking the trainer so nested expansion is impossible.
   enabled: true
 
   parameters:
     model.name:
       - 'convnext_base'
       - "vit_b_16"
-
-   
-    
-    
-  
-      
-
-
-    

@@ -26,6 +26,7 @@ def run_hierarchy_epoch(
     normalize_loss_by_active_tasks: bool = True,
     hierarchy_cfg: dict | None = None,
     child_to_parent_matrix: torch.Tensor | None = None,
+    use_masked_labels: bool = True,
 ):
     if train:
         model.train()
@@ -83,7 +84,15 @@ def run_hierarchy_epoch(
                 loss_by_task: dict[str, torch.Tensor | None] = {}
 
                 for task in tasks:
-                    valid = y[task] != MISSING_LABEL
+                    missing = y[task] == MISSING_LABEL
+                    if not use_masked_labels and missing.any():
+                        raise ValueError(
+                            "training.use_masked_labels=false encountered a "
+                            f"missing {task!r} label; no rows were dropped"
+                        )
+                    valid = ~missing if use_masked_labels else torch.ones_like(
+                        missing, dtype=torch.bool
+                    )
 
                     if valid.any():
                         task_loss = criteria[task](logits_by_task[task][valid], y[task][valid])
@@ -138,7 +147,11 @@ def run_hierarchy_epoch(
 
         for task in tasks:
             pred = logits_by_task[task].argmax(dim=1)
-            valid = y[task] != MISSING_LABEL
+            valid = (
+                y[task] != MISSING_LABEL
+                if use_masked_labels
+                else torch.ones_like(y[task], dtype=torch.bool)
+            )
 
             complete_mask &= valid
             complete_correct &= pred.eq(y[task])

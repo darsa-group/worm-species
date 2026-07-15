@@ -306,6 +306,7 @@ def run_one(cfg: dict, profile: TrainingProfile) -> dict:
             normalize,
             hierarchy_cfg,
             matrix,
+            profile.masked_labels,
         )
         validate = (
             epoch == 1
@@ -326,6 +327,7 @@ def run_one(cfg: dict, profile: TrainingProfile) -> dict:
                 normalize,
                 hierarchy_cfg,
                 matrix,
+                profile.masked_labels,
             )[0]
         else:
             val_metrics = {}
@@ -442,6 +444,7 @@ def run_one(cfg: dict, profile: TrainingProfile) -> dict:
         normalize,
         hierarchy_cfg,
         matrix,
+        profile.masked_labels,
     )
 
     for task in bundle.target_cols:
