@@ -1,0 +1,18 @@
+name: wormspecies
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.11
+  - scikit-learn
+  - opencv
+  - ipykernel
+  - pandas
+  - matplotlib
+  - tqdm
+  - ipywidgets
+  - pyyaml
+  - umap-learn
+  - plotly
+  - nbformat
+prefix: /home/devd/miniconda3/envs/wormspecies

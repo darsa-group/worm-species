@@ -8,7 +8,7 @@ two cluster-specific SLURM workflows.
 ## Environment
 
 ```bash
-conda env create -f environment.yaml
+conda env create -f configs/environment.yaml
 conda activate wormspecies
 ```
 
@@ -27,6 +27,10 @@ python train_multitask_masked_hloss_wandb.py --config config.yaml
 python train_multitask_colour_ablation.py --config config.yaml
 python train_multitask_cue_suppression.py --config config.yaml
 ```
+
+Their canonical implementations live under `scripts/training/`; the root
+paths are compatibility wrappers retained for existing local and cluster
+commands.
 
 All accept the existing dotted overrides and optional internal sweep syntax:
 
@@ -97,6 +101,9 @@ PYTHONDONTWRITEBYTECODE=1 python -m unittest discover -s tests -v
 ```
 
 The bounded inventory, pre-refactor report, migration map, notebook status,
-and executed contract results are under `refactor_audit_bounded/`. Generated
+and executed contract results are under `docs/refactor/`. Notebooks are
+grouped under `notebooks/{analysis,diagnostics,interpretability,data}/`, and
+operational shell scripts are grouped under `scripts/` while their historical
+root paths remain available. Generated
 outputs, datasets, checkpoints, caches, W&B artifacts, and SLURM result trees
 are outside the source audit and are not modified by the refactor.

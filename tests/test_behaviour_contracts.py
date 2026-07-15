@@ -331,20 +331,21 @@ class LossMetricAndCheckpointContracts(unittest.TestCase):
         self.assertEqual(true, predicted)
 
     def test_checkpoint_top_level_schemas(self) -> None:
+        trainer_root = ROOT / "scripts" / "training"
         ordinary = [
-            ROOT / "train_multitask_masked.py",
-            ROOT / "train_multitask_masked_hloss.py",
-            ROOT / "train_multitask_masked_hloss_wandb.py",
+            trainer_root / "train_multitask_masked.py",
+            trainer_root / "train_multitask_masked_hloss.py",
+            trainer_root / "train_multitask_masked_hloss_wandb.py",
         ]
         for path in ordinary:
             self.assertIn(ORDINARY_CHECKPOINT_KEYS, torch_save_dict_keys(path))
         self.assertIn(
             ORDINARY_CHECKPOINT_KEYS | {"colour_retention", "colour_percent"},
-            torch_save_dict_keys(ROOT / "train_multitask_colour_ablation.py"),
+            torch_save_dict_keys(trainer_root / "train_multitask_colour_ablation.py"),
         )
         self.assertIn(
             ORDINARY_CHECKPOINT_KEYS | {"colour_retention", "colour_percent", "training_condition"},
-            torch_save_dict_keys(ROOT / "train_multitask_cue_suppression.py"),
+            torch_save_dict_keys(trainer_root / "train_multitask_cue_suppression.py"),
         )
 
 
@@ -416,7 +417,7 @@ class CollectionAndInterfaceContracts(unittest.TestCase):
                     if not line.lstrip().startswith(("%", "!"))
                 )
                 compile(sanitised, f"{relative}:cell{index}", "exec")
-        self.assertEqual(invalid, ["cam_mutlitask.ipynb"])
+        self.assertEqual(invalid, ["notebooks/interpretability/cam_mutlitask.ipynb"])
 
 
 if __name__ == "__main__":

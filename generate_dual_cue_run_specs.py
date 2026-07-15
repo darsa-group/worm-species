@@ -1,25 +1,7 @@
-"""Compatibility wrapper for dual-cue condition and run-spec generation."""
+"""Root compatibility wrapper for dual-cue run-spec generation."""
 
-from src.worm_species.experiments.conditions import (
-    condition_overrides,
-    format_override,
-    generate_conditions,
-    inclusive_sequence,
-    slug,
-    sweep_combinations,
-)
-from src.worm_species.experiments.run_specs import main, write_run_specs
-
-__all__ = [
-    "condition_overrides",
-    "format_override",
-    "generate_conditions",
-    "inclusive_sequence",
-    "main",
-    "slug",
-    "sweep_combinations",
-    "write_run_specs",
-]
+from scripts.training.generate_dual_cue_run_specs import *  # noqa: F401,F403
+from scripts.training.generate_dual_cue_run_specs import main
 
 
 if __name__ == "__main__":
