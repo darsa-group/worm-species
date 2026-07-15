@@ -64,6 +64,14 @@ class DashboardConditionMatrixContracts(unittest.TestCase):
         rows, warnings = normalise_matrix_rows(_rows())
         self.assertEqual(warnings, [])
         self.assertEqual(len(rows), 108)
+        original = next(
+            row
+            for row in rows
+            if row["train_condition"] == "original"
+            and row["test_condition"] == "original"
+        )
+        self.assertEqual(original["evaluation_relation"], "matched")
+        self.assertEqual(original["condition_relation"], "original")
         self.assertEqual(
             matrix_relation_counts(rows),
             {"matched": 12, "rgb_stress": 8, "cross_condition": 16},
@@ -104,6 +112,33 @@ class DashboardConditionMatrixContracts(unittest.TestCase):
         ])
         self.assertEqual(rows, [])
         self.assertEqual(len(warnings), 3)
+
+    def test_missing_matrix_relation_is_derived_without_collapsing_logging_relation(self) -> None:
+        rows, warnings = normalise_matrix_rows([
+            {
+                "run_name": "rgb",
+                "model": "resnet18",
+                "train_condition": "original",
+                "test_condition": "original",
+                "task": "genus",
+                "macro_f1": 0.5,
+            },
+            {
+                "run_name": "stress",
+                "model": "resnet18",
+                "train_condition": "original",
+                "test_condition": "grayscale",
+                "condition_relation": "rgb_stress",
+                "task": "genus",
+                "macro_f1": 0.4,
+            },
+        ])
+
+        self.assertEqual(warnings, [])
+        self.assertEqual(rows[0]["evaluation_relation"], "matched")
+        self.assertEqual(rows[0]["condition_relation"], "original")
+        self.assertEqual(rows[1]["evaluation_relation"], "rgb_stress")
+        self.assertEqual(rows[1]["condition_relation"], "rgb_stress")
 
     def test_aggregate_is_preferred_over_bounded_per_run_fallback(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

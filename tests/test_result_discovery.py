@@ -224,6 +224,87 @@ class TestResultDiscovery(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "read limit"):
             load_text(experiment / "sweep_plan.tsv", max_bytes=1)
 
+    def test_canonical_and_legacy_condition_facets_are_additive(self) -> None:
+        experiment = self.root / "results" / "conditions"
+        canonical = experiment / "canonical"
+        legacy = experiment / "legacy"
+        canonical.mkdir(parents=True)
+        legacy.mkdir(parents=True)
+        _write_json(
+            canonical / "config.json",
+            {
+                "seed": 1,
+                "training": {"seed": 9, "epochs": 2},
+                "model": {"name": "resnet18", "pretrained": True},
+                "preprocessing": {
+                    "image_size": 384,
+                    "normalisation": {
+                        "enabled": True,
+                        "mean": [0.1, 0.2, 0.3],
+                        "std": [0.4, 0.5, 0.6],
+                    },
+                },
+                "augmentation": {
+                    "enabled": True,
+                    "horizontal_flip": {"enabled": True, "probability": 0.25},
+                    "vertical_flip": {"enabled": False, "probability": 0.0},
+                    "rotation": {"enabled": True, "degrees": 90},
+                },
+                "experiment": {"type": "matched_condition"},
+                "input_condition": {
+                    "enabled": True,
+                    "name": "gaussian_sigma_2",
+                    "transform": "gaussian_blur",
+                    "parameters": {"sigma": 2.0},
+                },
+            },
+        )
+        _write_json(canonical / "test_metrics.json", {"mean_macro_f1": 0.5})
+        _write_json(
+            legacy / "config.json",
+            {
+                "model": {"name": "resnet18"},
+                "data": {"image_size": 384},
+                "input_condition": {
+                    "enabled": True,
+                    "condition": "gaussian_sigma_2",
+                    "transform": "gaussian_blur",
+                    "sigma": 2.0,
+                },
+            },
+        )
+        _write_json(legacy / "test_metrics.json", {"mean_macro_f1": 0.5})
+
+        snapshot = discover_experiment(experiment, now=10**12)
+        by_name = {Path(run.path).name: run for run in snapshot.runs}
+        modern = by_name["canonical"]
+        old = by_name["legacy"]
+
+        self.assertEqual(modern.train_condition, "gaussian_sigma_2")
+        self.assertEqual(old.train_condition, "gaussian_sigma_2")
+        self.assertEqual(modern.train_condition_parameters, {"sigma": 2.0})
+        self.assertEqual(old.train_condition_parameters, {"sigma": 2.0})
+        self.assertEqual(modern.image_size, 384)
+        self.assertEqual(old.image_size, 384)
+        self.assertEqual(modern.experiment_type, "matched_condition")
+        self.assertEqual(modern.hyperparameters["seed"], 9)
+        self.assertEqual(modern.hyperparameters["image_size"], 384)
+        self.assertEqual(
+            modern.hyperparameters["condition_parameter.sigma"], 2.0
+        )
+        self.assertEqual(
+            modern.hyperparameters["horizontal_flip_probability"], 0.25
+        )
+        metric = next(
+            item for item in modern.metrics if item.metric == "mean_macro_f1"
+        )
+        self.assertEqual(metric.condition, "gaussian_sigma_2")
+        self.assertEqual(metric.condition_relation, "matched")
+        self.assertEqual(
+            metric.canonical_key,
+            "test/gaussian_sigma_2/mean_macro_f1",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

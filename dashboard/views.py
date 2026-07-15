@@ -39,6 +39,8 @@ def _option(value: Any) -> str:
         return "(unspecified)"
     if isinstance(value, bool):
         return "enabled" if value else "disabled"
+    if isinstance(value, (dict, list, tuple)):
+        return json.dumps(value, sort_keys=True, separators=(",", ":"), default=str)
     return str(value)
 
 
@@ -76,21 +78,54 @@ def _filter_runs(st: Any, runs: list[dict[str, Any]]) -> list[dict[str, Any]]:
         selected_tasks = st.multiselect("Task", tasks, default=tasks)
         facet_selections: dict[str, set[str]] = {}
         for key, label in (
+            ("experiment_type", "Experiment type"),
             ("epochs", "Configured epochs"),
             ("learning_rate", "Learning rate"),
             ("weight_decay", "Weight decay"),
             ("batch_size", "Batch size"),
+            ("seed", "Training seed"),
+            ("image_size", "Image size"),
             ("pretrained", "Pretrained weights"),
             ("freeze_backbone", "Frozen backbone"),
             ("class_weight", "Class-weighted loss"),
+            ("use_amp", "Mixed precision"),
             ("age_loss_weight", "Age loss weight"),
             ("species_loss_weight", "Species loss weight"),
             ("genus_loss_weight", "Genus loss weight"),
             ("hierarchy_loss_enabled", "Hierarchy loss"),
+            ("hierarchy_loss_weight", "Hierarchy loss weight"),
+            ("augmentation_enabled", "Training augmentation"),
+            ("horizontal_flip_enabled", "Horizontal flip"),
+            ("horizontal_flip_probability", "Horizontal-flip probability"),
+            ("vertical_flip_enabled", "Vertical flip"),
+            ("vertical_flip_probability", "Vertical-flip probability"),
+            ("rotation_enabled", "Rotation augmentation"),
+            ("rotation_degrees", "Rotation degrees"),
+            ("normalisation_enabled", "Input normalisation"),
+            ("early_stopping_enabled", "Early stopping"),
+            ("early_stopping_patience", "Early-stopping patience"),
+            ("colour_retention", "Colour retention"),
             ("wandb_enabled", "W&B logging"),
+            ("wandb_mode", "W&B mode"),
         ):
             values = sorted({_option(_facet(item, key)) for item in runs})
             facet_selections[key] = set(st.multiselect(label, values, default=values))
+        parameter_keys = sorted(
+            {
+                key
+                for item in runs
+                for key in item.get("hyperparameters", {})
+                if key.startswith("condition_parameter.")
+            }
+        )
+        for key in parameter_keys:
+            values = sorted({_option(_facet(item, key)) for item in runs})
+            label = "Condition parameter: " + key.removeprefix(
+                "condition_parameter."
+            )
+            facet_selections[key] = set(
+                st.multiselect(label, values, default=values)
+            )
         start_date = st.date_input("Updated on or after", min(dates))
         end_date = st.date_input("Updated on or before", max(dates))
     return [
@@ -144,10 +179,14 @@ def _overview(st: Any, runs: list[dict[str, Any]], experiments: list[dict[str, A
                 "tasks": ", ".join(run.get("tasks", [])),
                 "macro_f1": run.get("effective_macro_f1"),
                 "macro_f1_definition": run.get("effective_macro_f1_label"),
+                "experiment_type": run.get("experiment_type")
+                or facets.get("experiment_type"),
                 "epochs": facets.get("epochs"),
                 "lr": facets.get("learning_rate"),
                 "weight_decay": facets.get("weight_decay"),
                 "batch_size": facets.get("batch_size"),
+                "seed": facets.get("seed"),
+                "image_size": run.get("image_size") or facets.get("image_size"),
                 "pretrained": facets.get("pretrained"),
                 "freeze_backbone": facets.get("freeze_backbone"),
                 "class_weight": facets.get("class_weight"),
@@ -155,10 +194,19 @@ def _overview(st: Any, runs: list[dict[str, Any]], experiments: list[dict[str, A
                 "species_weight": facets.get("species_loss_weight"),
                 "age_weight": facets.get("age_loss_weight"),
                 "hierarchy_loss": facets.get("hierarchy_loss_enabled"),
+                "augmentation": facets.get("augmentation_enabled"),
+                "horizontal_flip_probability": facets.get(
+                    "horizontal_flip_probability"
+                ),
+                "vertical_flip_probability": facets.get(
+                    "vertical_flip_probability"
+                ),
+                "rotation_degrees": facets.get("rotation_degrees"),
                 "condition": run.get("train_condition"),
                 "condition_feature": run.get("train_feature"),
                 "condition_transform": run.get("train_transform"),
                 "condition_strength": run.get("train_strength"),
+                "condition_parameters": run.get("train_condition_parameters"),
             }
         )
     if comparison_rows:
@@ -226,7 +274,32 @@ def _reports_view(
             st.info("No classification report found.")
     with right:
         st.subheader("Confusion matrix")
-        combined_image = (derived or {}).get("combined_confusion_matrix_image_path")
+        derived_conditions = (derived or {}).get("conditions", {})
+        selected_derived = None
+        if isinstance(derived_conditions, dict) and derived_conditions:
+            condition_names = sorted(derived_conditions)
+            preferred = str(run.get("train_condition") or "original")
+            selected_condition = st.selectbox(
+                "Prepared test condition",
+                condition_names,
+                index=(
+                    condition_names.index(preferred)
+                    if preferred in condition_names
+                    else 0
+                ),
+            )
+            selected_derived = derived_conditions[selected_condition]
+            condition_metrics = selected_derived.get("metrics", {})
+            st.caption(
+                "Condition relation: "
+                f"{selected_derived.get('condition_relation', 'unknown')}; "
+                "derived mean macro-F1: "
+                f"{condition_metrics.get('effective_mean_macro_f1', '—')}"
+            )
+        combined_image = (
+            (selected_derived or {}).get("combined_confusion_matrix_image_path")
+            or (derived or {}).get("combined_confusion_matrix_image_path")
+        )
         if combined_image:
             st.image(combined_image, caption="Prepared combined task confusion matrices")
         if matrices:
@@ -406,7 +479,9 @@ def _condition_matrix_view(
     st.caption(
         "matched = identical train/test condition; rgb_stress = original-trained "
         "checkpoint under a transformed test; cross_condition = transformed-trained "
-        "checkpoint under a different test condition."
+        "checkpoint under a different test condition. The separate logging "
+        "condition_relation labels original→original as original while this "
+        "scientific matrix contract retains evaluation_relation=matched."
     )
 
     pivot_models = sorted({str(row["model"]) for row in filtered})
@@ -527,11 +602,16 @@ def _run_detail(
     columns[3].metric("Model", _display_value(run.get("model")))
     st.write(
         {
+            "experiment_type": run.get("experiment_type"),
             "training_mode": run.get("training_mode"),
             "train_condition": run.get("train_condition"),
             "train_feature": run.get("train_feature"),
             "train_transform": run.get("train_transform"),
             "train_strength": run.get("train_strength"),
+            "train_condition_parameters": run.get(
+                "train_condition_parameters", {}
+            ),
+            "image_size": run.get("image_size"),
             "fixed_rgb_stress_evaluation": run.get("fixed_rgb_stress_evaluation"),
             "hyperparameters": run.get("hyperparameters", {}),
             "updated": datetime.fromtimestamp(run["updated_at"]).isoformat(timespec="seconds"),

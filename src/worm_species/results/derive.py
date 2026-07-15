@@ -22,9 +22,11 @@ from pathlib import Path
 from typing import Any, Iterable, Sequence
 
 from .discovery import discover_results_root
+from .normalization import canonical_condition_relation
+from .readers import load_csv_rows
 from .schemas import ArtifactRecord, RunRecord
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 SOURCE_LABEL_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
 TASK_ALIASES = {
     "genus": "genus",
@@ -156,6 +158,46 @@ def _artifact_task(artifact: ArtifactRecord, prefix: str, default: str | None) -
     return default
 
 
+def _matrix_artifact_condition(artifact: ArtifactRecord, category: str) -> str | None:
+    marker = f"condition_matrix/{category}/"
+    if not artifact.kind.startswith(marker):
+        return None
+    remainder = artifact.kind[len(marker) :]
+    condition, separator, _ = remainder.partition("/")
+    return condition if separator and condition else None
+
+
+def _condition_cache_directory(run_cache: Path, condition: str) -> Path:
+    digest = hashlib.sha256(condition.encode("utf-8")).hexdigest()[:16]
+    return run_cache / "conditions" / digest
+
+
+def _stored_condition_task_metrics(
+    run: RunRecord, warnings: list[dict[str, str]]
+) -> dict[str, dict[str, float]]:
+    artifact = run.artifact("condition_matrix/task_metrics.csv")
+    if artifact is None or not artifact.available:
+        return {}
+    try:
+        rows = load_csv_rows(artifact.path, max_rows=200_000)
+    except Exception as exc:
+        warnings.append(
+            _warning("malformed_condition_task_metrics", str(exc), artifact.path)
+        )
+        return {}
+    values: dict[str, dict[str, float]] = {}
+    for row in rows:
+        condition = row.get("test_condition")
+        task = row.get("task")
+        try:
+            metric = float(row.get("macro_f1", ""))
+        except (TypeError, ValueError):
+            continue
+        if condition and task and math.isfinite(metric) and 0 <= metric <= 1:
+            values.setdefault(str(condition), {})[str(task)] = metric
+    return values
+
+
 def _source_signature(run: RunRecord, artifacts: Sequence[ArtifactRecord]) -> str:
     records = [
         {
@@ -285,13 +327,30 @@ def _derive_run(
     cache_root: Path,
     *,
     should_render: bool,
-) -> tuple[dict[str, Any], bool]:
+) -> tuple[dict[str, Any], int]:
     warnings: list[dict[str, str]] = []
     configured_task = _configured_single_task(run)
     matrix_artifacts = run.iter_artifacts("confusion_matrix")
     report_artifacts = run.iter_artifacts("classification_report")
+    condition_matrix_artifacts = [
+        item
+        for item in run.artifacts
+        if item.kind.startswith("condition_matrix/confusion_matrix/")
+    ]
+    condition_report_artifacts = [
+        item
+        for item in run.artifacts
+        if item.kind.startswith("condition_matrix/classification_report/")
+    ]
+    condition_metric_artifacts = run.iter_artifacts(
+        "condition_matrix/task_metrics.csv"
+    )
     relevant_artifacts = sorted(
-        matrix_artifacts + report_artifacts,
+        matrix_artifacts
+        + report_artifacts
+        + condition_matrix_artifacts
+        + condition_report_artifacts
+        + condition_metric_artifacts,
         key=lambda item: (item.kind, item.relative_path),
     )
     signature = _source_signature(run, relevant_artifacts)
@@ -461,6 +520,207 @@ def _derive_run(
         matrices and image_path.is_file() and (render_needed or unchanged)
     )
 
+    root_condition = run.train_condition or "original"
+    condition_summaries: dict[str, dict[str, Any]] = {
+        root_condition: {
+            "test_condition": root_condition,
+            "condition_relation": canonical_condition_relation(
+                root_condition, root_condition
+            ),
+            "metrics": {
+                "effective_mean_macro_f1": (
+                    effective_mean if run_type == "multitask" else None
+                ),
+                "mean_macro_f1_source": (
+                    "test_metrics"
+                    if stored_mean is not None
+                    else "classification_reports"
+                    if fallback_mean is not None
+                    else None
+                ),
+                "macro_f1_by_task": display_task_f1,
+            },
+            "confusion_matrices": [
+                {
+                    "task": item.task,
+                    "source_path": item.path,
+                    "classes": list(item.classes),
+                    "shape": [
+                        len(item.counts),
+                        len(item.counts[0]) if item.counts else 0,
+                    ],
+                }
+                for item in matrices
+            ],
+            "combined_confusion_matrix_image": (
+                str(image_path.relative_to(cache_root)) if image_is_current else None
+            ),
+        }
+    }
+    stored_condition_metrics = _stored_condition_task_metrics(run, warnings)
+    reports_by_condition: dict[str, list[ArtifactRecord]] = {}
+    matrices_by_condition: dict[str, list[ArtifactRecord]] = {}
+    for artifact in condition_report_artifacts:
+        condition = _matrix_artifact_condition(artifact, "classification_report")
+        if condition:
+            reports_by_condition.setdefault(condition, []).append(artifact)
+    for artifact in condition_matrix_artifacts:
+        condition = _matrix_artifact_condition(artifact, "confusion_matrix")
+        if condition:
+            matrices_by_condition.setdefault(condition, []).append(artifact)
+
+    nested_conditions = sorted(
+        set(reports_by_condition)
+        | set(matrices_by_condition)
+        | set(stored_condition_metrics)
+    )
+    rendered_count = int(rendered)
+    expected_condition_tasks = tuple(dict.fromkeys(run.tasks)) or (
+        "genus",
+        "species",
+        "age",
+    )
+    expected_condition_task_set = set(expected_condition_tasks)
+    for condition in nested_conditions:
+        # The root scientific test remains the compatibility source for the
+        # matched condition even when the matrix evaluator saved a duplicate.
+        if condition == root_condition:
+            continue
+        condition_report_f1: dict[str, float] = {}
+        for artifact in reports_by_condition.get(condition, []):
+            task = _artifact_task(artifact, "classification_report", None)
+            if not artifact.available:
+                warnings.append(
+                    _warning(
+                        "unavailable_condition_report",
+                        f"Classification report is unavailable for {condition}",
+                        artifact.path,
+                    )
+                )
+                continue
+            if task is None:
+                warnings.append(
+                    _warning(
+                        "unknown_condition_report_task",
+                        f"Could not identify report task for {condition}",
+                        artifact.path,
+                    )
+                )
+                continue
+            try:
+                condition_report_f1[task] = _report_macro_f1(Path(artifact.path))
+            except (OSError, ValueError) as exc:
+                warnings.append(
+                    _warning("malformed_condition_report", str(exc), artifact.path)
+                )
+
+        condition_matrices: list[MatrixData] = []
+        for artifact in matrices_by_condition.get(condition, []):
+            task = _artifact_task(artifact, "confusion_matrix", None)
+            if not artifact.available:
+                warnings.append(
+                    _warning(
+                        "unavailable_condition_matrix",
+                        f"Confusion matrix is unavailable for {condition}",
+                        artifact.path,
+                    )
+                )
+                continue
+            if task is None:
+                warnings.append(
+                    _warning(
+                        "unknown_condition_matrix_task",
+                        f"Could not identify matrix task for {condition}",
+                        artifact.path,
+                    )
+                )
+                continue
+            try:
+                condition_matrices.append(_read_matrix(Path(artifact.path), task))
+            except (OSError, ValueError) as exc:
+                warnings.append(
+                    _warning("malformed_condition_matrix", str(exc), artifact.path)
+                )
+        condition_matrices.sort(
+            key=lambda item: (
+                {"genus": 0, "species": 1, "age": 2}.get(item.task, 99),
+                item.task,
+            )
+        )
+
+        condition_task_f1 = dict(condition_report_f1)
+        condition_task_f1.update(stored_condition_metrics.get(condition, {}))
+        complete_tasks = expected_condition_task_set.issubset(condition_task_f1)
+        condition_mean = (
+            sum(condition_task_f1[task] for task in expected_condition_tasks)
+            / len(expected_condition_tasks)
+            if expected_condition_tasks and complete_tasks
+            else None
+        )
+        if condition_task_f1 and not complete_tasks:
+            warnings.append(
+                _warning(
+                    "incomplete_condition_mean",
+                    f"Mean macro-F1 was not derived for {condition} because "
+                    "not all configured tasks are available",
+                )
+            )
+
+        condition_image = (
+            _condition_cache_directory(run_cache, condition)
+            / "confusion_matrices.png"
+        )
+        condition_render_needed = should_render and bool(condition_matrices)
+        if condition_render_needed and (
+            not unchanged or not condition_image.is_file()
+        ):
+            _render_matrices(
+                condition_image, condition_matrices, condition_task_f1
+            )
+            rendered_count += 1
+        condition_image_is_current = bool(
+            condition_matrices
+            and condition_image.is_file()
+            and (condition_render_needed or unchanged)
+        )
+        condition_summaries[condition] = {
+            "test_condition": condition,
+            "condition_relation": canonical_condition_relation(
+                root_condition, condition
+            ),
+            "metrics": {
+                "effective_mean_macro_f1": condition_mean,
+                "mean_macro_f1_source": (
+                    "condition_matrix_task_metrics"
+                    if complete_tasks
+                    and expected_condition_task_set.issubset(
+                        stored_condition_metrics.get(condition, {})
+                    )
+                    else "classification_reports"
+                    if complete_tasks
+                    else None
+                ),
+                "macro_f1_by_task": condition_task_f1,
+            },
+            "confusion_matrices": [
+                {
+                    "task": item.task,
+                    "source_path": item.path,
+                    "classes": list(item.classes),
+                    "shape": [
+                        len(item.counts),
+                        len(item.counts[0]) if item.counts else 0,
+                    ],
+                }
+                for item in condition_matrices
+            ],
+            "combined_confusion_matrix_image": (
+                str(condition_image.relative_to(cache_root))
+                if condition_image_is_current
+                else None
+            ),
+        }
+
     summary = {
         "schema_version": SCHEMA_VERSION,
         "source_label": source_label,
@@ -504,11 +764,12 @@ def _derive_run(
         "combined_confusion_matrix_image": (
             str(image_path.relative_to(cache_root)) if image_is_current else None
         ),
+        "conditions": condition_summaries,
         "warnings": warnings,
     }
     if previous != summary:
         _atomic_json(summary_path, summary)
-    return summary, rendered
+    return summary, rendered_count
 
 
 def derive_results(

@@ -7,15 +7,17 @@ from collections import Counter
 from typing import Any, Iterable
 
 from .data_loader import load_csv_rows, load_json
+from src.worm_species.results.normalization import canonical_condition_relation
+from src.worm_species.results.normalization import matrix_evaluation_relation
 
 
 RELATIONS = ("matched", "rgb_stress", "cross_condition")
+CONDITION_RELATIONS = ("original", "matched", "rgb_stress", "cross_condition")
 REQUIRED_COLUMNS = (
     "run_name",
     "model",
     "train_condition",
     "test_condition",
-    "evaluation_relation",
     "task",
     "macro_f1",
 )
@@ -37,9 +39,26 @@ def normalise_matrix_rows(
         if missing:
             warnings.append(f"row {index}: missing {missing}")
             continue
-        relation = str(row["evaluation_relation"])
+        relation_value = row.get("evaluation_relation")
+        if relation_value is None or str(relation_value).strip() == "":
+            relation_value = matrix_evaluation_relation(
+                row["train_condition"], row["test_condition"]
+            )
+            row["evaluation_relation"] = relation_value
+        relation = str(relation_value)
         if relation not in RELATIONS:
             warnings.append(f"row {index}: unknown relation {relation!r}")
+            continue
+        condition_relation = row.get("condition_relation")
+        if condition_relation is None or str(condition_relation).strip() == "":
+            condition_relation = canonical_condition_relation(
+                row["train_condition"], row["test_condition"]
+            )
+            row["condition_relation"] = condition_relation
+        if str(condition_relation) not in CONDITION_RELATIONS:
+            warnings.append(
+                f"row {index}: unknown condition relation {condition_relation!r}"
+            )
             continue
         try:
             macro_f1 = float(row["macro_f1"])
@@ -217,6 +236,7 @@ def load_matrix_completion_summary(
 
 
 __all__ = [
+    "CONDITION_RELATIONS",
     "RELATIONS",
     "filter_matrix_rows",
     "load_indexed_matrix_rows",

@@ -88,6 +88,12 @@ class TestDashboardMultiRoot(unittest.TestCase):
         self.assertEqual(single["schema_version"], "single_task_legacy")
         self.assertEqual(single["effective_macro_f1"], 0.65)
         self.assertEqual(single["effective_macro_f1_label"], "single-task macro-F1")
+        single_macro = next(
+            metric for metric in single["metrics"] if metric["metric"] == "macro_f1"
+        )
+        self.assertEqual(
+            single_macro["canonical_key"], "test/original/species_macro_f1"
+        )
         self.assertEqual(single["hyperparameters"]["epochs"], 12)
         self.assertEqual(single["hyperparameters"]["learning_rate"], 0.0003)
         multi = next(run for run in index["runs"] if run["source_label"] == "slurm")
@@ -106,7 +112,7 @@ class TestDashboardMultiRoot(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "outdated"):
             load_index(self.cache)
         refresh_indexes([SourceSpec("slurm", self.slurm, "slurm")], self.cache)
-        self.assertEqual(load_index(self.cache)["metadata"]["schema_version"], "2")
+        self.assertEqual(load_index(self.cache)["metadata"]["schema_version"], "3")
 
     def test_source_and_cache_validation(self) -> None:
         self.assertEqual(parse_source(f"single_task={self.single}").kind, "single_task")
@@ -121,7 +127,21 @@ class TestDashboardMultiRoot(unittest.TestCase):
     def test_derived_manifest_is_joined_safely(self) -> None:
         derived = self.root / "derived"
         summary = derived / "single_task" / "abc" / "summary.json"
-        _json(summary, {"schema_version": 1, "run_type": "single_task", "metrics": {}})
+        condition_image = summary.parent / "grayscale.png"
+        condition_image.parent.mkdir(parents=True, exist_ok=True)
+        condition_image.write_bytes(b"png")
+        _json(summary, {
+            "schema_version": 2,
+            "run_type": "single_task",
+            "metrics": {},
+            "conditions": {
+                "grayscale": {
+                    "combined_confusion_matrix_image": (
+                        "single_task/abc/grayscale.png"
+                    )
+                }
+            },
+        })
         _json(
             derived / "manifest.json",
             {
@@ -138,6 +158,12 @@ class TestDashboardMultiRoot(unittest.TestCase):
         records, warnings = load_derived_records(derived)
         self.assertEqual(warnings, [])
         self.assertEqual(records[("single_task", "abc")]["run_type"], "single_task")
+        self.assertEqual(
+            records[("single_task", "abc")]["conditions"]["grayscale"][
+                "combined_confusion_matrix_image_path"
+            ],
+            str(condition_image),
+        )
 
         _json(
             derived / "manifest.json",

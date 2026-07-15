@@ -13,7 +13,7 @@ from typing import Any, Iterable, Sequence
 from .data_loader import discover_results
 
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 
 @dataclass(frozen=True)
@@ -364,7 +364,7 @@ def load_derived_records(
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     except (OSError, ValueError, json.JSONDecodeError) as exc:
         return {}, [f"Could not read derived manifest: {exc}"]
-    if manifest.get("schema_version") != 1:
+    if manifest.get("schema_version") not in {1, 2}:
         return {}, [f"Unsupported derived manifest schema: {manifest.get('schema_version')!r}"]
     records: dict[tuple[str, str], dict[str, Any]] = {}
     for item in manifest.get("runs", []):
@@ -388,6 +388,22 @@ def load_derived_records(
                 summary["combined_confusion_matrix_image_path"] = (
                     str(image_path) if image_path.is_file() else None
                 )
+            conditions = summary.get("conditions", {})
+            if isinstance(conditions, dict):
+                for condition in conditions.values():
+                    if not isinstance(condition, dict):
+                        continue
+                    condition_relative = condition.get(
+                        "combined_confusion_matrix_image"
+                    )
+                    if not condition_relative:
+                        continue
+                    condition_path = _safe_cache_member(
+                        root, str(condition_relative)
+                    )
+                    condition["combined_confusion_matrix_image_path"] = (
+                        str(condition_path) if condition_path.is_file() else None
+                    )
             records[(label, uid)] = summary
         except (OSError, ValueError, json.JSONDecodeError) as exc:
             warnings.append(f"Could not read derived summary for {label}/{uid}: {exc}")

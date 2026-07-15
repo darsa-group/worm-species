@@ -22,6 +22,10 @@ from .readers import (
     load_json,
     load_text,
 )
+from .normalization import canonical_condition_relation
+from .normalization import experiment_type as resolved_experiment_type
+from .normalization import hyperparameter_facets
+from .normalization import training_condition_identity
 from .schemas import (
     ArtifactRecord,
     DiscoveryResult,
@@ -280,39 +284,9 @@ def _normalise_task_name(value: Any) -> str:
 
 
 def _hyperparameter_facets(config: dict[str, Any]) -> dict[str, Any]:
-    """Extract stable dashboard facets while retaining the full source config."""
+    """Compatibility wrapper retained for callers of the private old helper."""
 
-    weights = _nested(config, "multi_task", "loss_weights", default={})
-    if not isinstance(weights, dict):
-        weights = {}
-    return {
-        "epochs": _as_int(_nested(config, "training", "epochs")),
-        "batch_size": _as_int(_nested(config, "training", "batch_size")),
-        "learning_rate": _as_float(_nested(config, "training", "lr")),
-        "weight_decay": _as_float(_nested(config, "training", "weight_decay")),
-        "class_weight": _nested(config, "training", "class_weight"),
-        "use_amp": _nested(config, "training", "use_amp"),
-        "pretrained": _nested(config, "model", "pretrained"),
-        "freeze_backbone": _nested(config, "model", "freeze_backbone"),
-        "seed": _as_int(config.get("seed")),
-        "genus_loss_weight": _as_float(weights.get("genus")),
-        "species_loss_weight": _as_float(weights.get("species")),
-        "age_loss_weight": _as_float(weights.get("age")),
-        "hierarchy_loss_enabled": bool(
-            _nested(config, "multi_task", "hierarchy_loss", "enabled", default=False)
-        ),
-        "hierarchy_loss_weight": _as_float(
-            _nested(config, "multi_task", "hierarchy_loss", "weight")
-        ),
-        "wandb_enabled": bool(_nested(config, "wandb", "enabled", default=False)),
-        "early_stopping_enabled": bool(
-            _nested(config, "early_stopping", "enabled", default=False)
-        ),
-        "early_stopping_patience": _as_int(
-            _nested(config, "early_stopping", "patience")
-        ),
-        "colour_retention": _as_float(_nested(config, "data", "colour_retention")),
-    }
+    return hyperparameter_facets(config)
 
 
 def _as_float(value: Any) -> float | None:
@@ -330,7 +304,13 @@ def _as_int(value: Any) -> int | None:
     return int(result) if result is not None and result.is_integer() else None
 
 
-def _task_metrics(metrics: dict[str, Any], source: Path | None) -> list[MetricRecord]:
+def _task_metrics(
+    metrics: dict[str, Any],
+    source: Path | None,
+    *,
+    condition: str,
+    condition_relation: str,
+) -> list[MetricRecord]:
     records: list[MetricRecord] = []
     source_text = str(source) if source else None
     counts: dict[str, int] = {}
@@ -358,6 +338,11 @@ def _task_metrics(metrics: dict[str, Any], source: Path | None) -> list[MetricRe
                 value=numeric,
                 n=counts.get(task) if task else None,
                 source=source_text,
+                condition=condition,
+                condition_relation=condition_relation,
+                canonical_key=(
+                    f"test/{condition}/{task + '_' if task else ''}{metric}"
+                ),
             )
         )
     return records
@@ -625,8 +610,13 @@ def _build_run(
     input_condition = _nested(config, "input_condition", default={})
     if not isinstance(input_condition, dict):
         input_condition = {}
+    condition_identity = training_condition_identity(config, summary)
     condition_enabled = bool(input_condition.get("enabled"))
-    train_condition = summary.get("train_condition") or input_condition.get("condition")
+    train_condition = (
+        summary.get("train_condition")
+        or input_condition.get("name")
+        or input_condition.get("condition")
+    )
     train_feature = summary.get("train_feature") or input_condition.get("feature")
     train_transform = summary.get("train_transform") or input_condition.get("transform")
     train_strength = _as_float(summary.get("train_strength", input_condition.get("strength")))
@@ -638,7 +628,18 @@ def _build_run(
     )
     fixed_rgb_stress = bool(
         summary.get("cue_suppression_enabled")
+        or _nested(
+            config,
+            "evaluation",
+            "test_conditions",
+            "enabled",
+            default=False,
+        )
         or _nested(config, "test_cue_suppression", "enabled", default=False)
+    )
+    root_test_condition = str(train_condition or condition_identity["name"] or "original")
+    root_condition_relation = canonical_condition_relation(
+        root_test_condition, root_test_condition
     )
 
     if test_metrics and "mean_macro_f1" in test_metrics:
@@ -650,14 +651,24 @@ def _build_run(
     else:
         schema_version = "partial"
     metric_source = files.get("test_metrics.json")
-    metrics = _task_metrics(test_metrics, metric_source)
+    metrics = _task_metrics(
+        test_metrics,
+        metric_source,
+        condition=root_test_condition,
+        condition_relation=root_condition_relation,
+    )
     if schema_version == "single_task_legacy" and len(tasks) == 1:
         for metric_record in metrics:
             metric_record.task = tasks[0]
+            metric_record.canonical_key = (
+                f"test/{root_test_condition}/{tasks[0]}_{metric_record.metric}"
+            )
     if not metrics and summary:
         metrics = _task_metrics(
             {key[5:]: value for key, value in summary.items() if key.startswith("test_")},
             files.get("run_summary.json"),
+            condition=root_test_condition,
+            condition_relation=root_condition_relation,
         )
 
     mean_macro_f1 = _as_float(test_metrics.get("mean_macro_f1"))
@@ -714,10 +725,20 @@ def _build_run(
         signature=_artifact_signature(artifacts),
         raw_exit_status=raw_exit_status,
         terminal_metrics_present=terminal_metrics_present,
-        hyperparameters=_hyperparameter_facets(config),
+        hyperparameters=hyperparameter_facets(config, summary),
         effective_macro_f1=effective_macro_f1,
         effective_macro_f1_label=effective_macro_f1_label,
         epochs_ran=epochs_ran,
+        experiment_type=resolved_experiment_type(config),
+        image_size=_as_int(
+            _nested(
+                config,
+                "preprocessing",
+                "image_size",
+                default=_nested(config, "data", "image_size"),
+            )
+        ),
+        train_condition_parameters=condition_identity["parameters"],
     )
 
 

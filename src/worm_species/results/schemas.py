@@ -49,6 +49,9 @@ class MetricRecord:
     task: str | None = None
     n: int | None = None
     source: str | None = None
+    condition: str | None = None
+    condition_relation: str | None = None
+    canonical_key: str | None = None
 
 
 @dataclass(frozen=True)
@@ -99,6 +102,9 @@ class RunRecord:
     effective_macro_f1: float | None = None
     effective_macro_f1_label: str | None = None
     epochs_ran: int | None = None
+    experiment_type: str | None = None
+    image_size: int | None = None
+    train_condition_parameters: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         value = asdict(self)

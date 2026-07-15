@@ -254,6 +254,85 @@ class TestResultDerivation(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "requires"):
             derive_results([("slurm", results)], self.root / "cache", render="selected")
 
+    def test_condition_matrix_confusions_are_grouped_without_new_inference(self) -> None:
+        results = self.root / "outputs_slurm"
+        run = _make_multitask_run(results, self.root / "external")
+        matrix_root = run / "condition_matrix_evaluation"
+        task_rows = [
+            "test_condition,task,macro_f1",
+            "grayscale,genus,0.3",
+            "grayscale,species,0.6",
+            "grayscale,age,0.9",
+            "gaussian_sigma_2,genus,0.4",
+        ]
+        (matrix_root / "task_metrics.csv").parent.mkdir(parents=True, exist_ok=True)
+        (matrix_root / "task_metrics.csv").write_text(
+            "\n".join(task_rows) + "\n", encoding="utf-8"
+        )
+        for condition, tasks in (
+            ("grayscale", ("genus", "species", "age")),
+            ("gaussian_sigma_2", ("genus",)),
+        ):
+            for task in tasks:
+                _write_matrix(
+                    matrix_root
+                    / "confusion_matrices"
+                    / condition
+                    / f"confusion_matrix_{task}.csv",
+                    ["a", "b"],
+                    [[1, 0], [0, 1]],
+                )
+                _write_report(
+                    matrix_root
+                    / "classification_reports"
+                    / condition
+                    / f"classification_report_{task}.csv",
+                    0.5,
+                )
+        before = _tree_snapshot(results)
+
+        manifest = derive_results(
+            [("slurm", results)], self.root / "cache", render="none"
+        )
+
+        self.assertEqual(_tree_snapshot(results), before)
+        self.assertEqual(manifest["schema_version"], 2)
+        summary = json.loads(
+            (
+                self.root / "cache" / manifest["runs"][0]["summary"]
+            ).read_text(encoding="utf-8")
+        )
+        self.assertEqual(summary["schema_version"], 2)
+        self.assertEqual(
+            set(summary["conditions"]),
+            {"original", "grayscale", "gaussian_sigma_2"},
+        )
+        grayscale = summary["conditions"]["grayscale"]
+        self.assertEqual(grayscale["condition_relation"], "rgb_stress")
+        self.assertAlmostEqual(
+            grayscale["metrics"]["effective_mean_macro_f1"], 0.6
+        )
+        self.assertEqual(
+            grayscale["metrics"]["mean_macro_f1_source"],
+            "condition_matrix_task_metrics",
+        )
+        self.assertEqual(
+            [item["task"] for item in grayscale["confusion_matrices"]],
+            ["genus", "species", "age"],
+        )
+        self.assertIsNone(grayscale["combined_confusion_matrix_image"])
+        self.assertIsNone(
+            summary["conditions"]["gaussian_sigma_2"]["metrics"][
+                "effective_mean_macro_f1"
+            ]
+        )
+        self.assertTrue(
+            any(
+                warning["code"] == "incomplete_condition_mean"
+                for warning in summary["warnings"]
+            )
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
