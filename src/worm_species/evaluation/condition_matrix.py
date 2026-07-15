@@ -46,7 +46,23 @@ def resolve_condition_matrix_conditions(cfg: dict) -> list[dict[str, Any]]:
     do not control this independent evaluator.
     """
     evaluation = cfg.get("evaluation")
-    if isinstance(evaluation, dict) and "condition_matrix" in evaluation:
+    canonical_matrix = (
+        evaluation.get("condition_matrix", {}) or {}
+        if isinstance(evaluation, dict)
+        else {}
+    )
+    legacy_matrix = cfg.get("condition_matrix_evaluation", {}) or {}
+    use_canonical = (
+        isinstance(evaluation, dict)
+        and "condition_matrix" in evaluation
+        and not (
+            isinstance(canonical_matrix, dict)
+            and not canonical_matrix.get("conditions")
+            and isinstance(legacy_matrix, dict)
+            and bool(legacy_matrix.get("enabled", False))
+        )
+    )
+    if use_canonical:
         matrix = evaluation.get("condition_matrix", {}) or {}
         if not isinstance(matrix, dict):
             raise TypeError("evaluation.condition_matrix must be a mapping")
@@ -281,11 +297,19 @@ def evaluate_condition_matrix(
 ) -> dict[str, Any]:
     """Evaluate one selected checkpoint across the configured test matrix."""
     evaluation = cfg.get("evaluation", {}) or {}
-    matrix_cfg = (
+    canonical_matrix = (
         evaluation.get("condition_matrix", {}) or {}
-        if isinstance(evaluation, dict) and "condition_matrix" in evaluation
-        else cfg.get("condition_matrix_evaluation", {}) or {}
+        if isinstance(evaluation, dict)
+        else {}
     )
+    legacy_matrix = cfg.get("condition_matrix_evaluation", {}) or {}
+    matrix_cfg = canonical_matrix
+    if (
+        not canonical_matrix.get("conditions")
+        and isinstance(legacy_matrix, dict)
+        and bool(legacy_matrix.get("enabled", False))
+    ):
+        matrix_cfg = legacy_matrix
     if not bool(matrix_cfg.get("enabled", False)):
         return {"enabled": False, "n_conditions": 0, "n_task_rows": 0}
     if test_loader_context is None:

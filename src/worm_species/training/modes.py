@@ -54,13 +54,16 @@ def get_profile(name: str) -> TrainingProfile:
 
 
 def stress_evaluation_enabled(config: dict) -> bool:
+    legacy_enabled = bool(
+        (config.get("test_cue_suppression", {}) or {}).get("enabled", False)
+    )
     evaluation = config.get("evaluation", {}) or {}
     if isinstance(evaluation, dict) and "test_conditions" in evaluation:
         schedule = evaluation.get("test_conditions", {}) or {}
-        return isinstance(schedule, dict) and bool(schedule.get("enabled", False))
-    return bool(
-        (config.get("test_cue_suppression", {}) or {}).get("enabled", False)
-    )
+        return legacy_enabled or (
+            isinstance(schedule, dict) and bool(schedule.get("enabled", False))
+        )
+    return legacy_enabled
 
 
 def infer_experiment_type(config: dict) -> str:

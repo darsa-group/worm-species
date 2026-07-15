@@ -462,21 +462,49 @@ def _normalize_legacy_aliases(config: dict[str, Any]) -> NormalizationResult:
     evaluation = normalized.get("evaluation", {}) or {}
     if not isinstance(evaluation, dict):
         raise ConfigNormalizationError("evaluation must be a mapping")
-    if cue is not None and "test_conditions" not in evaluation:
-        test_conditions = {
-            "enabled": bool(cue_mapping.get("enabled", False)),
-            "conditions": copy.deepcopy(catalogue),
-        }
-        if isinstance(matched, Mapping):
-            test_conditions["evaluate_original_training"] = bool(
-                matched.get("evaluate_original_model_on_all_test_conditions", True)
+    if cue is not None:
+        legacy_enabled = bool(cue_mapping.get("enabled", False))
+        legacy_evaluate_original = bool(
+            isinstance(matched, Mapping)
+            and matched.get("enabled", False)
+            and matched.get(
+                "evaluate_original_model_on_all_test_conditions", True
             )
-        evaluation["test_conditions"] = test_conditions
+        )
+        existing_test = evaluation.get("test_conditions")
+        if not isinstance(existing_test, dict):
+            existing_test = {}
+        if "test_conditions" not in evaluation or (
+            not existing_test.get("conditions")
+            and (legacy_enabled or legacy_evaluate_original)
+        ):
+            existing_test = {
+                "enabled": legacy_enabled,
+                "conditions": copy.deepcopy(catalogue),
+                "evaluate_original_training": legacy_evaluate_original,
+            }
+            evaluation["test_conditions"] = existing_test
+        else:
+            if legacy_enabled:
+                existing_test["enabled"] = True
+            if legacy_evaluate_original:
+                existing_test["evaluate_original_training"] = True
 
     matrix = normalized.pop("condition_matrix_evaluation", None)
     if matrix is not None:
         warnings.append(_warning("condition_matrix_evaluation.*", "evaluation.condition_matrix"))
-    if isinstance(matrix, Mapping) and "condition_matrix" not in evaluation:
+    existing_matrix = evaluation.get("condition_matrix")
+    legacy_matrix_enabled = bool(
+        isinstance(matrix, Mapping) and matrix.get("enabled", False)
+    )
+    if isinstance(matrix, Mapping) and (
+        "condition_matrix" not in evaluation
+        or (
+            isinstance(existing_matrix, dict)
+            and not existing_matrix.get("conditions")
+            and legacy_matrix_enabled
+        )
+    ):
         requested = matrix.get("condition_names", [])
         by_name = {
             item["name"]: item

@@ -431,11 +431,19 @@ def run_one(cfg: dict, profile: TrainingProfile) -> dict:
 
     condition_matrix = {"enabled": False, "n_conditions": 0, "n_task_rows": 0}
     evaluation = cfg.get("evaluation", {}) or {}
-    matrix_cfg = (
+    canonical_matrix = (
         evaluation.get("condition_matrix", {}) or {}
-        if isinstance(evaluation, dict) and "condition_matrix" in evaluation
-        else cfg.get("condition_matrix_evaluation", {}) or {}
+        if isinstance(evaluation, dict)
+        else {}
     )
+    legacy_matrix = cfg.get("condition_matrix_evaluation", {}) or {}
+    matrix_cfg = canonical_matrix
+    if (
+        not canonical_matrix.get("conditions")
+        and isinstance(legacy_matrix, dict)
+        and bool(legacy_matrix.get("enabled", False))
+    ):
+        matrix_cfg = legacy_matrix
     if bool(matrix_cfg.get("enabled", False)):
         condition_matrix = evaluate_condition_matrix(
             cfg=cfg,

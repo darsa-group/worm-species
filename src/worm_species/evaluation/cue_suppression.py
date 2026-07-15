@@ -70,6 +70,13 @@ def _canonical_test_conditions(cfg: dict) -> list[dict] | None:
     if not isinstance(schedule, dict):
         raise TypeError("evaluation.test_conditions must be a mapping")
     if not bool(schedule.get("enabled", False)):
+        legacy = cfg.get("test_cue_suppression", {}) or {}
+        if (
+            not schedule.get("conditions")
+            and isinstance(legacy, dict)
+            and bool(legacy.get("enabled", False))
+        ):
+            return None
         return []
 
     configured = schedule.get("conditions", [])
