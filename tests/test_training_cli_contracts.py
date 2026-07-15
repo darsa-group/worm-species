@@ -3,13 +3,11 @@ from __future__ import annotations
 import argparse
 import copy
 import contextlib
-import importlib
 import io
 import json
 import tempfile
 import unittest
 from pathlib import Path
-from unittest import mock
 
 import yaml
 import pandas as pd
@@ -163,19 +161,6 @@ class CanonicalTrainingCliContracts(unittest.TestCase):
 
             with self.assertRaisesRegex(ValueError, "Fixed-RGB stress"):
                 resolve_plan(str(config_path), [], [], None)
-
-    def test_legacy_wrappers_select_their_explicit_profiles(self) -> None:
-        for module_name, expected_profile in LEGACY_PROFILES.items():
-            root_module = importlib.import_module(module_name)
-            implementation = importlib.import_module(
-                f"scripts.training.{module_name}"
-            )
-            self.assertEqual(implementation.PROFILE.name, expected_profile)
-            with mock.patch.object(
-                implementation, "legacy_main", return_value=expected_profile
-            ) as canonical:
-                self.assertEqual(root_module.main(), expected_profile)
-                canonical.assert_called_once_with(expected_profile)
 
     def test_every_profile_dry_run_resolves_once_without_writing(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_dir:

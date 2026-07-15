@@ -1,1 +1,0 @@
-scripts/slurm/run_persistent_cache_sweep_wandb.sh

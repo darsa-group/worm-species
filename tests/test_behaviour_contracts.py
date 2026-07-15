@@ -4,7 +4,6 @@ import ast
 import json
 import math
 import subprocess
-import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -17,33 +16,31 @@ from PIL import Image
 from torch import nn
 from torch.utils.data import DataLoader, Dataset
 
-import collect_dual_cue_results
-import generate_dual_cue_run_specs
-import train_multitask_masked_hloss as hierarchy_trainer
+from src.worm_species.config.sweeps import generate_sweep_configs
 from src.worm_species.data.conditions import (
     build_condition_transform,
     build_test_condition_transform,
 )
 from src.worm_species.data.labels import (
     MISSING_LABEL,
+    build_label_maps,
     is_missing_label,
 )
 from src.worm_species.data.transforms import ColourRetention
+from src.worm_species.experiments import conditions as generate_dual_cue_run_specs
+from src.worm_species.experiments import result_collection as collect_dual_cue_results
+from src.worm_species.experiments.run_specs import write_run_specs
 from src.utils import apply_overrides, make_run_name, parse_scalar, short_hash
 from src.worm_species.data.labels import read_csvs_from_dir
 from src.worm_species.models.multitask import MultiTaskClassifier
 from src.worm_species.training.checkpoints import checkpoint_keys
+from src.worm_species.training.epochs import run_hierarchy_epoch
+from src.worm_species.training.losses import build_child_to_parent_matrix
+from src.worm_species.training.losses import hierarchy_consistency_loss
 from src.worm_species.training.modes import get_profile
 
 
 ROOT = Path(__file__).resolve().parents[1]
-TRAINERS = [
-    "train_multitask_masked.py",
-    "train_multitask_masked_hloss.py",
-    "train_multitask_masked_hloss_wandb.py",
-    "train_multitask_colour_ablation.py",
-    "train_multitask_cue_suppression.py",
-]
 ORDINARY_CHECKPOINT_KEYS = {
     "model_state",
     "cfg",
@@ -133,7 +130,7 @@ class ConfigAndSweepContracts(unittest.TestCase):
                 "parameters": {"model.name": ["a", "b"], "training.lr": [0.1, 0.2]},
             },
         }
-        expanded = hierarchy_trainer.generate_sweep_configs(config)
+        expanded = generate_sweep_configs(config)
         self.assertEqual(len(expanded), 4)
         self.assertEqual(
             [(item["model"]["name"], item["training"]["lr"]) for item in expanded],
@@ -186,23 +183,16 @@ class ConditionContracts(unittest.TestCase):
                 specs = root / "specs"
                 plan = root / "sweep_plan.tsv"
                 config_path.write_text(yaml.safe_dump(self.minimal_config(models)))
-                result = subprocess.run(
-                    [sys.executable, str(ROOT / "generate_dual_cue_run_specs.py"), str(config_path), str(specs), str(plan)],
-                    cwd=ROOT,
-                    check=True,
-                    capture_output=True,
-                    text=True,
-                )
                 expected = len(models) * 3
-                self.assertEqual(int(result.stdout.strip()), expected)
+                self.assertEqual(
+                    write_run_specs(config_path, specs, plan),
+                    expected,
+                )
                 self.assertEqual(len(list(specs.glob("run_*.args"))), expected)
                 for spec in specs.glob("run_*.args"):
                     text = spec.read_text()
                     self.assertIn("matched_condition_training.enabled=false", text)
                 self.assertEqual(len(plan.read_text().splitlines()), expected + 1)
-
-        for launcher in ("submit_dual_cue_experiment.sh", "submit_dual_cue_experiment_genome.sh"):
-            self.assertIn("sweep.enabled=false", (ROOT / launcher).read_text())
 
 
 class TransformAndLabelContracts(unittest.TestCase):
@@ -256,7 +246,7 @@ class TransformAndLabelContracts(unittest.TestCase):
                 "species": ["Lumbricus_rubellus", None, "Lumbricus_terrestris"],
             }
         )
-        label_maps, inverse_maps = hierarchy_trainer.build_label_maps(
+        label_maps, inverse_maps = build_label_maps(
             frame, {"genus": "genus", "species": "species"}
         )
         self.assertEqual(label_maps["genus"], {"Aporrectodea": 0, "Lumbricus": 1})
@@ -295,7 +285,7 @@ class LossMetricAndCheckpointContracts(unittest.TestCase):
         )
 
     def test_hierarchy_mapping_and_zero_consistency_loss(self) -> None:
-        mapping = hierarchy_trainer.build_child_to_parent_matrix(
+        mapping = build_child_to_parent_matrix(
             {
                 "genus": {"Aporrectodea": 0, "Lumbricus": 1},
                 "species": {"Aporrectodea_rosea": 0, "Lumbricus_rubellus": 1},
@@ -306,14 +296,14 @@ class LossMetricAndCheckpointContracts(unittest.TestCase):
         )
         self.assertTrue(torch.equal(mapping, torch.eye(2)))
         logits = torch.tensor([[3.0, 1.0], [1.0, 3.0]])
-        loss = hierarchy_trainer.hierarchy_consistency_loss(
+        loss = hierarchy_consistency_loss(
             logits, logits, mapping, torch.tensor([True, True])
         )
         self.assertIsNotNone(loss)
         self.assertTrue(math.isclose(float(loss), 0.0, abs_tol=1e-7))
 
     def test_metric_keys_and_macro_f1(self) -> None:
-        metrics, true, predicted = hierarchy_trainer.run_epoch(
+        metrics, true, predicted = run_hierarchy_epoch(
             model=FixedModel(),
             loader=DataLoader(FixedDataset(), batch_size=4),
             criteria={"genus": nn.CrossEntropyLoss(), "species": nn.CrossEntropyLoss()},
@@ -369,20 +359,6 @@ class CollectionAndInterfaceContracts(unittest.TestCase):
         self.assertEqual(len(comparison), 1)
         self.assertAlmostEqual(comparison.loc[0, "adaptation_gain_macro_f1"], 0.1)
         self.assertEqual(comparison.loc[0, "train_condition"], "original")
-
-    def test_legacy_cli_help_flags(self) -> None:
-        for script in TRAINERS:
-            result = subprocess.run(
-                [sys.executable, str(ROOT / script), "--help"],
-                cwd=ROOT,
-                check=True,
-                capture_output=True,
-                text=True,
-                env={"PYTHONDONTWRITEBYTECODE": "1"},
-            )
-            self.assertIn("--config CONFIG", result.stdout)
-            self.assertIn("--override [OVERRIDE ...]", result.stdout)
-            self.assertIn("--sweep [SWEEP ...]", result.stdout)
 
     def test_shell_syntax(self) -> None:
         scripts = [

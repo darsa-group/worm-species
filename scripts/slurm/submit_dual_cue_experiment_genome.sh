@@ -1,1 +1,0 @@
-../../legacy/slurm/submit_dual_cue_experiment_genome.sh

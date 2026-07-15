@@ -1,1 +1,0 @@
-../../legacy/slurm/02_submit_sweep_cache_to_tmp_resolved.sh

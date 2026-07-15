@@ -1,1 +1,0 @@
-../../legacy/slurm/submit_worm_node_local_scratch_sweep_hloss.sh

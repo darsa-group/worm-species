@@ -1,1 +1,0 @@
-scripts/slurm/submit_worm_node_local_scratch_sweep.sh

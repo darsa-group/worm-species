@@ -1,1 +1,0 @@
-scripts/slurm/submit_colour_ablation_sweep.sh

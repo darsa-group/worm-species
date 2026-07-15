@@ -1,43 +1,57 @@
-# Legacy compatibility archive
+# Legacy archive
 
-This directory contains historical implementations that are no longer the
-preferred development surface but must remain available for reproducibility and
-existing user workflows. Nothing here should be selected by new launchers.
+This directory stores historical implementations and compatibility adapters
+outside the active source and command surface. New code must use the canonical
+modules under `src/worm_species/`, `train.py`, the SLURM module, or the Make
+targets.
 
-## Layout and compatibility paths
+Historical paths are intentionally absent. They can be recreated explicitly:
 
-| Archived implementation | Preserved public path | Preferred replacement |
-| --- | --- | --- |
-| `slurm/01_build_persistent_cache_resolved.sh` | `scripts/slurm/01_build_persistent_cache_resolved.sh` and root alias | canonical cache maintenance is still deferred; retain this launcher when its exact cache contract is required |
-| `slurm/02_submit_sweep_cache_to_tmp_resolved.sh` | matching `scripts/slurm/` and root aliases | `make submit` with an experiment and cluster profile |
-| `slurm/run_persistent_cache_sweep_wandb.sh` | matching `scripts/slurm/` and root aliases | `make submit` with resolved W&B configuration |
-| `slurm/submit_colour_ablation_sweep.sh` | matching `scripts/slurm/` and root aliases | `make submit CONFIG=configs/experiments/colour_ablation.yaml` |
-| `slurm/submit_dual_cue_experiment.sh` | matching `scripts/slurm/` and root aliases | `make submit CONFIG=configs/experiments/dual_cue.yaml CLUSTER=configs/clusters/ghpc.yaml` |
-| `slurm/submit_dual_cue_experiment_genome.sh` | matching `scripts/slurm/` and root aliases | `make submit CONFIG=configs/experiments/dual_cue.yaml CLUSTER=configs/clusters/genome.yaml` |
-| `slurm/submit_worm_node_local_scratch_sweep.sh` | matching `scripts/slurm/` and root aliases | canonical standard experiment with the GHPC cluster profile |
-| `slurm/submit_worm_node_local_scratch_sweep_hloss.sh` | matching `scripts/slurm/` and root aliases | canonical standard experiment with the `masked_hloss` training profile |
-| `configs/config_old.yaml` | `configs/config_old.yaml` and root `config_old.yaml` | `config.yaml` plus `configs/experiments/` and `configs/clusters/` |
-| `python/experiments/generate_sweep_run_specs.py` | `src/generate_sweep_run_specs.py` | `worm_species.slurm.planning` for new submission plans |
+```bash
+legacy/restore_compatibility.sh --dry-run
+legacy/restore_compatibility.sh
+```
 
-The shell and configuration compatibility paths are relative symlinks. The old
-ordinary sweep generator remains a thin Python wrapper because its historical
-module and command-line imports are public. These mechanisms preserve old paths
-without keeping substantial deprecated bodies in active source directories.
+Use `--root PATH` to restore into another checkout. Restoration preflights the
+complete manifest and refuses to overwrite any different file or link. An
+already restored, byte-identical tree is accepted, making the command
+idempotent. There is deliberately no force option.
 
-## Intentionally not archived
+## Archive layout
 
-- Root training, run-spec, and collection files are required thin compatibility
-  wrappers.
-- `scripts/training/` and the dual-cue collection wrapper expose tested public
-  helper imports even though their scientific implementations are canonical.
-- `src/dataset.py`, `src/cache.py`, `src/splits.py`, and `src/utils.py` still
-  support notebooks, cache construction, or canonical training.
-- `src/download_pretrained_from_config.py`, transfer scripts, and the archive
-  utility provide unique active maintenance behavior with no replacement.
-- Notebooks, split files, datasets, checkpoints, `single_task/outputs/`, and
-  `outputs_slurm/` are scientific inputs, provenance, or results—not legacy
-  source cleanup candidates.
+- `compatibility/root/`: former root Python commands.
+- `compatibility/scripts/`: former Python entry points below `scripts/`.
+- `compatibility/src/`: historical `src.*` import and generator adapters.
+- `slurm/`: exact historical SLURM launcher bodies.
+- `configs/config_old.yaml`: the previous configuration body.
+- `python/experiments/generate_sweep_run_specs.py`: the exact ordinary sweep
+  generator retained for provenance.
+- `compatibility.map`: tab-separated active path, archive source, restoration type,
+  mode, hash, and canonical replacement for every restorable path.
 
-The exact operational differences that prevent replacing historical SLURM
-launchers with canonical wrappers are documented in
-`docs/refactor/LEGACY_SLURM_COMPATIBILITY_AUDIT.md`.
+Python adapters are restored as regular files so their `__file__` and package
+behavior match the historical commands. SLURM and old-configuration aliases are
+restored as their former relative symlinks.
+
+## Preferred replacements
+
+| Historical surface | Preferred replacement |
+| --- | --- |
+| `train_multitask_*.py` | `python train.py --config config.yaml` or `python -m worm_species.training` with explicit configuration switches |
+| dual-cue and ordinary run-spec generators | `python -m worm_species.slurm dry-run` |
+| dual-cue collector | `python -m worm_species.slurm collect` |
+| historical submission scripts | `make submit` or `python -m worm_species.slurm submit` with experiment and cluster configuration |
+| `config_old.yaml` | `config.yaml`, `configs/experiments/`, and `configs/clusters/` |
+| `src.dataset_multitask` | responsibility-specific modules under `worm_species.data` |
+| `src.models` | `worm_species.models` |
+
+## Not legacy
+
+Notebooks are scientific analysis code, not legacy files. The following also
+remain outside this archive: split files, datasets, checkpoints,
+`single_task/outputs/`, `outputs_slurm/`, figures, tables, logs, active transfer
+scripts, the archive utility, `src/dataset.py`, `src/cache.py`, `src/splits.py`,
+and `src/utils.py`.
+
+The historical operational differences of the archived SLURM launchers are
+documented in `docs/refactor/LEGACY_SLURM_COMPATIBILITY_AUDIT.md`.
