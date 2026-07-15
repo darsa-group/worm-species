@@ -1,231 +1,274 @@
 # Worm species classification
 
-Multi-task earthworm image classification with genus, species, and life-stage
-heads. The repository supports ordinary training, hierarchy consistency,
-matched colour/cue training, fixed-RGB cue stress evaluation, local sweeps, and
-two cluster-specific SLURM workflows.
+Multitask earthworm image classification for genus, species, and life stage.
+The active repository has one canonical trainer, configuration-driven
+experiment planning, one SLURM interface, and a read-only results dashboard.
 
-## Environment
+## Setup
 
 ```bash
 conda env create -f configs/environment.yaml
 conda activate wormspecies
 ```
 
-PyTorch, torchvision, and optional W&B support must be present in the runtime
-environment. `config.yaml` contains the current data, split, training, cue,
-W&B, cache, and sweep settings.
+Run commands from the repository root. The package uses a `src/` layout, so
+direct module commands below set `PYTHONPATH=src`; the Make targets do this for
+you.
 
-## Canonical training
-
-Use the single canonical trainer for new work:
+## Quick start
 
 ```bash
-python train.py --config config.yaml
+# Validate the safe one-run configuration.
+PYTHONPATH=src python -m worm_species.config.validate \
+  --config config.yaml --workflow training
 
-# Resolve and validate without loading data or training.
-python train.py --config config.yaml --dry-run
-python train.py --config config.yaml --print-resolved-config
+# Inspect the resolved values without loading data or training.
+PYTHONPATH=src python -m worm_species.config.inspect \
+  --config config.yaml --workflow training --format yaml
 
-# Run one externally assigned condition. This can never expand a sweep.
-python train.py --config config.yaml --profile cue_suppression \
-  --single-run --override \
-  model.name=convnext_base \
-  sweep.enabled=false \
-  matched_condition_training.enabled=false \
-  input_condition.enabled=true \
-  input_condition.condition=gaussian_blur_sigma_2 \
-  input_condition.feature=texture \
-  input_condition.transform=gaussian_blur \
-  input_condition.sigma=2.0 \
-  test_cue_suppression.enabled=false
-```
+# Show the canonical trainer selection and output path.
+PYTHONPATH=src python -m worm_species.training \
+  --config config.yaml --dry-run --single-run
 
-The package form is also supported when `src/` is importable:
-
-```bash
-PYTHONPATH=src python -m worm_species.training --config config.yaml --dry-run
-```
-
-Training profiles resolve historical defaults into an explicit configuration.
-The available profiles are `masked`, `masked_hloss`,
-`masked_hloss_wandb`, `colour_ablation`, and `cue_suppression`. A submitted run
-specification must use `--single-run`; one specification then means one trainer
-invocation and one model fit.
-
-The historical entry points remain thin compatibility wrappers:
-
-| Historical path | Canonical profile |
-| --- | --- |
-| `train_multitask_masked.py` | `masked` |
-| `train_multitask_masked_hloss.py` | `masked_hloss` |
-| `train_multitask_masked_hloss_wandb.py` | `masked_hloss_wandb` |
-| `train_multitask_colour_ablation.py` | `colour_ablation` |
-| `train_multitask_cue_suppression.py` | `cue_suppression` |
-
-Their paths, flags, help text, exit behaviour, output layout, checkpoint schema,
-metrics, and W&B fields are retained for existing local and cluster workflows.
-
-All accept the existing dotted overrides and optional internal sweep syntax:
-
-```bash
-python train.py --profile masked_hloss \
-  --config config.yaml \
-  --override training.epochs=5 model.pretrained=false
-
-python train.py --profile masked_hloss \
-  --config config.yaml \
-  --sweep model.name=resnet18,vit_b_16 training.lr=0.0005,0.0001
-```
-
-Do not use `--sweep` for generated run specifications. Configuration validation
-rejects external and internal expansion of the same condition.
-
-## Configuration validation
-
-Configuration remains dictionary-based and accepts the existing dotted
-overrides. Validate or inspect it without checking cluster-only data paths:
-
-```bash
-PYTHONPATH=src python -m worm_species.config.validate --config config.yaml
-PYTHONPATH=src python -m worm_species.config.inspect --config config.yaml
-```
-
-Add `--check-paths` only on a machine where the configured data and split paths
-should exist. Experiment profiles live under `configs/experiments/`; machine
-resources live separately under `configs/clusters/`.
-
-## Matched conditions versus fixed-RGB stress testing
-
-These are intentionally separate scientific workflows:
-
-- matched-condition training applies one deterministic condition to train,
-  validation, and test and trains a separate model;
-- the fixed-RGB stress battery keeps the selected original model checkpoint
-  fixed and evaluates deterministic transformed versions of its test split.
-
-`generate_dual_cue_run_specs.py` deduplicates RGB/saturation-100% and
-grayscale/saturation-0% endpoints. Generated specs disable internal matched
-expansion, and SLURM launchers pass `sweep.enabled=false`, so each array task
-trains exactly one intended configuration.
-
-```bash
-python generate_dual_cue_run_specs.py \
-  config.yaml /tmp/worm_run_specs /tmp/worm_sweep_plan.tsv
-
-python collect_dual_cue_results.py RESULTS_ROOT
-```
-
-There is currently no independent root CLI for applying an arbitrary existing
-checkpoint to a new dataset. Existing checkpoints are consumed by the analysis
-notebooks, while the cue trainer reloads its selected `best_model.pt` before
-the configured fixed-RGB stress battery. This limitation is documented rather
-than hidden behind a new unvalidated interface.
-
-## Canonical SLURM workflow
-
-The preferred interface is deliberately small:
-
-```bash
-make validate
-make inspect
-make dry-run
+# Train exactly one model.
 make train
-make submit
+```
+
+`config.yaml` is intentionally compact and safe. It inherits detailed defaults
+from `configs/defaults/base.yaml`. Scientific variants are child files beneath
+`configs/experiments/`; cluster resources and machine paths live independently
+beneath `configs/clusters/`.
+
+See [configs/README.md](configs/README.md) for the file map and
+[docs/configuration.md](docs/configuration.md) for every important key,
+constraint, transform, and worked example.
+
+## One trainer, explicit switches
+
+The preferred command is:
+
+```bash
+PYTHONPATH=src python -m worm_species.training \
+  --config config.yaml --single-run
+```
+
+`train.py` is a convenience entry point for the same implementation:
+
+```bash
+python train.py --config config.yaml --single-run
+```
+
+Behavior is selected by ordinary configuration values, not script profiles:
+
+```yaml
+training:
+  use_masked_labels: true
+
+multi_task:
+  hierarchy_loss:
+    enabled: true
+
+wandb:
+  enabled: false
+
+input_condition:
+  enabled: false
+
+test_cue_suppression:
+  enabled: false
+
+condition_matrix_evaluation:
+  enabled: false
+```
+
+Useful checks:
+
+```bash
+python train.py --config config.yaml --print-resolved-config
+python train.py --config config.yaml --dry-run --single-run
+```
+
+The dry run reports the model, tasks, loss weights, hierarchy and W&B switches,
+assigned training condition, post-training evaluations, output path, and
+internal training count. A resolved submitted task must always report one
+internal training run.
+
+For one assigned condition:
+
+```bash
+PYTHONPATH=src python -m worm_species.training \
+  --config config.yaml --single-run --override \
+    model.name=convnext_base \
+    input_condition.enabled=true \
+    input_condition.condition=gaussian_sigma_2 \
+    input_condition.feature=texture \
+    input_condition.transform=gaussian_blur \
+    input_condition.strength=2.0 \
+    sweep.enabled=false \
+    colour_ablation.enabled=false \
+    matched_condition_training.enabled=false
+```
+
+Training-time conditions, original-RGB transformed-test stress evaluation, and
+post-training condition matrices are separate paths. The trainer never expands
+an externally assigned sweep.
+
+## Experiments
+
+The supplied plans are validation contracts:
+
+| Configuration | Training processes | Evaluation behavior |
+| --- | ---: | --- |
+| `config.yaml` | 1 | Safe original-RGB baseline |
+| `configs/experiments/standard.yaml` | 2 | Two-model standard sweep |
+| `configs/experiments/hierarchy.yaml` | 2 | Hierarchy consistency enabled |
+| `configs/experiments/dual_cue.yaml` | 224 | 112 conditions × two models; RGB stress only for original-trained checkpoints |
+| `configs/experiments/colour_ablation.yaml` | 202 | Two models × 101 endpoint-inclusive colour values |
+| `configs/experiments/patch_shuffle_matrix.yaml` | 12 | Four pretrained models × three train conditions; 36 train/test evaluation cells |
+| `configs/experiments/persistent_hierarchy.yaml` | 2 | Persistent-cache hierarchy workflow |
+
+The patch plan trains on original RGB, 2×2 patch shuffle, and 4×4 patch
+shuffle, then evaluates every trained checkpoint on all three test conditions.
+That is 12 fits and 36 evaluation cells, not 36 fits.
+
+## Make and SLURM
+
+```bash
+make help
+make validate EXPERIMENT=standard
+make inspect EXPERIMENT=patch_shuffle_matrix
+make dry-run EXPERIMENT=dual_cue \
+  CLUSTER=configs/clusters/genome.yaml
+make submit EXPERIMENT=dual_cue \
+  CLUSTER=configs/clusters/genome.yaml
 make status RESULTS_ROOT=outputs_slurm/EXPERIMENT
 make collect RESULTS_ROOT=outputs_slurm/EXPERIMENT
-make dashboard RESULTS_ROOT=outputs_slurm
-make test
 ```
 
-Variables become explicit CLI overrides; configuration files are never edited in
-place:
+The Makefile is only orchestration. Planning, validation, rendering,
+collection, and submission live in `worm_species.slurm`.
 
-```bash
-make dry-run \
-  CONFIG=configs/experiments/dual_cue.yaml \
-  CLUSTER=configs/clusters/genome.yaml \
-  ARTIFACTS_DIR=/tmp/worm-dual-cue-plan
-
-make submit \
-  CONFIG=configs/experiments/dual_cue.yaml \
-  CLUSTER=configs/clusters/genome.yaml \
-  MAX_ACTIVE=4
-```
-
-A dry run writes resolved configuration, run specifications, a submission plan,
-rendered scripts, checksums, and the dependency graph, but never calls `sbatch`.
-The equivalent direct command is:
+Direct dry run:
 
 ```bash
 PYTHONPATH=src python -m worm_species.slurm launch --dry-run \
   --config configs/experiments/dual_cue.yaml \
   --cluster-config configs/clusters/genome.yaml \
-  --artifacts-dir /tmp/worm-dual-cue-plan
+  --artifacts-dir slurm/generated/dual-cue-check
 ```
 
-`status` combines filesystem evidence with `squeue`/`sacct` when available and
-falls back to filesystem-only reporting elsewhere. `collect` currently delegates
-exactly to the schema-stable dual-cue collector; standard and colour-ablation
-collection continue to use their historical collectors until exact adapters are
-validated.
+Direct submission replaces `--dry-run` with `--submit`. A dry run never calls
+`sbatch`.
 
-Historical SLURM filenames remain available. They are retained as compatibility
-entry points where environment-variable, cache-building, or profiling semantics
-are not yet fully represented by the canonical planner. Review account,
-partition, Conda, data, scratch, and W&B settings before a real submission.
-Their byte-preserved implementations now live under `legacy/slurm/`; the root
-and `scripts/slurm/` paths remain compatible symlinks. The historical
-`config_old.yaml` and ordinary sweep generator are archived similarly under
-`legacy/configs/` and `legacy/python/`. See `legacy/README.md` for the complete
-mapping and for the active files intentionally kept outside the archive.
-
-## Results dashboard
-
-The dashboard discovers old, new, partial, malformed, and nested runs without
-modifying `outputs_slurm/` or loading checkpoints:
+GHPC node-local plans require an explicit node list and unique scratch root;
+missing or ambiguous values fail before rendering:
 
 ```bash
-streamlit run dashboard/app.py -- --results-root outputs_slurm
-# or
-make dashboard RESULTS_ROOT=outputs_slurm
+PYTHONPATH=src python -m worm_species.slurm launch --dry-run \
+  --config configs/experiments/ghpc_dual_cue.yaml \
+  --cluster-config configs/clusters/ghpc.yaml \
+  --override 'slurm.scratch.nodes=[gpu001,gpu002]' \
+  --artifacts-dir slurm/generated/ghpc-dual-check
 ```
 
-Its SQLite index is stored outside the scientific result tree and invalidated by
-path, size, and modification time. Missing or malformed artifacts become visible
-warnings rather than fatal errors.
+Use `configs/experiments/ghpc_colour_ablation.yaml` for the GHPC colour plan.
+Replace the example node names with the actual assigned nodes.
 
-## Notebooks, figures, and tables
+Every generated run specification maps to one array task, one canonical trainer
+invocation, and one model fit. Duplicate IDs, result collisions, array-count
+mismatches, and nested expansion fail validation before submission.
 
-Notebooks are grouped under
-`notebooks/{analysis,diagnostics,interpretability,data}/`. Migrated notebooks
-resolve the repository root from their current location and use canonical
-`src.worm_species` imports where behavior is equivalent. Existing cell outputs,
-run identifiers, paths to scientific inputs, filenames, and rendering parameters
-were preserved.
+## Persistent cache
 
-Future notebook-generated figures and tables are written to workflow-specific
-subdirectories beneath `figures/` and `tables/`. Existing artifacts in historical
-run directories were not moved. One tracked zero-byte notebook remains untouched
-because it is not a valid notebook document.
-
-## Tests and refactor documentation
+Cache maintenance is explicit and does not occur during inspection:
 
 ```bash
-make test
+PYTHONPATH=src python -m worm_species.cache build \
+  --config config.yaml \
+  --data-root /path/to/petridish-worm-images \
+  --metadata-csv /path/to/global_metadata.csv \
+  --cache-dir /path/to/cache/images
+
+PYTHONPATH=src python -m worm_species.cache verify \
+  --cache-dir /path/to/cache/images
+```
+
+## Dashboard and derived results
+
+The dashboard combines SLURM multitask outputs and historical single-task
+outputs without modifying either tree or loading checkpoint bodies.
+
+Prepare per-task metrics and combined confusion-matrix images first:
+
+```bash
+make dashboard-prepare \
+  SLURM_RESULTS_ROOT=outputs_slurm \
+  SINGLE_TASK_RESULTS_ROOT=single_task/outputs
+```
+
+Then launch:
+
+```bash
+make dashboard \
+  SLURM_RESULTS_ROOT=outputs_slurm \
+  SINGLE_TASK_RESULTS_ROOT=single_task/outputs
+```
+
+The browser exposes source type, run status, architecture, tasks, conditions,
+configured epochs, learning rate, weight decay, image size, pretrained/frozen
+state, class weighting, per-task loss weights, hierarchy settings, best epoch
+and validation score, test metrics, curves, reports, confusion matrices, W&B
+fields, logs, and result paths. A separate condition-matrix view shows model,
+train/test condition, relation, task filters, the 12/8/16 patch relation counts,
+and train-by-test macro-F1 heatmaps. Missing or malformed files become warnings.
+
+Dashboard indexes and derived figures live under
+`.cache/worm-species-dashboard/`, outside scientific result directories.
+
+## Notebooks and outputs
+
+Notebooks are active scientific code under:
+
+```text
+notebooks/analysis/
+notebooks/data/
+notebooks/diagnostics/
+notebooks/interpretability/
+```
+
+Modernized notebooks locate the repository root, add `PROJECT_ROOT/src`, and
+import `worm_species.*`. New presentation artifacts are routed to workflow
+subdirectories beneath `figures/` and `tables/`; live run directories remain
+read-only scientific inputs. Notebook migration preserves existing cell
+outputs, metadata, execution counts, run identifiers, filenames, and DPI.
+
+`split_csv/` contains externally linked predefined splits. Do not rewrite or
+move those links. Likewise, do not modify datasets, checkpoints, W&B artifacts,
+or live `outputs_slurm/` runs during maintenance.
+
+## Tests
+
+```bash
 make test-unit
 make test-contracts
 make test-integration
-
-# Equivalent direct command
-PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=.:src \
-  python -m unittest discover -s tests -p 'test_*.py'
+make test
 ```
 
-The bounded inventory, pre-refactor report, migration map, notebook status,
-and executed contract results are under `docs/refactor/`. Notebooks are
-grouped under `notebooks/{analysis,diagnostics,interpretability,data}/`, and
-operational shell scripts are grouped under `scripts/` while their historical
-root paths remain available. Generated
-outputs, datasets, checkpoints, caches, W&B artifacts, and SLURM result trees
-are outside the source audit and are not modified by the refactor.
+Focused direct examples:
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=.:src \
+  python -m unittest tests.test_training_cli_contracts
+
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=.:src \
+  python -m unittest tests.test_slurm_planning tests.test_ghpc_dual_colour
+
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=.:src \
+  python -m unittest tests.test_dashboard_condition_matrix tests.test_notebook_migration
+```
+
+The standard suite is CPU-only and uses temporary synthetic data. It does not
+require the 75 GB data tree, a GPU, W&B network access, or a live SLURM cluster.
+
+For the compact repository map, see [info.md](info.md).

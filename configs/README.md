@@ -15,7 +15,9 @@ configs/defaults/base.yaml
             +-- configs/experiments/standard.yaml
             +-- configs/experiments/hierarchy.yaml
             +-- configs/experiments/dual_cue.yaml
+            |        +-- ghpc_dual_cue.yaml
             +-- configs/experiments/colour_ablation.yaml
+            |        +-- ghpc_colour_ablation.yaml
             +-- configs/experiments/patch_shuffle_matrix.yaml
             +-- configs/experiments/persistent_hierarchy.yaml
                          |
@@ -52,8 +54,10 @@ change scientific run-spec hashes.
 | Two-model standard sweep | `configs/experiments/standard.yaml` | 2 |
 | Standard sweep with hierarchy consistency | `configs/experiments/hierarchy.yaml` | 2 |
 | Full matched cue and RGB-stress study | `configs/experiments/dual_cue.yaml` | 224 |
+| GHPC dual-cue historical W&B settings | `configs/experiments/ghpc_dual_cue.yaml` | 224 |
 | Four-model 2×2/4×4 patch matrix | `configs/experiments/patch_shuffle_matrix.yaml` | 12 trainings, 36 evaluation cells |
 | Colour retention 100% through 0% | `configs/experiments/colour_ablation.yaml` | 202 |
+| GHPC colour W&B settings | `configs/experiments/ghpc_colour_ablation.yaml` | 202 |
 | Genome persistent-cache hierarchy sweep | `configs/experiments/persistent_hierarchy.yaml` | 2 |
 | Same persistent sweep with W&B | `configs/experiments/persistent_hierarchy_wandb.yaml` | 2 |
 

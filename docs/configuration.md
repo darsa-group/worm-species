@@ -24,7 +24,9 @@ configs/defaults/base.yaml
             +-- configs/experiments/standard.yaml
             +-- configs/experiments/hierarchy.yaml
             +-- configs/experiments/dual_cue.yaml
+            |        +-- ghpc_dual_cue.yaml
             +-- configs/experiments/colour_ablation.yaml
+            |        +-- ghpc_colour_ablation.yaml
             +-- configs/experiments/patch_shuffle_matrix.yaml
             +-- configs/experiments/persistent_hierarchy.yaml
                          |
@@ -449,8 +451,10 @@ with cross-machine dry-run validation unless those paths are locally mounted.
 | Two-model standard | `configs/experiments/standard.yaml` | `configs/clusters/local.yaml` |
 | Hierarchy consistency | `configs/experiments/hierarchy.yaml` | local, Genome, or GHPC |
 | Full dual-cue study | `configs/experiments/dual_cue.yaml` | `configs/clusters/genome.yaml` |
+| GHPC dual-cue parity plan | `configs/experiments/ghpc_dual_cue.yaml` | `configs/clusters/ghpc.yaml` plus explicit nodes |
 | Four pretrained patch models, train/test both grids | `configs/experiments/patch_shuffle_matrix.yaml` | local for planning, selected cluster for execution |
 | Colour-retention sweep | `configs/experiments/colour_ablation.yaml` | selected cluster |
+| GHPC colour parity plan | `configs/experiments/ghpc_colour_ablation.yaml` | `configs/clusters/ghpc.yaml` plus explicit nodes |
 | Persistent hierarchy | `configs/experiments/persistent_hierarchy.yaml` | `configs/clusters/genome_persistent.yaml` |
 | Persistent hierarchy plus W&B | `configs/experiments/persistent_hierarchy_wandb.yaml` | `configs/clusters/genome_persistent.yaml` |
 
