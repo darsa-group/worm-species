@@ -1,248 +1,65 @@
+# Safe one-run quick start. Detailed defaults and transform catalogues live in
+# configs/defaults/base.yaml; experiment plans live in configs/experiments/.
+extends: configs/defaults/base.yaml
+
 seed: 42
 
-wandb:
-  # W&B is an independent feature switch. Set false for a completely local run;
-  # no named training profile is required. Offline mode never contacts the service.
-  enabled: true
-  project: worm-species-cues
-  entity: null
-  group: null
-  name: null
-  mode: offline
-  job_type: train
-  tags:
-    - multitask
-    - earthworm_color
-    - slurm
-  save_code: true
-  log_model: false
-
+# Common data paths and input resolution.
 data:
   root_dir: "../petridish-worm-images"
   metadata_csv: "../petridish-worm-images/01_Segmented/global_metadata.csv"
-  colour_retention: 1.0
-  # choose one:
-  # rel_path_seg      = segmented RGB image
-  # rel_path_raw      = raw image
-  # rel_path_segmask  = binary mask
-  image_col: "rel_path_seg"
-  mask_col: "rel_path_segmask"
-
-  # target can be:
-  # species_label, genus, life_stage
-  target_col: "genus"
-
-  # individual-level split column
-  group_col: "barcode"
-
-  # If barcode is already the individual ID, keep this false.
-  # Set true only if barcodes look like individual_1, individual_2, etc.
-  strip_final_number_from_group: false
-
-  min_individuals_per_class: 3
-  crop_to_foreground: false
-  crop_pad: 0.15
   image_size: 224
 
-  barcode_col: barcode
-  species_requires_binomial: true
-
-  target_cols:
-    genus: genus
-    species: species_label
-    age: life_stage
-
-  split_target_col: __taxon_for_split__
-
-  taxonomic_uncertainty:
-    uncertain_species_labels:
-      - Lumbricus_sp
-      - Aporrectodea_caliginosa_tuberculata
-
-    uncertain_species_patterns:
-      - "(?:^|_)sp(?:$|_)"
-
-    resolved_species_label_overrides:
-      Lumbricus_sp_terrestris_herculeus: Lumbricus_terrestris_herculeus
-
-    life_stage_overrides:
-      Lumbricus_sp_terrestris_herculeus: Adult
-
-  
-  min_individuals_per_class_by_task:
-    genus: 3
-    species: 3
-    age: 3
-
-multi_task:
-  loss_weights:
-    genus: 1.0
-    species: 0.5
-    age: 2.0
-
-  hierarchy_loss:
-    # Adds genus/species consistency loss when both labels are present. This is
-    # independent of W&B and label masking, and requires distinct configured
-    # parent and child tasks plus a valid child-to-parent mapping.
-    enabled: true
-    parent_task: genus
-    child_task: species
-    weight: 0.5
-
-  # Recommended because not every image has all three labels.
-  normalize_loss_by_active_tasks: true
-
-  # Other valid choices include genus_macro_f1, species_macro_f1, age_macro_f1.
-  selection_metric: mean_macro_f1
-
-
-
-
-
-colour_ablation:
-  # Local/internal expansion over data.colour_retention. Leave this false for a
-  # submitted resolved run: the SLURM planner expands conditions externally and
-  # enforces one run specification = one trainer process = one model training.
-  # Do not combine this with matched_condition_training or input_condition.
-  enabled: false
-  start_percent: 100
-  stop_percent: 0
-  step_percent: 1
-  combine_with_sweep: true
-
-early_stopping:
-  enabled: true
-  monitor: "macro_f1"
-  mode: "max"
-  patience: 4
-  min_delta: 0.0001
-
-split:
-  test_size: 0.20
-  val_size: 0.15
-  predefined_split_dir: "split_csv"
-  use_predefined_splits: true
-  save_splits: false
-
+# Architecture and pretrained/fine-tuning switches.
 model:
-  name: "efficientnet_b0"   # resnet18, resnet50, efficientnet_b0, vit_b_16, swin_t
+  name: efficientnet_b0
   pretrained: true
   freeze_backbone: false
 
+# Optimisation choices for one canonical trainer process.
 training:
-  # Preferred trainer behaviour is selected by explicit switches in this file,
-  # not by training.profile. `mode` identifies the algorithm family.
   mode: multitask
-
-  # true: preserve examples with partially missing task labels and mask only the
-  # unavailable task losses/metrics (the historical behaviour).
-  # false: require every selected task label in train/validation/test and fail
-  # clearly if one is missing. Rows and split membership are never changed.
   use_masked_labels: true
-
   epochs: 200
   batch_size: 256
   lr: 0.0005
   weight_decay: 0.0001
   use_amp: true
   class_weight: true
-  num_workers: 6
-  val_interval: 5
+
+# Task and hierarchy weights; age is an ordinary selected task.
+multi_task:
+  loss_weights:
+    genus: 1.0
+    species: 0.5
+    age: 2.0
+  hierarchy_loss:
+    enabled: true
+    weight: 0.5
+
+# W&B can be disabled independently; offline mode never contacts the service.
+wandb:
+  enabled: true
+  project: worm-species-cues
+  mode: offline
 
 output:
-  out_dir: "outputs"
+  out_dir: outputs
 
 cache:
   enabled: true
-  dir: "cache/images"
-  root_dir_cache: "../cache"
-  format: "png"
-  rebuild: false
-  num_workers: 6
+  dir: cache/images
 
-
-# Exactly one resolved matched-condition trainer process can enable this block.
-# `transform` accepts original, saturation, grayscale, channel_shuffle,
-# bilateral_filter, gaussian_blur, or patch_shuffle with its validated
-# parameters. A transformed condition cannot enable fixed-RGB stress below.
+# These are separate features. Keep all disabled for this one-run baseline.
 input_condition:
   enabled: false
-  condition: original
-  feature: baseline
-  transform: original
-  strength: 0.0
-
-# The repository-root configuration is intentionally one ordinary local run.
-# With all condition/stress expansion switches disabled, its type is inferred as
-# standard. Experiment plans may set an explicit compatible type where useful.
-
-
 test_cue_suppression:
-  # Post-training transformed-test evaluation. When true, training must use the
-  # original/RGB input condition. It cannot be combined with a transformed
-  # input_condition; matched original + stress uses matched_and_rgb_stress.
   enabled: false
-
-  # Optional fixed-RGB test-only allow-list. Names must exactly match enabled
-  # catalogue entries below. This is independent from the matched-training
-  # allow-list at matched_condition_training.condition_names.
-  # condition_names: [gaussian_sigma_2, patch_shuffle_grid_4]
-
-  saturation:
-    enabled: true
-    start: 1.0
-    stop: 0.0
-    step: 0.01
-
-  grayscale:
-    enabled: true
-
-  channel_shuffle:
-    enabled: true
-    orders:
-      - [2, 0, 1]
-
-  bilateral_filter:
-    enabled: true
-    settings:
-      - diameter: 5
-        sigma_colour: 25
-        sigma_space: 25
-      - diameter: 7
-        sigma_colour: 50
-        sigma_space: 50
-      - diameter: 9
-        sigma_colour: 100
-        sigma_space: 100
-
-  gaussian_blur:
-    enabled: true
-    sigmas: [0.5, 1.0, 2.0, 4.0]
-
-  patch_shuffle:
-    enabled: true
-    grid_sizes: [2, 4, 8]
-    seed: 2026
-      
-
-
+condition_matrix_evaluation:
+  enabled: false
 matched_condition_training:
-  # External run-spec expansion across the condition registry. This is a
-  # planning switch, not a trainer-internal loop. Generated run specs disable it
-  # and set exactly one input_condition for each trainer process.
-  # It is incompatible with colour_ablation expansion and an already-resolved
-  # input_condition. Test-only RGB stress remains a separate evaluation step.
   enabled: false
-  include_original: true
-  deduplicate_equivalent_conditions: true
-  evaluate_original_model_on_all_test_conditions: true
-
+colour_ablation:
+  enabled: false
 sweep:
-  # Ordinary model/parameter expansion for local planning. Submitted run specs
-  # turn this off before invoking the trainer so nested expansion is impossible.
   enabled: false
-
-  parameters:
-    model.name:
-      - 'convnext_base'
-      - "vit_b_16"
