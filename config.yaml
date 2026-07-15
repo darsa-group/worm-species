@@ -2,7 +2,7 @@ seed: 42
 
 wandb:
   enabled: true
-  project: worm-species-color-ablation
+  project: worm-species-cues
   entity: null
   group: null
   name: null
@@ -127,7 +127,7 @@ training:
   weight_decay: 0.0001
   use_amp: true
   class_weight: true
-  num_workers: 12
+  num_workers: 6
   val_interval: 5
 
 output:
