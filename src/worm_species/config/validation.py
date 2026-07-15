@@ -126,21 +126,40 @@ def validate_override_items(items: Iterable[str]) -> tuple[str, ...]:
 
 def _validate_channel_order(
     issues: list[ValidationIssue], path: str, order: Any
-) -> None:
+) -> tuple[int, int, int] | None:
     if isinstance(order, str):
         try:
             order = [int(item.strip()) for item in order.split(",")]
         except ValueError:
             issues.append(ValidationIssue(path, "must be a permutation of 0,1,2"))
-            return
+            return None
     if not isinstance(order, (list, tuple)):
         issues.append(ValidationIssue(path, "must be a list, tuple, or comma-separated string"))
-        return
+        return None
     if any(isinstance(item, bool) or not isinstance(item, int) for item in order):
         issues.append(ValidationIssue(path, "must contain integer channel indices"))
-        return
+        return None
     if sorted(order) != [0, 1, 2]:
         issues.append(ValidationIssue(path, f"must be a permutation of [0, 1, 2], got {list(order)!r}"))
+        return None
+    return tuple(order)
+
+
+def _validate_unique_values(
+    issues: list[ValidationIssue],
+    path: str,
+    indexed_values: list[tuple[int, Any]],
+) -> None:
+    first_index: dict[Any, int] = {}
+    for index, value in indexed_values:
+        if value in first_index:
+            issues.append(ValidationIssue(
+                path,
+                "must contain unique values; "
+                f"indices {first_index[value]} and {index} both resolve to {value!r}",
+            ))
+        else:
+            first_index[value] = index
 
 
 def _validate_transform_parameters(
@@ -158,9 +177,22 @@ def _validate_transform_parameters(
                 issues.append(ValidationIssue(
                     "test_cue_suppression.saturation.values", "must be a non-empty list"
                 ))
-            elif all(_number(issues, f"test_cue_suppression.saturation.values[{index}]", value, minimum=0, maximum=1)
-                     for index, value in enumerate(values)):
-                pass
+            else:
+                valid_values = []
+                for index, value in enumerate(values):
+                    if _number(
+                        issues,
+                        f"test_cue_suppression.saturation.values[{index}]",
+                        value,
+                        minimum=0,
+                        maximum=1,
+                    ):
+                        valid_values.append((index, float(value)))
+                _validate_unique_values(
+                    issues,
+                    "test_cue_suppression.saturation.values",
+                    valid_values,
+                )
         for key, default in (("start", 1.0), ("stop", 0.0)):
             _number(
                 issues,
@@ -185,12 +217,20 @@ def _validate_transform_parameters(
                 "test_cue_suppression.channel_shuffle.orders", "must be a non-empty list"
             ))
         else:
+            valid_orders = []
             for index, order in enumerate(orders):
-                _validate_channel_order(
+                validated = _validate_channel_order(
                     issues,
                     f"test_cue_suppression.channel_shuffle.orders[{index}]",
                     order,
                 )
+                if validated is not None:
+                    valid_orders.append((index, validated))
+            _validate_unique_values(
+                issues,
+                "test_cue_suppression.channel_shuffle.orders",
+                valid_orders,
+            )
 
     gaussian = cue.get("gaussian_blur", {}) or {}
     if isinstance(gaussian, dict):
@@ -200,14 +240,21 @@ def _validate_transform_parameters(
                 "test_cue_suppression.gaussian_blur.sigmas", "must be a non-empty list"
             ))
         else:
+            valid_sigmas = []
             for index, sigma in enumerate(sigmas):
-                _number(
+                if _number(
                     issues,
                     f"test_cue_suppression.gaussian_blur.sigmas[{index}]",
                     sigma,
                     minimum=0,
                     exclusive_minimum=True,
-                )
+                ):
+                    valid_sigmas.append((index, float(sigma)))
+            _validate_unique_values(
+                issues,
+                "test_cue_suppression.gaussian_blur.sigmas",
+                valid_sigmas,
+            )
 
     bilateral = cue.get("bilateral_filter", {}) or {}
     if isinstance(bilateral, dict):
@@ -221,27 +268,45 @@ def _validate_transform_parameters(
                 "test_cue_suppression.bilateral_filter.settings", "must be a non-empty list"
             ))
         else:
+            valid_settings = []
             for index, setting in enumerate(settings):
                 path = f"test_cue_suppression.bilateral_filter.settings[{index}]"
                 if not isinstance(setting, dict):
                     issues.append(ValidationIssue(path, "must be a mapping"))
                     continue
+                valid_setting = True
                 diameter = setting.get("diameter", _ABSENT)
                 if isinstance(diameter, bool) or not isinstance(diameter, int):
                     issues.append(ValidationIssue(f"{path}.diameter", "must be an integer"))
+                    valid_setting = False
                 elif diameter <= 0 or diameter % 2 == 0:
                     issues.append(ValidationIssue(f"{path}.diameter", "must be a positive odd integer"))
+                    valid_setting = False
+                sigma_values = []
                 for key in ("sigma_colour", "sigma_space"):
                     if key not in setting:
                         issues.append(ValidationIssue(f"{path}.{key}", "is required"))
+                        valid_setting = False
                     else:
-                        _number(
+                        valid_number = _number(
                             issues,
                             f"{path}.{key}",
                             setting[key],
                             minimum=0,
                             exclusive_minimum=True,
                         )
+                        valid_setting = valid_setting and valid_number
+                        if valid_number:
+                            sigma_values.append(float(setting[key]))
+                if valid_setting:
+                    valid_settings.append(
+                        (index, (diameter, sigma_values[0], sigma_values[1]))
+                    )
+            _validate_unique_values(
+                issues,
+                "test_cue_suppression.bilateral_filter.settings",
+                valid_settings,
+            )
 
     patch = cue.get("patch_shuffle", {}) or {}
     if isinstance(patch, dict):
@@ -252,6 +317,7 @@ def _validate_transform_parameters(
                 "test_cue_suppression.patch_shuffle.grid_sizes", "must be a non-empty list"
             ))
         else:
+            valid_grids = []
             for index, grid in enumerate(grids):
                 path = f"test_cue_suppression.patch_shuffle.grid_sizes[{index}]"
                 if isinstance(grid, bool) or not isinstance(grid, int):
@@ -260,11 +326,25 @@ def _validate_transform_parameters(
                     issues.append(ValidationIssue(path, "must be >= 2"))
                 elif isinstance(image_size, int) and image_size % grid != 0:
                     issues.append(ValidationIssue(path, f"must divide data.image_size={image_size}"))
+                else:
+                    valid_grids.append((index, grid))
+            _validate_unique_values(
+                issues,
+                "test_cue_suppression.patch_shuffle.grid_sizes",
+                valid_grids,
+            )
 
     raw = config.get("input_condition", {}) or {}
-    if not isinstance(raw, dict) or not bool(raw.get("enabled", False)):
+    if not isinstance(raw, dict):
         return
     transform = str(raw.get("transform", "original")).lower()
+    if not bool(raw.get("enabled", False)):
+        if transform != "original":
+            issues.append(ValidationIssue(
+                "input_condition.transform",
+                "must be original when input_condition.enabled=false",
+            ))
+        return
     if transform not in KNOWN_TRANSFORMS:
         issues.append(ValidationIssue(
             "input_condition.transform",
@@ -389,11 +469,32 @@ def _validate_tasks(config: dict[str, Any], issues: list[ValidationIssue]) -> No
         return
     weights = multi.get("loss_weights", {}) or {}
     if isinstance(weights, dict):
-        for task in weights:
+        valid_selected_weights: dict[str, float] = {}
+        for task, value in weights.items():
             if task != "hierarchy" and task not in target_cols:
                 issues.append(ValidationIssue(
                     f"multi_task.loss_weights.{task}", "task is not present in data.target_cols"
                 ))
+            if _number(
+                issues,
+                f"multi_task.loss_weights.{task}",
+                value,
+                minimum=0,
+            ) and task in target_cols:
+                valid_selected_weights[task] = float(value)
+        effective_weights = {
+            task: valid_selected_weights.get(task, 1.0)
+            for task in target_cols
+            if task not in weights or task in valid_selected_weights
+        }
+        if (
+            len(effective_weights) == len(target_cols)
+            and not any(weight > 0 for weight in effective_weights.values())
+        ):
+            issues.append(ValidationIssue(
+                "multi_task.loss_weights",
+                "at least one selected task weight must be greater than zero",
+            ))
     selection = multi.get("selection_metric", "mean_macro_f1")
     allowed_metrics = {"mean_macro_f1", *(f"{task}_macro_f1" for task in target_cols)}
     if isinstance(selection, str) and selection not in allowed_metrics:
@@ -553,6 +654,7 @@ def validate_config(
         ("training.weight_decay", 0, None, False),
         ("training.num_workers", 0, None, False),
         ("training.val_interval", 0, None, True),
+        ("cache.num_workers", 1, None, False),
         ("early_stopping.patience", 0, None, False),
         ("early_stopping.min_delta", 0, None, False),
         ("multi_task.hierarchy_loss.weight", 0, None, False),
@@ -578,9 +680,7 @@ def validate_config(
         if float(test_size) + float(val_size) >= 1:
             issues.append(ValidationIssue("split", "test_size + val_size must be < 1"))
 
-    for mapping_path in (
-        "data.min_individuals_per_class_by_task", "multi_task.loss_weights"
-    ):
+    for mapping_path in ("data.min_individuals_per_class_by_task",):
         mapping = _get(config, mapping_path)
         if isinstance(mapping, dict):
             for key, value in mapping.items():

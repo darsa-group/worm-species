@@ -50,6 +50,91 @@ class ConfigurationValidationContracts(unittest.TestCase):
             {"data": {"colour_retention": 1.01}},
             "data.colour_retention: must be <= 1",
         )
+        self.assert_invalid(
+            {"data": {"image_size": 0}},
+            "data.image_size: must be > 0",
+        )
+        self.assert_invalid(
+            {"cache": {"num_workers": 0}},
+            "cache.num_workers: must be >= 1",
+        )
+
+    def test_supported_wandb_modes_are_explicit(self) -> None:
+        for mode in ("online", "offline", "disabled", "dryrun", "run", "shared", None):
+            with self.subTest(mode=mode):
+                validate_config(
+                    {"wandb": {"mode": mode}},
+                    workflow="saved",
+                    check_paths=False,
+                    check_model_registry=False,
+                )
+        self.assert_invalid(
+            {"wandb": {"mode": "sometimes"}},
+            "wandb.mode: must be one of",
+        )
+
+    def test_task_loss_weights_are_known_finite_and_usable(self) -> None:
+        tasks = {
+            "data": {
+                "target_cols": {
+                    "genus": "genus",
+                    "species": "species_label",
+                    "age": "life_stage",
+                }
+            }
+        }
+        valid = copy.deepcopy(tasks)
+        valid["multi_task"] = {
+            "loss_weights": {"genus": 1.0, "species": 0.5, "age": 2.0}
+        }
+        validate_config(
+            valid,
+            workflow="saved",
+            check_paths=False,
+            check_model_registry=False,
+        )
+
+        invalid_cases = (
+            ({"genus": -1.0}, "must be >= 0"),
+            ({"genus": float("nan")}, "must be finite"),
+            ({"unknown": 1.0}, "task is not present in data.target_cols"),
+            (
+                {"genus": 0.0, "species": 0.0, "age": 0.0},
+                "at least one selected task weight must be greater than zero",
+            ),
+        )
+        for weights, expected in invalid_cases:
+            with self.subTest(weights=weights):
+                config = copy.deepcopy(tasks)
+                config["multi_task"] = {"loss_weights": weights}
+                self.assert_invalid(config, expected)
+
+    def test_hierarchy_tasks_must_be_distinct_selected_tasks(self) -> None:
+        base = {
+            "data": {"target_cols": {"genus": "genus", "species": "species_label"}},
+            "multi_task": {
+                "hierarchy_loss": {
+                    "enabled": True,
+                    "parent_task": "genus",
+                    "child_task": "species",
+                    "weight": 0.5,
+                }
+            },
+        }
+        validate_config(
+            base,
+            workflow="saved",
+            check_paths=False,
+            check_model_registry=False,
+        )
+
+        same = copy.deepcopy(base)
+        same["multi_task"]["hierarchy_loss"]["child_task"] = "genus"
+        self.assert_invalid(same, "parent_task and child_task must differ")
+
+        missing = copy.deepcopy(base)
+        missing["multi_task"]["hierarchy_loss"]["child_task"] = "age"
+        self.assert_invalid(missing, "must name a task in data.target_cols")
 
     def test_unknown_override_paths_are_rejected(self) -> None:
         with self.assertRaisesRegex(ConfigValidationError, "unknown configuration"):
@@ -150,6 +235,67 @@ class ConfigurationValidationContracts(unittest.TestCase):
             },
             "must be a permutation",
         )
+        self.assert_invalid(
+            {
+                "input_condition": {
+                    "enabled": False,
+                    "transform": "grayscale",
+                }
+            },
+            "must be original when input_condition.enabled=false",
+        )
+        self.assert_invalid(
+            {
+                "data": {"image_size": 224},
+                "test_cue_suppression": {
+                    "patch_shuffle": {"enabled": True, "grid_sizes": [3]}
+                },
+            },
+            "must divide data.image_size=224",
+        )
+
+    def test_transform_catalogue_values_must_be_unique(self) -> None:
+        duplicate_catalogues = (
+            {
+                "saturation": {
+                    "enabled": True,
+                    "values": [0.5, 0.5],
+                }
+            },
+            {
+                "channel_shuffle": {
+                    "enabled": True,
+                    "orders": [[2, 0, 1], [2, 0, 1]],
+                }
+            },
+            {
+                "gaussian_blur": {
+                    "enabled": True,
+                    "sigmas": [1, 1.0],
+                }
+            },
+            {
+                "bilateral_filter": {
+                    "enabled": True,
+                    "settings": [
+                        {"diameter": 5, "sigma_colour": 25, "sigma_space": 25},
+                        {"diameter": 5, "sigma_colour": 25.0, "sigma_space": 25.0},
+                    ],
+                }
+            },
+            {
+                "patch_shuffle": {
+                    "enabled": True,
+                    "grid_sizes": [2, 2],
+                }
+            },
+        )
+        for catalogue in duplicate_catalogues:
+            with self.subTest(catalogue=next(iter(catalogue))):
+                self.assert_invalid(
+                    {"test_cue_suppression": catalogue},
+                    "must contain unique values",
+                )
 
 
 if __name__ == "__main__":
