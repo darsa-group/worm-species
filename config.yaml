@@ -101,7 +101,7 @@ training:
   weight_decay: 0.0001
   use_amp: true
   class_weight: true
-  num_workers: 12
+  num_workers: 6
   val_interval: 5
 
 output:
@@ -113,7 +113,7 @@ cache:
   root_dir_cache: "../cache"
   format: "png"
   rebuild: false
-  num_workers: 8
+  num_workers: 6
 
 sweep:
   enabled: true
