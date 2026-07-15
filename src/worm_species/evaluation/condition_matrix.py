@@ -126,6 +126,10 @@ def _write_task_reports(
     true: dict[str, Any],
     pred: dict[str, Any],
     index_to_label_by_task: dict[str, dict[int, str]],
+    *,
+    training_condition: dict[str, Any] | None = None,
+    metrics: dict[str, Any] | None = None,
+    wandb_logger: Any = None,
 ) -> None:
     report_dir = root / "classification_reports" / condition_name
     matrix_dir = root / "confusion_matrices" / condition_name
@@ -155,6 +159,21 @@ def _write_task_reports(
         matrix = confusion_matrix(y_true, y_pred, labels=labels)
         pd.DataFrame(report).transpose().to_csv(report_path)
         pd.DataFrame(matrix, index=names, columns=names).to_csv(matrix_path)
+        if wandb_logger is not None:
+            wandb_logger.log_classification_report(
+                condition=condition_name,
+                task=task,
+                report=report,
+                metrics=metrics,
+                train_condition=training_condition,
+            )
+            wandb_logger.log_confusion_matrix(
+                condition=condition_name,
+                task=task,
+                y_true=y_true,
+                y_pred=y_pred,
+                class_names=names,
+            )
 
 
 def _task_rows(
@@ -201,6 +220,7 @@ def evaluate_condition_matrix(
     hierarchy_cfg: dict,
     child_to_parent_matrix: Any,
     use_masked_labels: bool,
+    wandb_logger: Any = None,
 ) -> dict[str, Any]:
     """Evaluate one selected checkpoint across the configured test matrix."""
     matrix_cfg = cfg.get("condition_matrix_evaluation", {}) or {}
@@ -270,6 +290,9 @@ def evaluate_condition_matrix(
                 true,
                 pred,
                 index_to_label_by_task,
+                training_condition=training_condition,
+                metrics=metrics,
+                wandb_logger=wandb_logger,
             )
 
     condition_path = matrix_dir / "condition_metrics.csv"
@@ -294,6 +317,29 @@ def evaluate_condition_matrix(
         "task_metrics": str(task_path),
     }
     _atomic_json(manifest_path, manifest)
+    if wandb_logger is not None:
+        wandb_logger.log_test_metrics_table(condition_rows)
+        for row in condition_rows:
+            test_name = str(row["test_condition"])
+            if training_name == "original" and test_name == "original":
+                continue
+            wandb_logger.log_test_condition(
+                test_name,
+                {
+                    key: value
+                    for key, value in row.items()
+                    if key not in {
+                        "schema_version", "run_name", "model",
+                        "train_condition", "train_feature", "train_transform",
+                        "train_strength", "train_parameters", "test_condition",
+                        "test_feature", "test_transform", "test_strength",
+                        "test_parameters", "evaluation_relation",
+                        "reused_matched_evaluation",
+                    }
+                },
+                train_condition=training_name,
+                update_summary=False,
+            )
     return {
         "enabled": True,
         "n_conditions": len(condition_rows),

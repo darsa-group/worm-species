@@ -14,11 +14,6 @@ import torch
 from torch import nn
 from torch.utils.data import DataLoader
 
-try:
-    import wandb
-except ImportError:
-    wandb = None
-
 from ..data.datasets import MultiTaskWormImageDataset
 from ..data.transforms import build_split_transform
 from ..results.writing import save_json
@@ -251,7 +246,7 @@ def evaluate_test_cue_suppression(
     normalize_loss_by_active_tasks: bool,
     hierarchy_cfg: dict,
     child_to_parent_matrix: torch.Tensor | None,
-    wandb_run=None,
+    wandb_logger=None,
 ) -> dict:
     """Evaluate one fixed checkpoint under all configured test manipulations."""
     conditions = generate_test_cue_conditions(cfg)
@@ -407,14 +402,27 @@ def evaluate_test_cue_suppression(
     feature_summary_path = cue_dir / "transform_summary.csv"
     feature_summary.to_csv(feature_summary_path, index=False)
 
-    if wandb_run is not None and wandb is not None:
-        try:
-            wandb_run.log({
-                "cue_suppression/macro_f1_ratios": wandb.Table(dataframe=ratios_df),
-                "cue_suppression/transform_summary": wandb.Table(dataframe=feature_summary),
-            })
-        except Exception as exc:
-            print(f"Warning: could not log cue-suppression tables to W&B: {exc}")
+    if wandb_logger is not None:
+        wandb_logger.log_test_metrics_table(condition_metrics_df)
+        wandb_logger.log_robustness_table(
+            ratios_df,
+            transform_summary=feature_summary,
+        )
+        identity_columns = {
+            "run_name", "model", "condition", "feature", "transform",
+            "strength", "parameters", "reused_identical_evaluation",
+        }
+        for row in condition_metric_rows:
+            wandb_logger.log_test_condition(
+                str(row["condition"]),
+                {
+                    key: value
+                    for key, value in row.items()
+                    if key not in identity_columns
+                },
+                train_condition="original",
+                update_summary=False,
+            )
 
     print(f"Saved cue-suppression metrics to {cue_dir}")
     return {

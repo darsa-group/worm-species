@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-import copy
 import json
-import os
 from pathlib import Path
 
 import numpy as np
@@ -15,6 +13,7 @@ from sklearn.metrics import confusion_matrix
 
 from ..evaluation.condition_matrix import evaluate_condition_matrix
 from ..evaluation.cue_suppression import evaluate_test_cue_suppression
+from ..logging import create_wandb_logger
 from ..models.multitask import build_multitask_model
 from ..results.writing import save_json
 from .checkpoints import build_checkpoint_payload
@@ -30,86 +29,13 @@ from .modes import TrainingProfile
 from .modes import resolved_run_name
 from .reproducibility import set_seed
 
-try:
-    import wandb
-except ImportError:
-    wandb = None
-
-
-def _wandb_metrics(prefix: str, metrics: dict) -> dict[str, int | float]:
-    output = {}
-    for key, value in metrics.items():
-        if isinstance(value, (int, float, np.integer, np.floating)):
-            output[f"{prefix}/{key}"] = (
-                int(value)
-                if isinstance(value, (int, np.integer))
-                else float(value)
-            )
-    return output
-
-
-def _flatten_wandb_config(value, prefix: str = "") -> dict:
-    flattened = {}
-    if isinstance(value, dict):
-        for key, child in value.items():
-            safe_key = str(key).replace(".", "_")
-            child_prefix = f"{prefix}__{safe_key}" if prefix else safe_key
-            flattened.update(_flatten_wandb_config(child, child_prefix))
-    else:
-        flattened[prefix] = value
-    return flattened
-
-
 def initialise_wandb_run(
     cfg: dict,
     run_name: str,
     out_dir: Path,
     profile: TrainingProfile,
 ):
-    wandb_cfg = cfg.get("wandb", {}) or {}
-    if not profile.wandb or not bool(wandb_cfg.get("enabled", False)):
-        return None
-    if wandb is None:
-        raise ImportError(
-            "W&B tracking is enabled, but the 'wandb' package is not installed. "
-            "Install it with: python -m pip install wandb"
-        )
-
-    tags = list(wandb_cfg.get("tags", []) or [])
-    if os.getenv("SLURM_JOB_ID"):
-        tags.append("slurm")
-
-    tracking_config = copy.deepcopy(cfg)
-    tracking_config["runtime"] = {
-        "slurm_job_id": os.getenv("SLURM_JOB_ID"),
-        "slurm_array_job_id": os.getenv("SLURM_ARRAY_JOB_ID"),
-        "slurm_array_task_id": os.getenv("SLURM_ARRAY_TASK_ID"),
-        "hostname": os.getenv("HOSTNAME"),
-        "cuda_visible_devices": os.getenv("CUDA_VISIBLE_DEVICES"),
-    }
-    run = wandb.init(
-        project=(
-            wandb_cfg.get("project")
-            or os.getenv("WANDB_PROJECT")
-            or "worm-species"
-        ),
-        entity=wandb_cfg.get("entity") or os.getenv("WANDB_ENTITY") or None,
-        name=wandb_cfg.get("name") or os.getenv("WANDB_NAME") or run_name,
-        group=(
-            wandb_cfg.get("group") or os.getenv("WANDB_RUN_GROUP") or None
-        ),
-        job_type=wandb_cfg.get("job_type", "train"),
-        tags=tags,
-        config=_flatten_wandb_config(tracking_config),
-        dir=str(out_dir),
-        mode=wandb_cfg.get("mode") or os.getenv("WANDB_MODE") or "online",
-        save_code=bool(wandb_cfg.get("save_code", True)),
-    )
-    run.define_metric("epoch")
-    run.define_metric("train/*", step_metric="epoch")
-    run.define_metric("val/*", step_metric="epoch")
-    run.define_metric("learning_rate", step_metric="epoch")
-    return run
+    return create_wandb_logger(cfg, run_name, out_dir, profile).run
 
 
 def get_colour_metadata(cfg: dict) -> tuple[float, int]:
@@ -124,30 +50,6 @@ def get_colour_metadata(cfg: dict) -> tuple[float, int]:
 
 def make_experiment_run_name(cfg: dict, profile: TrainingProfile) -> str:
     return resolved_run_name(cfg, profile)
-
-
-def create_wandb_confusion_matrix(
-    y_true,
-    y_pred,
-    class_names,
-    title: str,
-):
-    y_true = np.asarray(y_true, dtype=int)
-    y_pred = np.asarray(y_pred, dtype=int)
-    valid = (
-        (y_true >= 0)
-        & (y_pred >= 0)
-        & (y_true < len(class_names))
-        & (y_pred < len(class_names))
-    )
-    if not valid.any() or wandb is None:
-        return None
-    return wandb.plot.confusion_matrix(
-        y_true=y_true[valid].tolist(),
-        preds=y_pred[valid].tolist(),
-        class_names=list(class_names),
-        title=title,
-    )
 
 
 def run_one(cfg: dict, profile: TrainingProfile) -> dict:
@@ -206,7 +108,7 @@ def run_one(cfg: dict, profile: TrainingProfile) -> dict:
     out_dir.mkdir(parents=True, exist_ok=True)
     save_json(cfg, out_dir / "config.json")
 
-    wandb_run = initialise_wandb_run(cfg, run_name, out_dir, profile)
+    wandb_logger = create_wandb_logger(cfg, run_name, out_dir, profile)
     bundle = make_profile_loaders(cfg, profile)
     save_json(bundle.split_summary, out_dir / "split_summary.json")
     save_json(
@@ -341,15 +243,12 @@ def run_one(cfg: dict, profile: TrainingProfile) -> dict:
                 **{f"val_{key}": value for key, value in val_metrics.items()},
             }
         )
-        if wandb_run is not None:
-            wandb_run.log(
-                {
-                    "epoch": epoch,
-                    "learning_rate": learning_rate,
-                    **_wandb_metrics("train", train_metrics),
-                    **_wandb_metrics("val", val_metrics),
-                }
-            )
+        wandb_logger.log_epoch_metrics(
+            epoch=epoch,
+            learning_rate=learning_rate,
+            train_metrics=train_metrics,
+            val_metrics=val_metrics,
+        )
 
         if not validate:
             print(
@@ -399,14 +298,11 @@ def run_one(cfg: dict, profile: TrainingProfile) -> dict:
                 training_condition=input_condition,
             )
             save_checkpoint(payload, out_dir / "best_model.pt")
-            if wandb_run is not None:
-                wandb_run.summary.update(
-                    {
-                        "best_epoch": best_epoch,
-                        "best_val_score": best,
-                        "selection_metric": selection,
-                    }
-                )
+            wandb_logger.update_best(
+                best_epoch=best_epoch,
+                best_val_score=best,
+                selection_metric=selection,
+            )
             print(
                 f"[{run_name}] New best model saved | best val {selection} "
                 f"{best:.4f} at epoch {best_epoch}"
@@ -479,29 +375,37 @@ def run_one(cfg: dict, profile: TrainingProfile) -> dict:
             index=names,
             columns=names,
         ).to_csv(out_dir / f"confusion_matrix_{task}.csv")
-        if profile.loader_mode == "colour" and wandb_run is not None:
-            wandb_run.log(
-                {
-                    f"confusion_matrix_{task}": create_wandb_confusion_matrix(
-                        y_true,
-                        y_pred,
-                        names,
-                        f"Confusion Matrix ({task})",
-                    )
-                }
-            )
+        wandb_logger.log_classification_report(
+            condition="original",
+            task=task,
+            report=report,
+            metrics=test_metrics,
+            train_condition=input_condition,
+        )
+        wandb_logger.log_confusion_matrix(
+            condition="original",
+            task=task,
+            y_true=y_true,
+            y_pred=y_pred,
+            class_names=names,
+            title=f"Confusion Matrix ({task})",
+        )
 
     save_json(test_metrics, out_dir / "test_metrics.json")
-    if profile.loader_mode == "colour" and wandb_run is not None:
+    wandb_logger.log_test_condition(
+        "original",
+        test_metrics,
+        train_condition=input_condition,
+    )
+    if profile.loader_mode == "colour":
         test_mean_macro_f1 = float(
             test_metrics.get("mean_macro_f1", float("nan"))
         )
-        wandb_run.log({"test/mean_macro_f1": test_mean_macro_f1})
         if test_mean_macro_f1 >= 0.90:
-            wandb_run.alert(
+            wandb_logger.alert(
                 title="Test macro-F1 reached 0.90",
                 text=(
-                    f"Run {wandb_run.name} achieved test/mean_macro_f1 = "
+                    f"Run {run_name} achieved test/mean_macro_f1 = "
                     f"{test_mean_macro_f1:.4f}"
                 ),
             )
@@ -523,7 +427,7 @@ def run_one(cfg: dict, profile: TrainingProfile) -> dict:
             normalize_loss_by_active_tasks=normalize,
             hierarchy_cfg=hierarchy_cfg,
             child_to_parent_matrix=matrix,
-            wandb_run=wandb_run,
+            wandb_logger=wandb_logger,
         )
 
     condition_matrix = {"enabled": False, "n_conditions": 0, "n_task_rows": 0}
@@ -552,6 +456,7 @@ def run_one(cfg: dict, profile: TrainingProfile) -> dict:
             hierarchy_cfg=hierarchy_cfg,
             child_to_parent_matrix=matrix,
             use_masked_labels=profile.masked_labels,
+            wandb_logger=wandb_logger,
         )
 
     result = {
@@ -618,49 +523,42 @@ def run_one(cfg: dict, profile: TrainingProfile) -> dict:
     if profile.run_summary:
         save_json(result, out_dir / "run_summary.json")
 
-    if wandb_run is not None:
-        wandb_run.log(_wandb_metrics("test", test_metrics))
-        for key, value in _wandb_metrics("test", test_metrics).items():
-            wandb_run.summary[key] = value
-        if profile.loader_mode in {"colour", "condition"}:
-            wandb_run.summary.update(
-                {
-                    "colour_retention": colour_retention,
-                    "colour_percent": colour_percent,
-                }
-            )
-        if profile.loader_mode == "condition":
-            wandb_run.summary.update(
-                {
-                    "train_condition": input_condition["condition"],
-                    "train_feature": input_condition["feature"],
-                    "train_transform": input_condition["transform"],
-                    "train_strength": input_condition.get("strength"),
-                }
-            )
-        if cfg.get("wandb", {}).get("log_model", False):
-            metadata = {
-                "best_epoch": best_epoch,
-                "best_val_score": best,
-                "selection_metric": selection,
-            }
-            if profile.loader_mode in {"colour", "condition"}:
-                metadata.update(
-                    {
-                        "colour_retention": colour_retention,
-                        "colour_percent": colour_percent,
-                    }
-                )
-            if profile.loader_mode == "condition":
-                metadata["training_condition"] = input_condition
-            artifact = wandb.Artifact(
-                name=f"{run_name}-best-model",
-                type="model",
-                metadata=metadata,
-            )
-            artifact.add_file(str(out_dir / "best_model.pt"))
-            wandb_run.log_artifact(artifact)
-        wandb_run.finish()
+    summary = {
+        "best_epoch": best_epoch,
+        "best_val_score": best,
+        "selection_metric": selection,
+    }
+    if profile.loader_mode in {"colour", "condition"}:
+        summary.update({
+            "colour_retention": colour_retention,
+            "colour_percent": colour_percent,
+        })
+    if profile.loader_mode == "condition":
+        summary.update({
+            "train_condition": input_condition["condition"],
+            "train_feature": input_condition["feature"],
+            "train_transform": input_condition["transform"],
+            "train_strength": input_condition.get("strength"),
+        })
+    artifact_paths = [
+        out_dir / "config.json",
+        out_dir / "test_metrics.json",
+        out_dir / "split_summary.json",
+        out_dir / "label_to_index_by_task.json",
+        out_dir / "run_summary.json",
+        out_dir / "best_model.pt",
+        *sorted(out_dir.glob("classification_report_*.csv")),
+        *sorted(out_dir.glob("confusion_matrix_*.csv")),
+    ]
+    wandb_logger.log_artifacts(
+        artifact_paths,
+        model_metadata={
+            **summary,
+            "training_condition": input_condition,
+            "class_mappings": bundle.label_to_index_by_task,
+        },
+    )
+    wandb_logger.finalise_run(status="completed", summary=summary)
 
     print("\nTest metrics:")
     print(test_metrics)
