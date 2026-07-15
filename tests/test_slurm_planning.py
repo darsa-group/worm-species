@@ -49,6 +49,31 @@ class SlurmPlanningContracts(unittest.TestCase):
         self.assertEqual(parse_memory(12384), 12384)
         self.assertEqual(parse_time_limit("01:30:00"), 5400)
 
+    def test_experiment_configs_own_their_expected_expansion_counts(self) -> None:
+        expected_counts = {
+            "standard.yaml": 2,
+            "patch_shuffle_matrix.yaml": 12,
+            "colour_ablation.yaml": 202,
+            "dual_cue.yaml": 224,
+        }
+        for filename, expected_count in expected_counts.items():
+            with self.subTest(config=filename):
+                config = load_submission_config(
+                    EXPERIMENTS / filename,
+                    CLUSTERS / "local.yaml",
+                )
+                plan = plan_submission(config)
+                self.assertEqual(plan.array_size, expected_count)
+                self.assertEqual(plan.expected_internal_training_runs_per_task, 1)
+                self.assertTrue(plan.run_specs)
+                for spec in plan.run_specs:
+                    resolved = spec.resolved_config
+                    self.assertFalse(resolved["sweep"]["enabled"])
+                    self.assertFalse(resolved["colour_ablation"]["enabled"])
+                    self.assertFalse(
+                        resolved["matched_condition_training"]["enabled"]
+                    )
+
     def test_dual_cue_has_224_byte_compatible_specs(self) -> None:
         plan = self.dual_local_plan
         self.assertEqual(plan.array_size, 224)

@@ -15,10 +15,32 @@ from src.worm_species.config.loading import load_config
 
 
 ROOT = Path(__file__).resolve().parents[1]
+ROOT_CONFIG = ROOT / "config.yaml"
 DUAL_CUE = ROOT / "configs" / "experiments" / "dual_cue.yaml"
 
 
 class ExtendedConfigurationLoadingContracts(unittest.TestCase):
+    def test_root_config_inspection_reports_one_run(self) -> None:
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        with redirect_stdout(stdout), redirect_stderr(stderr):
+            status = inspect_main(
+                [
+                    "--config",
+                    str(ROOT_CONFIG),
+                    "--workflow",
+                    "training",
+                    "--format",
+                    "json",
+                ]
+            )
+        self.assertEqual(status, 0, stderr.getvalue())
+        summary = json.loads(stdout.getvalue())["summary"]
+        self.assertEqual(summary["expected_model_count"], 1)
+        self.assertEqual(summary["expected_sweep_combination_count"], 1)
+        self.assertEqual(summary["expected_condition_count"], 1)
+        self.assertEqual(summary["expected_total_run_count"], 1)
+
     def test_relative_inheritance_recursively_merges_without_reordering(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

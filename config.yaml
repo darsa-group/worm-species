@@ -172,12 +172,9 @@ input_condition:
   transform: original
   strength: 0.0
 
-# `experiment.type` is normally inferred from the switches above/below. It may
-# be made explicit as standard, matched_condition, rgb_stress_test, or
-# matched_and_rgb_stress. Explicit values must agree with the enabled training
-# condition and stress evaluation; leaving it absent is safest for run specs.
-# experiment:
-#   type: standard
+# The repository-root configuration is intentionally one ordinary local run.
+# With all condition/stress expansion switches disabled, its type is inferred as
+# standard. Experiment plans may set an explicit compatible type where useful.
 
 
 test_cue_suppression:
@@ -230,7 +227,7 @@ matched_condition_training:
   # and set exactly one input_condition for each trainer process.
   # It is incompatible with colour_ablation expansion and an already-resolved
   # input_condition. Test-only RGB stress remains a separate evaluation step.
-  enabled: true
+  enabled: false
   include_original: true
   deduplicate_equivalent_conditions: true
   evaluate_original_model_on_all_test_conditions: true
@@ -238,7 +235,7 @@ matched_condition_training:
 sweep:
   # Ordinary model/parameter expansion for local planning. Submitted run specs
   # turn this off before invoking the trainer so nested expansion is impossible.
-  enabled: true
+  enabled: false
 
   parameters:
     model.name:

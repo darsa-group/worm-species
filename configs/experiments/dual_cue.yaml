@@ -26,6 +26,13 @@ matched_condition_training:
 colour_ablation:
   enabled: false
 
+sweep:
+  enabled: true
+  parameters:
+    model.name:
+      - convnext_base
+      - vit_b_16
+
 slurm:
   planning:
     experiment_type: dual_cue

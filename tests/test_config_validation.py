@@ -29,17 +29,24 @@ class ConfigurationValidationContracts(unittest.TestCase):
             )
         self.assertIn(expected, str(caught.exception))
 
-    def test_current_two_model_baseline_is_valid_and_has_224_runs(self) -> None:
+    def test_root_baseline_is_valid_and_resolves_exactly_one_run(self) -> None:
         validate_config(
             self.baseline,
-            workflow="run_specs",
+            workflow="training",
             check_paths=False,
             check_model_registry=False,
         )
-        summary = inspection_summary(self.baseline, "run_specs")
-        self.assertEqual(summary["expected_model_count"], 2)
-        self.assertEqual(summary["expected_condition_count"], 112)
-        self.assertEqual(summary["expected_total_run_count"], 224)
+        summary = inspection_summary(self.baseline, "training")
+        self.assertEqual(summary["experiment_type"], "ordinary_training")
+        self.assertEqual(summary["expected_model_count"], 1)
+        self.assertEqual(summary["expected_sweep_combination_count"], 1)
+        self.assertEqual(summary["expected_condition_count"], 1)
+        self.assertEqual(summary["expected_total_run_count"], 1)
+        self.assertFalse(self.baseline["sweep"]["enabled"])
+        self.assertFalse(self.baseline["colour_ablation"]["enabled"])
+        self.assertFalse(self.baseline["matched_condition_training"]["enabled"])
+        self.assertFalse(self.baseline["test_cue_suppression"]["enabled"])
+        self.assertFalse(self.baseline["input_condition"]["enabled"])
 
     def test_missing_training_keys_are_reported_together(self) -> None:
         self.assert_invalid({}, "seed: is required for training", workflow="training")
