@@ -1,0 +1,111 @@
+{
+  "hierarchy": {
+    "array": "0-1%10",
+    "array_size": 2,
+    "collector_enabled": false,
+    "dependencies": [
+      [
+        "setup",
+        "train_array",
+        "afterok"
+      ],
+      [
+        "train_array",
+        "cleanup",
+        "afterany"
+      ]
+    ],
+    "generated_files": [
+      "node_local_cleanup_job.sh",
+      "node_local_setup_job.sh",
+      "node_local_training_array_job.sh"
+    ],
+    "hierarchy_enabled": [
+      true,
+      true
+    ],
+    "models": [
+      "convnext_base",
+      "vit_b_16"
+    ],
+    "nodelists": [
+      "gpu01",
+      "gpu02",
+      "gpu01",
+      "gpu02"
+    ],
+    "output_relpaths": [
+      "run_000",
+      "run_001"
+    ],
+    "plan_label": "hierarchy",
+    "resources": {
+      "cpus_per_task": 8,
+      "max_active": 10,
+      "memory_mib": 16384,
+      "time_limit": "04:00:00"
+    },
+    "run_ids": [
+      "run_000",
+      "run_001"
+    ],
+    "trainer_commands_per_script": 1,
+    "wandb_enabled": false
+  },
+  "scientific_delta": [
+    "multi_task.hierarchy_loss.enabled"
+  ],
+  "standard": {
+    "array": "0-1%10",
+    "array_size": 2,
+    "collector_enabled": false,
+    "dependencies": [
+      [
+        "setup",
+        "train_array",
+        "afterok"
+      ],
+      [
+        "train_array",
+        "cleanup",
+        "afterany"
+      ]
+    ],
+    "generated_files": [
+      "node_local_cleanup_job.sh",
+      "node_local_setup_job.sh",
+      "node_local_training_array_job.sh"
+    ],
+    "hierarchy_enabled": [
+      false,
+      false
+    ],
+    "models": [
+      "convnext_base",
+      "vit_b_16"
+    ],
+    "nodelists": [
+      "gpu01",
+      "gpu02",
+      "gpu01",
+      "gpu02"
+    ],
+    "output_relpaths": [
+      "run_000",
+      "run_001"
+    ],
+    "plan_label": "standard",
+    "resources": {
+      "cpus_per_task": 8,
+      "max_active": 10,
+      "memory_mib": 16384,
+      "time_limit": "04:00:00"
+    },
+    "run_ids": [
+      "run_000",
+      "run_001"
+    ],
+    "trainer_commands_per_script": 1,
+    "wandb_enabled": false
+  }
+}
