@@ -11,4 +11,5 @@ if [[ -n "$CONDA_SH" ]]; then
     conda activate "$CONDA_ENV"
 fi
 cd "$PROJECT_ROOT"
+export PYTHONPATH="$PROJECT_ROOT/src${PYTHONPATH:+:$PYTHONPATH}"
 @@COLLECT_COMMAND@@

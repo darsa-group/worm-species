@@ -119,8 +119,9 @@ class SlurmExecutionContracts(unittest.TestCase):
         self.assertEqual(genome.count("python -m worm_species.training"), 1)
         self.assertNotIn("--profile", genome)
         self.assertIn('export PYTHONPATH="$PROJECT_ROOT/src', genome)
-        self.assertIn("colour_ablation_results.csv", collector)
-        self.assertIn("failed_runs.csv", collector)
+        self.assertIn("python -m worm_species.slurm collect", collector)
+        self.assertIn("--kind colour-ablation", collector)
+        self.assertIn('export PYTHONPATH="$PROJECT_ROOT/src', collector)
 
     def test_node_local_templates_use_canonical_metadata_import(self):
         for name in (

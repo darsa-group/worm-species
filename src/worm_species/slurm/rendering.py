@@ -649,27 +649,18 @@ def _render_bundle(
 
     if bool(slurm.get("collection", {}).get("enabled", False)):
         collector_kind = _collector_kind(config)
-        if collector_kind == "dual-cue":
-            collector_command = shell_join(
-                [
-                    "python",
-                    "-m",
-                    "src.worm_species.slurm",
-                    "collect",
-                    "--results-root",
-                    str(Path(plan.results_root).resolve()),
-                    "--kind",
-                    "dual-cue",
-                ]
-            )
-        else:
-            collector_command = "python -c " + shell_quote(
-                "from pathlib import Path; import pandas as pd; "
-                f"root=Path({str(str(Path(plan.results_root).resolve()))!r}); "
-                "files=list(root.rglob('multi_run_results.csv')); "
-                "frames=[pd.read_csv(p) for p in files]; "
-                "pd.concat(frames, ignore_index=True).to_csv(root/'multi_run_results.csv', index=False) if frames else None"
-            )
+        collector_command = shell_join(
+            [
+                "python",
+                "-m",
+                "worm_species.slurm",
+                "collect",
+                "--results-root",
+                str(Path(plan.results_root).resolve()),
+                "--kind",
+                collector_kind,
+            ]
+        )
         collect_context = {
             "CONDA_ENV": shell_quote(slurm.get("environment", {}).get("conda_env", "wormspecies")),
             "CONDA_SH": shell_quote(slurm.get("environment", {}).get("conda_sh", "")),
@@ -678,10 +669,7 @@ def _render_bundle(
         }
         collect_name = "result_collector_job.sh"
         collector_template = "result_collector_job.sh.tmpl"
-        if collector_kind == "colour-ablation":
-            collector_template = "colour_collector_job.sh.tmpl"
-        else:
-            collect_context["COLLECT_COMMAND"] = collector_command
+        collect_context["COLLECT_COMMAND"] = collector_command
         _write(
             generated / collect_name,
             render_template(collector_template, collect_context),

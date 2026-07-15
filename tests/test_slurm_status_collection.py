@@ -11,7 +11,6 @@ from unittest import mock
 
 from src.worm_species.experiments.result_collection import collect_results
 from src.worm_species.slurm.collection import (
-    CollectionError,
     DUAL_OUTPUT_NAMES,
     collect_existing_results,
 )
@@ -222,19 +221,47 @@ class SlurmCollectionContracts(unittest.TestCase):
             {Path(path).name for path in report.output_paths}, set(adapted_outputs)
         )
 
-    def test_auto_marker_delegates_but_unsupported_modes_write_nothing(self) -> None:
+    def test_auto_manifest_distinguishes_dual_colour_and_standard(self) -> None:
         dual = self.root / "dual"
         _make_collection_tree(dual)
-        _write_json(dual / "dual_cue_experiment_plan.json", {"n_total_runs": 1})
+        _write_json(
+            dual / "condition_manifest.json", {"experiment_type": "dual_cue"}
+        )
         report = collect_existing_results(dual)
         self.assertEqual(report.kind, "dual-cue")
 
-        unsupported = self.root / "unsupported"
-        unsupported.mkdir()
-        before = list(unsupported.iterdir())
-        with self.assertRaisesRegex(CollectionError, "unsupported"):
-            collect_existing_results(unsupported, kind="colour-ablation")
-        self.assertEqual(list(unsupported.iterdir()), before)
+        colour = self.root / "colour"
+        _write_json(
+            colour / "condition_manifest.json",
+            {"experiment_type": "colour_ablation"},
+        )
+        _write_json(
+            colour / "run_000/scientific/run_summary.json",
+            {"run_name": "colour", "colour_percent": 100},
+        )
+        (colour / "run_000/run_status.txt").write_text("0\n", encoding="utf-8")
+        colour_report = collect_existing_results(colour)
+        self.assertEqual(colour_report.kind, "colour-ablation")
+        self.assertTrue((colour / "colour_ablation_results.csv").is_file())
+
+        standard = self.root / "standard"
+        nested = standard / "run_000/multi_run_results.csv"
+        nested.parent.mkdir(parents=True)
+        nested.write_text("model,score\nresnet18,0.8\n", encoding="utf-8")
+        first = collect_existing_results(standard, kind="standard")
+        self.assertEqual(first.kind, "standard")
+        self.assertEqual(
+            (standard / "multi_run_results.csv").read_text(encoding="utf-8"),
+            "model,score\nresnet18,0.8\n",
+        )
+        second = collect_existing_results(standard)
+        self.assertEqual(second.kind, "standard")
+        # Preserve the old inline collector's rerun behavior: it also reads its
+        # own prior root output and therefore duplicates the nested row.
+        self.assertEqual(
+            (standard / "multi_run_results.csv").read_text(encoding="utf-8"),
+            "model,score\nresnet18,0.8\nresnet18,0.8\n",
+        )
 
 
 class SlurmStatusCollectionCliContracts(unittest.TestCase):
