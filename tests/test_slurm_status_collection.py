@@ -4,6 +4,8 @@ import json
 import shutil
 import tempfile
 import unittest
+from contextlib import redirect_stdout
+from io import StringIO
 from pathlib import Path
 from unittest import mock
 
@@ -13,6 +15,7 @@ from src.worm_species.slurm.collection import (
     DUAL_OUTPUT_NAMES,
     collect_existing_results,
 )
+from src.worm_species.slurm.cli import main as slurm_main
 from src.worm_species.slurm.status import build_status_report
 from src.worm_species.slurm.submission import CommandResult
 
@@ -232,6 +235,50 @@ class SlurmCollectionContracts(unittest.TestCase):
         with self.assertRaisesRegex(CollectionError, "unsupported"):
             collect_existing_results(unsupported, kind="colour-ablation")
         self.assertEqual(list(unsupported.iterdir()), before)
+
+
+class SlurmStatusCollectionCliContracts(unittest.TestCase):
+    def setUp(self) -> None:
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+
+    def test_status_cli_can_use_filesystem_only_json(self) -> None:
+        experiment = _make_status_experiment(self.root)
+        output = StringIO()
+        with redirect_stdout(output):
+            exit_code = slurm_main(
+                [
+                    "status",
+                    "--results-root",
+                    str(experiment),
+                    "--no-scheduler",
+                    "--json",
+                ]
+            )
+        self.assertEqual(exit_code, 0)
+        payload = json.loads(output.getvalue())
+        self.assertEqual(payload["expected_run_count"], 2)
+        self.assertFalse(payload["scheduler_available"])
+
+    def test_collect_cli_delegates_to_canonical_adapter(self) -> None:
+        result_root = self.root / "dual"
+        _make_collection_tree(result_root)
+        output = StringIO()
+        with redirect_stdout(output):
+            exit_code = slurm_main(
+                [
+                    "collect",
+                    "--results-root",
+                    str(result_root),
+                    "--kind",
+                    "dual-cue",
+                    "--json",
+                ]
+            )
+        self.assertEqual(exit_code, 0)
+        payload = json.loads("{" + output.getvalue().split("{", 1)[1])
+        self.assertEqual(payload["kind"], "dual-cue")
 
 
 if __name__ == "__main__":

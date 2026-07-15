@@ -8,6 +8,8 @@ import shlex
 import sys
 from pathlib import Path
 
+from .collection import CollectionError
+from .collection import collect_existing_results
 from .config import SlurmConfigError
 from .config import load_submission_config
 from .planning import plan_submission
@@ -16,6 +18,7 @@ from .rendering import write_artifact_bundle
 from .submission import SubmissionError
 from .submission import build_submission_commands
 from .submission import submit_manifest
+from .status import build_status_report
 
 
 def _add_plan_arguments(parser: argparse.ArgumentParser) -> None:
@@ -57,6 +60,21 @@ def build_parser() -> argparse.ArgumentParser:
     )
     submit.add_argument("--manifest", required=True)
     submit.add_argument("--json", action="store_true", dest="json_output")
+
+    status = subparsers.add_parser(
+        "status", help="summarise filesystem and optional scheduler state"
+    )
+    status.add_argument("--results-root", required=True)
+    status.add_argument("--submission-root")
+    status.add_argument("--no-scheduler", action="store_true")
+    status.add_argument("--json", action="store_true", dest="json_output")
+
+    collect = subparsers.add_parser(
+        "collect", help="aggregate existing results without training"
+    )
+    collect.add_argument("--results-root", required=True)
+    collect.add_argument("--kind", default="auto")
+    collect.add_argument("--json", action="store_true", dest="json_output")
     return parser
 
 
@@ -97,6 +115,42 @@ def _print_render_summary(
 
 
 def execute(args: argparse.Namespace) -> int:
+    if args.command == "status":
+        report = build_status_report(
+            args.results_root,
+            submission_root=args.submission_root,
+            query_scheduler=not args.no_scheduler,
+        )
+        data = report.as_dict()
+        if args.json_output:
+            print(json.dumps(data, indent=2, sort_keys=True))
+        else:
+            expected = report.expected_run_count
+            expected_text = "unknown" if expected is None else str(expected)
+            print(f"Experiment: {report.experiment_name}")
+            print(
+                "Runs: "
+                f"{report.materialized_run_count} materialized / "
+                f"{expected_text} expected"
+            )
+            print(f"Filesystem: {report.filesystem_counts}")
+            if report.submitted_jobs:
+                print(f"Scheduler: {report.scheduler_counts}")
+            if report.warnings:
+                print(f"Warnings: {len(report.warnings)}")
+        return 0
+
+    if args.command == "collect":
+        report = collect_existing_results(args.results_root, kind=args.kind)
+        data = report.as_dict()
+        if args.json_output:
+            print(json.dumps(data, indent=2, sort_keys=True))
+        else:
+            print(f"Collection kind: {report.kind}")
+            for output_path in report.output_paths:
+                print(output_path)
+        return 0
+
     if args.command == "submit":
         submitted = submit_manifest(args.manifest)
         if args.json_output:
@@ -130,7 +184,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         return execute(args)
-    except (SlurmConfigError, RenderError) as exc:
+    except (SlurmConfigError, RenderError, CollectionError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
     except SubmissionError as exc:
