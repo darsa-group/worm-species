@@ -35,6 +35,7 @@ if [[ -n "$CONDA_SH" ]]; then
     conda activate "$CONDA_ENV"
 fi
 cd "$PROJECT_ROOT"
+export PYTHONPATH="$PROJECT_ROOT/src${PYTHONPATH:+:$PYTHONPATH}"
 
 (
     flock -x 200
@@ -42,7 +43,7 @@ cd "$PROJECT_ROOT"
         python - "$RESOLVED_CONFIG" "$DATA_ROOT" "$CACHE_ROOT" <<'PY'
 import sys
 from src.cache import build_image_cache
-from src.dataset_multitask import prepare_metadata
+from worm_species.data.metadata import prepare_metadata
 from src.utils import load_config
 
 cfg = load_config(sys.argv[1])

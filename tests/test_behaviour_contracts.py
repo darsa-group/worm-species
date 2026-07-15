@@ -20,16 +20,18 @@ from torch.utils.data import DataLoader, Dataset
 import collect_dual_cue_results
 import generate_dual_cue_run_specs
 import train_multitask_masked_hloss as hierarchy_trainer
-from src.dataset_multitask import (
-    MISSING_LABEL,
-    ColourRetention,
+from src.worm_species.data.conditions import (
     build_condition_transform,
     build_test_condition_transform,
+)
+from src.worm_species.data.labels import (
+    MISSING_LABEL,
     is_missing_label,
 )
+from src.worm_species.data.transforms import ColourRetention
 from src.utils import apply_overrides, make_run_name, parse_scalar, short_hash
-from src.worm_species.models.multitask import MultiTaskClassifier
 from src.worm_species.data.labels import read_csvs_from_dir
+from src.worm_species.models.multitask import MultiTaskClassifier
 from src.worm_species.training.checkpoints import checkpoint_keys
 from src.worm_species.training.modes import get_profile
 
