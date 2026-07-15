@@ -21,8 +21,8 @@ except ImportError:
 
 from ..data.conditions import build_test_condition_transform
 from ..data.datasets import MultiTaskWormImageDataset
+from ..results.writing import save_json
 from ..training.epochs import run_hierarchy_epoch as run_epoch
-from src.utils import save_json
 
 
 def _inclusive_float_sequence(start: float, stop: float, step: float) -> list[float]:

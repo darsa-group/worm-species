@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from .naming import make_run_name
+
 
 @dataclass(frozen=True)
 class TrainingProfile:
@@ -208,8 +210,6 @@ def validate_training_semantics(
 
 
 def resolved_run_name(cfg: dict, profile: TrainingProfile) -> str:
-    from src.utils import make_run_name
-
     base = make_run_name(cfg)
     if profile.loader_mode == "standard":
         return base
