@@ -10,13 +10,12 @@ from torch.utils.data import DataLoader
 from src.cache import build_image_cache
 from src.splits import make_individual_level_splits
 
-from ..data.conditions import build_condition_transform
 from ..data.datasets import MultiTaskWormImageDataset
 from ..data.labels import build_label_maps
 from ..data.labels import get_target_cols
 from ..data.labels import read_csvs_from_dir
 from ..data.metadata import prepare_metadata
-from ..data.transforms import build_transforms
+from ..data.transforms import build_split_transform
 from .modes import TrainingProfile
 from .modes import get_profile
 
@@ -74,6 +73,9 @@ def get_input_condition(cfg: dict) -> dict:
         "transform": transform_name,
         "strength": float(raw.get("strength", 0.0)),
     }
+    nested_parameters = raw.get("parameters", {}) or {}
+    if not isinstance(nested_parameters, dict):
+        raise TypeError("input_condition.parameters must be a mapping")
     parameter_keys = {
         "retention",
         "order",
@@ -85,8 +87,9 @@ def get_input_condition(cfg: dict) -> dict:
         "seed",
     }
     for key in parameter_keys:
-        if key in raw and raw[key] is not None:
-            condition[key] = raw[key]
+        value = raw.get(key, nested_parameters.get(key))
+        if value is not None:
+            condition[key] = value
 
     if transform_name == "saturation":
         condition["retention"] = float(condition.get("retention", 1.0))
@@ -193,7 +196,15 @@ def make_profile_loaders(cfg: dict, profile: TrainingProfile) -> LoaderBundle:
     label_to_index_by_task, index_to_label_by_task = build_label_maps(
         train_df, target_cols
     )
-    image_size = cfg["data"]["image_size"]
+    preprocessing = copy.deepcopy(cfg.get("preprocessing", {}) or {})
+    if not isinstance(preprocessing, dict):
+        raise TypeError("preprocessing must be a mapping")
+    if "image_size" not in preprocessing:
+        preprocessing["image_size"] = cfg["data"]["image_size"]
+    augmentation = copy.deepcopy(cfg.get("augmentation", {}) or {})
+    if not isinstance(augmentation, dict):
+        raise TypeError("augmentation must be a mapping")
+    image_size = preprocessing["image_size"]
     colour_retention = (
         1.0
         if profile.loader_mode == "standard"
@@ -210,30 +221,24 @@ def make_profile_loaders(cfg: dict, profile: TrainingProfile) -> LoaderBundle:
         }
     )
 
-    if profile.loader_mode == "standard":
-        train_tf = build_transforms(image_size=image_size, train=True)
-        eval_tf = build_transforms(image_size=image_size, train=False)
-    elif profile.loader_mode == "colour":
+    if profile.loader_mode == "colour":
         print(
             f"Using colour_retention={colour_retention} for data augmentation."
         )
-        train_tf = build_transforms(
-            image_size=image_size,
-            train=True,
-            colour_retention=colour_retention,
-        )
-        eval_tf = build_transforms(
-            image_size=image_size,
-            train=False,
-            colour_retention=colour_retention,
-        )
-    else:
-        train_tf = build_condition_transform(
-            image_size, True, input_condition, colour_retention
-        )
-        eval_tf = build_condition_transform(
-            image_size, False, input_condition, colour_retention
-        )
+    train_tf = build_split_transform(
+        split="train",
+        preprocessing=preprocessing,
+        augmentation=augmentation,
+        condition=input_condition,
+        original_colour_retention=colour_retention,
+    )
+    eval_tf = build_split_transform(
+        split="validation",
+        preprocessing=preprocessing,
+        augmentation=augmentation,
+        condition=input_condition,
+        original_colour_retention=colour_retention,
+    )
 
     common_kwargs = {
         "root_dir": cfg["data"]["root_dir"],
@@ -323,6 +328,8 @@ def make_profile_loaders(cfg: dict, profile: TrainingProfile) -> LoaderBundle:
             "batch_size": batch_size,
             "loader_kwargs": eval_loader_kwargs,
             "image_size": image_size,
+            "preprocessing": preprocessing,
+            "augmentation": augmentation,
             "original_colour_retention": colour_retention,
             "training_condition": input_condition,
         }
