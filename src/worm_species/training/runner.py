@@ -27,6 +27,7 @@ from .losses import build_criteria
 from .metrics import score_for_selection
 from .modes import TrainingProfile
 from .modes import resolved_run_name
+from .modes import stress_evaluation_enabled
 from .reproducibility import set_seed
 
 def initialise_wandb_run(
@@ -70,9 +71,7 @@ def run_one(cfg: dict, profile: TrainingProfile) -> dict:
     }
     if profile.loader_mode == "condition":
         input_condition = get_input_condition(cfg)
-        stress_enabled = bool(
-            (cfg.get("test_cue_suppression", {}) or {}).get("enabled", False)
-        )
+        stress_enabled = stress_evaluation_enabled(cfg)
         if stress_enabled and input_condition["transform"] != "original":
             raise ValueError(
                 "Fixed-RGB stress evaluation requires an original-trained "
@@ -431,11 +430,13 @@ def run_one(cfg: dict, profile: TrainingProfile) -> dict:
         )
 
     condition_matrix = {"enabled": False, "n_conditions": 0, "n_task_rows": 0}
-    if bool(
-        (cfg.get("condition_matrix_evaluation", {}) or {}).get(
-            "enabled", False
-        )
-    ):
+    evaluation = cfg.get("evaluation", {}) or {}
+    matrix_cfg = (
+        evaluation.get("condition_matrix", {}) or {}
+        if isinstance(evaluation, dict) and "condition_matrix" in evaluation
+        else cfg.get("condition_matrix_evaluation", {}) or {}
+    )
+    if bool(matrix_cfg.get("enabled", False)):
         condition_matrix = evaluate_condition_matrix(
             cfg=cfg,
             run_name=run_name,

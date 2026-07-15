@@ -46,8 +46,86 @@ def _inclusive_float_sequence(start: float, stop: float, step: float) -> list[fl
     return values
 
 
+def _runtime_condition(raw: dict) -> dict:
+    condition = {
+        "condition": str(raw.get("name") or raw.get("condition")),
+        "feature": str(raw.get("feature", "baseline")),
+        "transform": str(raw.get("transform", "original")),
+        "strength": raw.get("strength", 0.0),
+    }
+    parameters = raw.get("parameters", {}) or {}
+    if not isinstance(parameters, dict):
+        raise TypeError("condition parameters must be a mapping")
+    condition.update(parameters)
+    if condition["transform"] == "grayscale":
+        condition.setdefault("retention", 0.0)
+    return condition
+
+
+def _canonical_test_conditions(cfg: dict) -> list[dict] | None:
+    evaluation = cfg.get("evaluation")
+    if not isinstance(evaluation, dict) or "test_conditions" not in evaluation:
+        return None
+    schedule = evaluation.get("test_conditions", {}) or {}
+    if not isinstance(schedule, dict):
+        raise TypeError("evaluation.test_conditions must be a mapping")
+    if not bool(schedule.get("enabled", False)):
+        return []
+
+    configured = schedule.get("conditions", [])
+    if not isinstance(configured, list) or not configured:
+        raise ValueError(
+            "evaluation.test_conditions.conditions must be a non-empty list"
+        )
+    sweep = cfg.get("sweep", {}) or {}
+    registry: dict[str, dict] = {}
+    if isinstance(sweep, dict) and sweep.get("conditions"):
+        from ..config.normalization import normalize_conditions
+
+        registry.update({
+            str(item["name"]): item
+            for item in normalize_conditions(sweep["conditions"])
+        })
+    registry.setdefault(
+        "original",
+        {
+            "name": "original",
+            "feature": "baseline",
+            "transform": "original",
+            "strength": 0.0,
+            "parameters": {},
+        },
+    )
+
+    resolved = []
+    for index, item in enumerate(configured):
+        if isinstance(item, str):
+            try:
+                item = registry[item]
+            except KeyError as exc:
+                raise ValueError(
+                    "Unknown evaluation.test_conditions condition "
+                    f"{item!r} at index {index}"
+                ) from exc
+        if not isinstance(item, dict):
+            raise TypeError(
+                "evaluation.test_conditions.conditions entries must be names "
+                "or complete condition mappings"
+            )
+        resolved.append(_runtime_condition(item))
+    names = [item["condition"] for item in resolved]
+    if len(names) != len(set(names)):
+        raise ValueError(
+            "evaluation.test_conditions.conditions contains duplicate names"
+        )
+    return resolved
+
+
 def generate_test_cue_conditions(cfg: dict) -> list[dict]:
     """Create deterministic test conditions from ``test_cue_suppression``."""
+    canonical = _canonical_test_conditions(cfg)
+    if canonical is not None:
+        return canonical
     cue_cfg = cfg.get("test_cue_suppression", {}) or {}
     if not bool(cue_cfg.get("enabled", False)):
         return []

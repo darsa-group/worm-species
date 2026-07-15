@@ -53,6 +53,16 @@ def get_profile(name: str) -> TrainingProfile:
         ) from exc
 
 
+def stress_evaluation_enabled(config: dict) -> bool:
+    evaluation = config.get("evaluation", {}) or {}
+    if isinstance(evaluation, dict) and "test_conditions" in evaluation:
+        schedule = evaluation.get("test_conditions", {}) or {}
+        return isinstance(schedule, dict) and bool(schedule.get("enabled", False))
+    return bool(
+        (config.get("test_cue_suppression", {}) or {}).get("enabled", False)
+    )
+
+
 def infer_experiment_type(config: dict) -> str:
     """Infer a per-process experiment type from explicit feature switches."""
     configured = str((config.get("experiment", {}) or {}).get("type") or "")
@@ -60,9 +70,7 @@ def infer_experiment_type(config: dict) -> str:
         return configured
 
     condition = config.get("input_condition", {}) or {}
-    stress_enabled = bool(
-        (config.get("test_cue_suppression", {}) or {}).get("enabled", False)
-    )
+    stress_enabled = stress_evaluation_enabled(config)
     if stress_enabled and bool(condition.get("enabled", False)):
         return "matched_and_rgb_stress"
     if stress_enabled:
@@ -80,9 +88,7 @@ def resolve_configured_profile(config: dict) -> TrainingProfile:
     condition_enabled = bool(
         (config.get("input_condition", {}) or {}).get("enabled", False)
     )
-    stress_enabled = bool(
-        (config.get("test_cue_suppression", {}) or {}).get("enabled", False)
-    )
+    stress_enabled = stress_evaluation_enabled(config)
     colour_expansion = bool(
         (config.get("colour_ablation", {}) or {}).get("enabled", False)
     )
@@ -136,9 +142,7 @@ def validate_training_semantics(
     transformed = condition_enabled and str(
         condition.get("transform", "original")
     ).lower() != "original"
-    stress_enabled = bool(
-        (config.get("test_cue_suppression", {}) or {}).get("enabled", False)
-    )
+    stress_enabled = stress_evaluation_enabled(config)
     colour_expansion = bool(
         (config.get("colour_ablation", {}) or {}).get("enabled", False)
     )

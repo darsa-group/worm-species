@@ -18,6 +18,7 @@ from sklearn.metrics import classification_report, confusion_matrix
 
 from .cue_suppression import generate_test_cue_conditions
 from .cue_suppression import make_test_condition_loader
+from .cue_suppression import _runtime_condition
 from ..training.epochs import run_hierarchy_epoch as run_epoch
 
 
@@ -44,6 +45,62 @@ def resolve_condition_matrix_conditions(cfg: dict) -> list[dict[str, Any]]:
     parameters.  Its runtime ``enabled`` flag and optional fixed-RGB allow-list
     do not control this independent evaluator.
     """
+    evaluation = cfg.get("evaluation")
+    if isinstance(evaluation, dict) and "condition_matrix" in evaluation:
+        matrix = evaluation.get("condition_matrix", {}) or {}
+        if not isinstance(matrix, dict):
+            raise TypeError("evaluation.condition_matrix must be a mapping")
+        configured = matrix.get("conditions", [])
+        if not isinstance(configured, list) or not configured:
+            raise ValueError(
+                "evaluation.condition_matrix.conditions must be a non-empty list"
+            )
+        registry: dict[str, dict[str, Any]] = {
+            "original": {
+                "name": "original",
+                "feature": "baseline",
+                "transform": "original",
+                "strength": 0.0,
+                "parameters": {},
+            }
+        }
+        sweep = cfg.get("sweep", {}) or {}
+        if isinstance(sweep, dict) and sweep.get("conditions"):
+            from ..config.normalization import normalize_conditions
+
+            registry.update({
+                str(item["name"]): item
+                for item in normalize_conditions(sweep["conditions"])
+            })
+        test_schedule = evaluation.get("test_conditions", {}) or {}
+        if isinstance(test_schedule, dict):
+            for item in test_schedule.get("conditions", []) or []:
+                if isinstance(item, dict):
+                    name = item.get("name") or item.get("condition")
+                    if name:
+                        registry[str(name)] = item
+        resolved = []
+        for item in configured:
+            if isinstance(item, str):
+                if item not in registry:
+                    raise ValueError(
+                        "Unknown evaluation.condition_matrix condition "
+                        f"{item!r}"
+                    )
+                item = registry[item]
+            if not isinstance(item, dict):
+                raise TypeError(
+                    "evaluation.condition_matrix.conditions entries must be "
+                    "names or complete condition mappings"
+                )
+            resolved.append(_runtime_condition(item))
+        names = [item["condition"] for item in resolved]
+        if len(names) != len(set(names)):
+            raise ValueError(
+                "evaluation.condition_matrix.conditions contains duplicate names"
+            )
+        return resolved
+
     matrix = cfg.get("condition_matrix_evaluation", {}) or {}
     if not isinstance(matrix, dict):
         raise TypeError("condition_matrix_evaluation must be a mapping")
@@ -223,7 +280,12 @@ def evaluate_condition_matrix(
     wandb_logger: Any = None,
 ) -> dict[str, Any]:
     """Evaluate one selected checkpoint across the configured test matrix."""
-    matrix_cfg = cfg.get("condition_matrix_evaluation", {}) or {}
+    evaluation = cfg.get("evaluation", {}) or {}
+    matrix_cfg = (
+        evaluation.get("condition_matrix", {}) or {}
+        if isinstance(evaluation, dict) and "condition_matrix" in evaluation
+        else cfg.get("condition_matrix_evaluation", {}) or {}
+    )
     if not bool(matrix_cfg.get("enabled", False)):
         return {"enabled": False, "n_conditions": 0, "n_task_rows": 0}
     if test_loader_context is None:

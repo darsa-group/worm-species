@@ -8,12 +8,14 @@ import json
 from pathlib import Path
 
 from ..config.loading import load_config
+from ..config.normalization import normalize_config
 from ..config.overrides import apply_overrides
 from ..config.sweeps import generate_sweep_configs
 from .modes import get_profile
 from .modes import infer_experiment_type
 from .modes import resolve_configured_profile
 from .modes import resolved_run_name
+from .modes import stress_evaluation_enabled
 from .modes import validate_training_semantics
 
 
@@ -57,6 +59,10 @@ def resolve_plan(
 ):
     source = load_config(config_path)
     overridden = apply_overrides(source, overrides)
+    canonical_requested = any(
+        key in overridden for key in ("preprocessing", "augmentation", "evaluation")
+    ) or bool((overridden.get("sweep", {}) or {}).get("conditions"))
+    base_config = normalize_config(overridden) if canonical_requested else overridden
     configured_profile = overridden.get("training", {}).get("profile")
     if explicit_profile is None and configured_profile is not None:
         raise ValueError(
@@ -66,28 +72,26 @@ def resolve_plan(
         )
     chosen = explicit_profile
     compatibility_profile = get_profile(str(chosen)) if chosen else None
-    profile = compatibility_profile or resolve_configured_profile(overridden)
+    expansion_profile = compatibility_profile or resolve_configured_profile(base_config)
     expanded = generate_sweep_configs(
-        overridden,
+        base_config,
         sweep,
-        include_colour_ablation=profile.colour_sweep,
+        include_colour_ablation=expansion_profile.colour_sweep,
     )
     resolved = []
     resolved_types = []
+    resolved_profiles = []
+    profile = compatibility_profile
 
     for item in expanded:
         cfg = copy.deepcopy(item)
         if compatibility_profile is None:
             item_profile = resolve_configured_profile(cfg)
-            if item_profile != profile:
-                raise ValueError(
-                    "One canonical invocation cannot sweep over training feature "
-                    "switches that resolve to different loader or output contracts"
-                )
             experiment_type = infer_experiment_type(cfg)
             validate_training_semantics(cfg, item_profile, experiment_type)
             resolved.append(cfg)
             resolved_types.append(experiment_type)
+            resolved_profiles.append(item_profile)
             continue
 
         condition = cfg.get("input_condition", {}) or {}
@@ -164,6 +168,15 @@ def resolve_plan(
         resolved.append(cfg)
         resolved_types.append(experiment_type)
 
+    profile = compatibility_profile or resolved_profiles[0]
+    if compatibility_profile is None and any(
+        item_profile != profile for item_profile in resolved_profiles[1:]
+    ):
+        raise ValueError(
+            "One canonical invocation cannot sweep over training feature "
+            "switches that resolve to different loader or output contracts"
+        )
+
     external = bool(
         (overridden.get("input_condition", {}) or {}).get("enabled", False)
     )
@@ -190,7 +203,8 @@ def _plan_summary(profile, configs, experiment_types):
     conditions = sorted(
         {
             str(
-                (c.get("input_condition", {}) or {}).get("condition", "original")
+                (c.get("input_condition", {}) or {}).get("condition")
+                or (c.get("input_condition", {}) or {}).get("name", "original")
             )
             for c in configs
         }
@@ -202,7 +216,12 @@ def _plan_summary(profile, configs, experiment_types):
         if profile.hierarchy
         else {}
     )
-    matrix_cfg = first.get("condition_matrix_evaluation", {}) or {}
+    evaluation = first.get("evaluation", {}) or {}
+    matrix_cfg = (
+        evaluation.get("condition_matrix", {}) or {}
+        if isinstance(evaluation, dict) and "condition_matrix" in evaluation
+        else first.get("condition_matrix_evaluation", {}) or {}
+    )
     matrix_enabled = bool(matrix_cfg.get("enabled", False))
     matrix_conditions = (
         resolve_condition_matrix_conditions(first) if matrix_enabled else []
@@ -234,11 +253,12 @@ def _plan_summary(profile, configs, experiment_types):
         "resolved_training_conditions": conditions,
         "post_training_rgb_stress": bool(
             profile.stress_evaluation
-            and first.get("test_cue_suppression", {}).get("enabled", False)
+            and stress_evaluation_enabled(first)
         ),
         "post_training_condition_matrix": matrix_enabled,
         "condition_matrix_test_conditions": [
-            condition["condition"] for condition in matrix_conditions
+            condition.get("condition") or condition.get("name")
+            for condition in matrix_conditions
         ],
         "condition_matrix_evaluation_cells_per_training_run": len(
             matrix_conditions
