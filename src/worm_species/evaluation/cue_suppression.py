@@ -1,0 +1,386 @@
+"""Fixed-RGB stress-test condition generation and loader construction.
+
+This module never generates matched-condition training runs.
+"""
+from __future__ import annotations
+
+import json
+import math
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
+import torch
+from torch import nn
+from torch.utils.data import DataLoader
+
+try:
+    import wandb
+except ImportError:
+    wandb = None
+
+from ..data.conditions import build_test_condition_transform
+from ..data.datasets import MultiTaskWormImageDataset
+from ..training.epochs import run_hierarchy_epoch as run_epoch
+from src.utils import save_json
+
+
+def _inclusive_float_sequence(start: float, stop: float, step: float) -> list[float]:
+    """Return an inclusive, rounded sequence in either direction."""
+    start = float(start)
+    stop = float(stop)
+    step = abs(float(step))
+    if step == 0:
+        raise ValueError("Sequence step must be greater than zero.")
+
+    direction = -1.0 if start > stop else 1.0
+    values = []
+    current = start
+    tolerance = step * 1e-6
+    if direction < 0:
+        while current >= stop - tolerance:
+            values.append(round(current, 10))
+            current -= step
+    else:
+        while current <= stop + tolerance:
+            values.append(round(current, 10))
+            current += step
+
+    if not values or not math.isclose(values[-1], stop, abs_tol=tolerance):
+        values.append(stop)
+    return values
+
+
+def generate_test_cue_conditions(cfg: dict) -> list[dict]:
+    """Create deterministic test conditions from ``test_cue_suppression``."""
+    cue_cfg = cfg.get("test_cue_suppression", {}) or {}
+    if not bool(cue_cfg.get("enabled", False)):
+        return []
+
+    conditions: list[dict] = []
+
+    saturation_cfg = cue_cfg.get("saturation", {}) or {}
+    if bool(saturation_cfg.get("enabled", True)):
+        values = saturation_cfg.get("values")
+        if values is None:
+            values = _inclusive_float_sequence(
+                saturation_cfg.get("start", 1.0),
+                saturation_cfg.get("stop", 0.0),
+                saturation_cfg.get("step", 0.01),
+            )
+        for retention in values:
+            retention = float(retention)
+            if not 0.0 <= retention <= 1.0:
+                raise ValueError(
+                    f"Saturation retention values must be in [0, 1], got {retention}."
+                )
+            percentage = int(round(retention * 100))
+            conditions.append({
+                "condition": f"saturation_{percentage:03d}pct",
+                "feature": "colour",
+                "transform": "saturation",
+                "strength": round(float(1.0 - retention), 10),
+                "retention": retention,
+            })
+
+    grayscale_cfg = cue_cfg.get("grayscale", {}) or {}
+    if bool(grayscale_cfg.get("enabled", True)):
+        conditions.append({
+            "condition": "grayscale",
+            "feature": "colour",
+            "transform": "grayscale",
+            "strength": 1.0,
+            "retention": 0.0,
+        })
+
+    channel_cfg = cue_cfg.get("channel_shuffle", {}) or {}
+    if bool(channel_cfg.get("enabled", True)):
+        orders = channel_cfg.get("orders", [[2, 0, 1]])
+        for order in orders:
+            order = [int(i) for i in order]
+            conditions.append({
+                "condition": "channel_shuffle_" + "".join(str(i) for i in order),
+                "feature": "colour",
+                "transform": "channel_shuffle",
+                "strength": 1.0,
+                "order": order,
+            })
+
+    bilateral_cfg = cue_cfg.get("bilateral_filter", {}) or {}
+    if bool(bilateral_cfg.get("enabled", True)):
+        settings = bilateral_cfg.get("settings", [
+            {"diameter": 5, "sigma_colour": 25, "sigma_space": 25},
+            {"diameter": 7, "sigma_colour": 50, "sigma_space": 50},
+            {"diameter": 9, "sigma_colour": 100, "sigma_space": 100},
+        ])
+        for setting in settings:
+            diameter = int(setting["diameter"])
+            sigma_colour = float(setting["sigma_colour"])
+            sigma_space = float(setting["sigma_space"])
+            conditions.append({
+                "condition": (
+                    f"bilateral_d{diameter}_c{sigma_colour:g}_s{sigma_space:g}"
+                ),
+                "feature": "texture",
+                "transform": "bilateral_filter",
+                "strength": sigma_colour,
+                "diameter": diameter,
+                "sigma_colour": sigma_colour,
+                "sigma_space": sigma_space,
+            })
+
+    gaussian_cfg = cue_cfg.get("gaussian_blur", {}) or {}
+    if bool(gaussian_cfg.get("enabled", True)):
+        for sigma in gaussian_cfg.get("sigmas", [0.5, 1.0, 2.0, 4.0]):
+            sigma = float(sigma)
+            conditions.append({
+                "condition": f"gaussian_sigma_{sigma:g}",
+                "feature": "texture",
+                "transform": "gaussian_blur",
+                "strength": sigma,
+                "sigma": sigma,
+            })
+
+    patch_cfg = cue_cfg.get("patch_shuffle", {}) or {}
+    if bool(patch_cfg.get("enabled", True)):
+        seed = int(patch_cfg.get("seed", cfg.get("seed", 0)))
+        for grid_size in patch_cfg.get("grid_sizes", [2, 4, 8]):
+            grid_size = int(grid_size)
+            conditions.append({
+                "condition": f"patch_shuffle_grid_{grid_size}",
+                "feature": "shape",
+                "transform": "patch_shuffle",
+                "strength": grid_size,
+                "grid_size": grid_size,
+                "seed": seed,
+            })
+
+    names = [condition["condition"] for condition in conditions]
+    if len(names) != len(set(names)):
+        duplicates = sorted({name for name in names if names.count(name) > 1})
+        raise ValueError(f"Duplicate test cue condition names: {duplicates}")
+    return conditions
+
+
+def _test_condition_signature(condition: dict, original_colour_retention: float) -> str:
+    """Identify conditions that produce exactly the same transformed input."""
+    transform_name = condition["transform"]
+    if transform_name == "original":
+        return f"colour_retention:{original_colour_retention:.10f}"
+    if transform_name == "saturation":
+        return f"colour_retention:{float(condition['retention']):.10f}"
+    if transform_name == "grayscale":
+        return "colour_retention:0.0000000000"
+    return json.dumps(condition, sort_keys=True)
+
+
+def make_test_condition_loader(test_loader_context: dict, condition: dict) -> DataLoader:
+    transform = build_test_condition_transform(
+        image_size=int(test_loader_context["image_size"]),
+        condition=condition,
+        original_colour_retention=float(
+            test_loader_context["original_colour_retention"]
+        ),
+    )
+    dataset = MultiTaskWormImageDataset(
+        test_loader_context["test_df"],
+        transform=transform,
+        **test_loader_context["dataset_kwargs"],
+    )
+    return DataLoader(
+        dataset,
+        batch_size=int(test_loader_context["batch_size"]),
+        shuffle=False,
+        **test_loader_context["loader_kwargs"],
+    )
+
+def evaluate_test_cue_suppression(
+    *,
+    cfg: dict,
+    run_name: str,
+    out_dir: Path,
+    model: nn.Module,
+    baseline_metrics: dict,
+    test_loader_context: dict,
+    criteria: dict[str, nn.Module],
+    target_cols: dict[str, str],
+    device: torch.device,
+    use_amp: bool,
+    task_loss_weights: dict[str, float],
+    normalize_loss_by_active_tasks: bool,
+    hierarchy_cfg: dict,
+    child_to_parent_matrix: torch.Tensor | None,
+    wandb_run=None,
+) -> dict:
+    """Evaluate one fixed checkpoint under all configured test manipulations."""
+    conditions = generate_test_cue_conditions(cfg)
+    if not conditions:
+        return {
+            "enabled": False,
+            "n_conditions": 0,
+        }
+
+    cue_dir = out_dir / "cue_suppression"
+    cue_dir.mkdir(parents=True, exist_ok=True)
+    save_json(
+        cfg.get("test_cue_suppression", {}) or {},
+        cue_dir / "cue_suppression_config.json",
+    )
+
+    original_colour_retention = float(
+        test_loader_context["original_colour_retention"]
+    )
+    original_condition = {
+        "condition": "original",
+        "feature": "baseline",
+        "transform": "original",
+        "strength": 0.0,
+        "retention": original_colour_retention,
+    }
+
+    metric_cache = {
+        _test_condition_signature(
+            original_condition,
+            original_colour_retention,
+        ): baseline_metrics
+    }
+
+    condition_metric_rows = []
+    ratio_rows = []
+
+    def record_condition(condition: dict, metrics: dict, reused: bool) -> None:
+        condition_metric_rows.append({
+            "run_name": run_name,
+            "model": cfg.get("model", {}).get("name"),
+            "condition": condition["condition"],
+            "feature": condition["feature"],
+            "transform": condition["transform"],
+            "strength": condition.get("strength"),
+            "parameters": json.dumps(
+                {
+                    key: value
+                    for key, value in condition.items()
+                    if key not in {"condition", "feature", "transform", "strength"}
+                },
+                sort_keys=True,
+            ),
+            "reused_identical_evaluation": bool(reused),
+            **metrics,
+        })
+
+        for task in target_cols:
+            metric_key = f"{task}_macro_f1"
+            transformed_score = float(metrics.get(metric_key, float("nan")))
+            original_score = float(baseline_metrics.get(metric_key, float("nan")))
+            if (
+                math.isnan(transformed_score)
+                or math.isnan(original_score)
+                or original_score == 0.0
+            ):
+                ratio = float("nan")
+            else:
+                ratio = transformed_score / original_score
+
+            ratio_rows.append({
+                "run_name": run_name,
+                "model": cfg.get("model", {}).get("name"),
+                "task": task,
+                "condition": condition["condition"],
+                "feature": condition["feature"],
+                "transform": condition["transform"],
+                "strength": condition.get("strength"),
+                "parameters": json.dumps(
+                    {
+                        key: value
+                        for key, value in condition.items()
+                        if key not in {"condition", "feature", "transform", "strength"}
+                    },
+                    sort_keys=True,
+                ),
+                "n": metrics.get(f"{task}_n"),
+                "macro_f1": transformed_score,
+                "original_macro_f1": original_score,
+                "ratio_to_original": ratio,
+                "relative_drop": 1.0 - ratio if not math.isnan(ratio) else float("nan"),
+            })
+
+    record_condition(original_condition, baseline_metrics, reused=True)
+
+    for condition_index, condition in enumerate(conditions, start=1):
+        signature = _test_condition_signature(
+            condition,
+            original_colour_retention,
+        )
+        reused = signature in metric_cache
+        if reused:
+            metrics = metric_cache[signature]
+            print(
+                f"Cue test {condition_index}/{len(conditions)}: "
+                f"{condition['condition']} reuses an identical evaluation."
+            )
+        else:
+            print(
+                f"Cue test {condition_index}/{len(conditions)}: "
+                f"{condition['condition']}"
+            )
+            condition_loader = make_test_condition_loader(
+                test_loader_context,
+                condition,
+            )
+            metrics, _, _ = run_epoch(
+                model=model,
+                loader=condition_loader,
+                criteria=criteria,
+                optimizer=None,
+                device=device,
+                train=False,
+                scaler=None,
+                use_amp=use_amp,
+                task_loss_weights=task_loss_weights,
+                normalize_loss_by_active_tasks=normalize_loss_by_active_tasks,
+                hierarchy_cfg=hierarchy_cfg,
+                child_to_parent_matrix=child_to_parent_matrix,
+            )
+            metric_cache[signature] = metrics
+
+        record_condition(condition, metrics, reused=reused)
+
+    condition_metrics_df = pd.DataFrame(condition_metric_rows)
+    ratios_df = pd.DataFrame(ratio_rows)
+    condition_metrics_path = cue_dir / "test_condition_metrics.csv"
+    ratios_path = cue_dir / "macro_f1_ratios.csv"
+    condition_metrics_df.to_csv(condition_metrics_path, index=False)
+    ratios_df.to_csv(ratios_path, index=False)
+
+    feature_summary = (
+        ratios_df[ratios_df["condition"] != "original"]
+        .groupby(["model", "task", "feature", "transform"], dropna=False)
+        .agg(
+            mean_ratio_to_original=("ratio_to_original", "mean"),
+            minimum_ratio_to_original=("ratio_to_original", "min"),
+            mean_relative_drop=("relative_drop", "mean"),
+            n_conditions=("condition", "count"),
+        )
+        .reset_index()
+    )
+    feature_summary_path = cue_dir / "transform_summary.csv"
+    feature_summary.to_csv(feature_summary_path, index=False)
+
+    if wandb_run is not None and wandb is not None:
+        try:
+            wandb_run.log({
+                "cue_suppression/macro_f1_ratios": wandb.Table(dataframe=ratios_df),
+                "cue_suppression/transform_summary": wandb.Table(dataframe=feature_summary),
+            })
+        except Exception as exc:
+            print(f"Warning: could not log cue-suppression tables to W&B: {exc}")
+
+    print(f"Saved cue-suppression metrics to {cue_dir}")
+    return {
+        "enabled": True,
+        "n_conditions": int(len(condition_metric_rows)),
+        "n_unique_evaluations": int(len(metric_cache)),
+        "condition_metrics_path": str(condition_metrics_path),
+        "macro_f1_ratios_path": str(ratios_path),
+        "transform_summary_path": str(feature_summary_path),
+    }

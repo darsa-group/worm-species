@@ -1,0 +1,624 @@
+"""Single-run canonical training lifecycle. This module never expands sweeps."""
+
+from __future__ import annotations
+
+import copy
+import json
+import os
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
+import torch
+from sklearn.metrics import classification_report
+from sklearn.metrics import confusion_matrix
+
+from src.utils import make_run_name
+from src.utils import save_json
+from src.utils import set_seed
+
+from ..evaluation.cue_suppression import evaluate_test_cue_suppression
+from ..models.multitask import build_multitask_model
+from .checkpoints import build_checkpoint_payload
+from .checkpoints import load_checkpoint
+from .checkpoints import save_checkpoint
+from .epochs import run_hierarchy_epoch
+from .loaders import get_input_condition
+from .loaders import make_profile_loaders
+from .losses import build_child_to_parent_matrix
+from .losses import build_criteria
+from .metrics import score_for_selection
+from .modes import TrainingProfile
+from .modes import resolved_run_name
+
+try:
+    import wandb
+except ImportError:
+    wandb = None
+
+
+def _wandb_metrics(prefix: str, metrics: dict) -> dict[str, int | float]:
+    output = {}
+    for key, value in metrics.items():
+        if isinstance(value, (int, float, np.integer, np.floating)):
+            output[f"{prefix}/{key}"] = (
+                int(value)
+                if isinstance(value, (int, np.integer))
+                else float(value)
+            )
+    return output
+
+
+def _flatten_wandb_config(value, prefix: str = "") -> dict:
+    flattened = {}
+    if isinstance(value, dict):
+        for key, child in value.items():
+            safe_key = str(key).replace(".", "_")
+            child_prefix = f"{prefix}__{safe_key}" if prefix else safe_key
+            flattened.update(_flatten_wandb_config(child, child_prefix))
+    else:
+        flattened[prefix] = value
+    return flattened
+
+
+def initialise_wandb_run(
+    cfg: dict,
+    run_name: str,
+    out_dir: Path,
+    profile: TrainingProfile,
+):
+    wandb_cfg = cfg.get("wandb", {}) or {}
+    if not profile.wandb or not bool(wandb_cfg.get("enabled", False)):
+        return None
+    if wandb is None:
+        raise ImportError(
+            "W&B tracking is enabled, but the 'wandb' package is not installed. "
+            "Install it with: python -m pip install wandb"
+        )
+
+    tags = list(wandb_cfg.get("tags", []) or [])
+    if os.getenv("SLURM_JOB_ID"):
+        tags.append("slurm")
+
+    tracking_config = copy.deepcopy(cfg)
+    tracking_config["runtime"] = {
+        "slurm_job_id": os.getenv("SLURM_JOB_ID"),
+        "slurm_array_job_id": os.getenv("SLURM_ARRAY_JOB_ID"),
+        "slurm_array_task_id": os.getenv("SLURM_ARRAY_TASK_ID"),
+        "hostname": os.getenv("HOSTNAME"),
+        "cuda_visible_devices": os.getenv("CUDA_VISIBLE_DEVICES"),
+    }
+    run = wandb.init(
+        project=(
+            wandb_cfg.get("project")
+            or os.getenv("WANDB_PROJECT")
+            or "worm-species"
+        ),
+        entity=wandb_cfg.get("entity") or os.getenv("WANDB_ENTITY") or None,
+        name=wandb_cfg.get("name") or os.getenv("WANDB_NAME") or run_name,
+        group=(
+            wandb_cfg.get("group") or os.getenv("WANDB_RUN_GROUP") or None
+        ),
+        job_type=wandb_cfg.get("job_type", "train"),
+        tags=tags,
+        config=_flatten_wandb_config(tracking_config),
+        dir=str(out_dir),
+        mode=wandb_cfg.get("mode") or os.getenv("WANDB_MODE") or "online",
+        save_code=bool(wandb_cfg.get("save_code", True)),
+    )
+    run.define_metric("epoch")
+    run.define_metric("train/*", step_metric="epoch")
+    run.define_metric("val/*", step_metric="epoch")
+    run.define_metric("learning_rate", step_metric="epoch")
+    return run
+
+
+def get_colour_metadata(cfg: dict) -> tuple[float, int]:
+    retention = float(cfg.get("data", {}).get("colour_retention", 1.0))
+    if not 0 <= retention <= 1:
+        raise ValueError(
+            "data.colour_retention must be between 0 and 1, got "
+            f"{retention}."
+        )
+    return retention, int(round(retention * 100))
+
+
+def make_experiment_run_name(cfg: dict, profile: TrainingProfile) -> str:
+    return resolved_run_name(cfg, profile)
+
+
+def create_wandb_confusion_matrix(
+    y_true,
+    y_pred,
+    class_names,
+    title: str,
+):
+    y_true = np.asarray(y_true, dtype=int)
+    y_pred = np.asarray(y_pred, dtype=int)
+    valid = (
+        (y_true >= 0)
+        & (y_pred >= 0)
+        & (y_true < len(class_names))
+        & (y_pred < len(class_names))
+    )
+    if not valid.any() or wandb is None:
+        return None
+    return wandb.plot.confusion_matrix(
+        y_true=y_true[valid].tolist(),
+        preds=y_pred[valid].tolist(),
+        class_names=list(class_names),
+        title=title,
+    )
+
+
+def run_one(cfg: dict, profile: TrainingProfile) -> dict:
+    """Run exactly one resolved configuration; never generate another config."""
+    set_seed(cfg["seed"])
+    device_name = (
+        torch.cuda.get_device_name(0) if torch.cuda.is_available() else "CPU"
+    )
+    print(f"Using device: {device_name}")
+    print("Starting training")
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    input_condition = {
+        "condition": "original",
+        "feature": "baseline",
+        "transform": "original",
+        "strength": 0.0,
+    }
+    if profile.loader_mode == "condition":
+        input_condition = get_input_condition(cfg)
+        stress_enabled = bool(
+            (cfg.get("test_cue_suppression", {}) or {}).get("enabled", False)
+        )
+        if stress_enabled and input_condition["transform"] != "original":
+            raise ValueError(
+                "Fixed-RGB stress evaluation requires an original-trained "
+                "input condition"
+            )
+
+    if profile.loader_mode == "standard":
+        colour_retention, colour_percent = 1.0, 100
+    else:
+        colour_retention, colour_percent = get_colour_metadata(cfg)
+
+    if profile.loader_mode == "colour":
+        print(
+            "Colour retention in data: "
+            f"{cfg['data'].get('colour_retention', 1.0)}"
+        )
+        print(
+            f"Colour retention: {colour_retention:.2f} "
+            f"({colour_percent}% chromatic information retained)"
+        )
+    elif profile.loader_mode == "condition":
+        print(
+            f"Base colour retention: {colour_retention:.2f} "
+            f"({colour_percent}% chromatic information retained)"
+        )
+        print(
+            "Matched train/validation/test condition: "
+            f"{input_condition['condition']} ({input_condition['transform']})"
+        )
+
+    run_name = make_experiment_run_name(cfg, profile)
+    out_dir = Path(cfg["output"]["out_dir"]) / run_name
+    out_dir.mkdir(parents=True, exist_ok=True)
+    save_json(cfg, out_dir / "config.json")
+
+    wandb_run = initialise_wandb_run(cfg, run_name, out_dir, profile)
+    bundle = make_profile_loaders(cfg, profile)
+    save_json(bundle.split_summary, out_dir / "split_summary.json")
+    save_json(
+        bundle.label_to_index_by_task,
+        out_dir / "label_to_index_by_task.json",
+    )
+    print(f"Split summary and label maps saved to {out_dir}")
+
+    num_classes_by_task = {
+        task: len(label_to_index)
+        for task, label_to_index in bundle.label_to_index_by_task.items()
+    }
+    model = build_multitask_model(
+        cfg,
+        num_classes_by_task,
+    ).to(device)
+    print("Model built and moved to device.")
+
+    criteria = build_criteria(
+        bundle.train_df,
+        bundle.target_cols,
+        cfg["data"]["group_col"],
+        bundle.label_to_index_by_task,
+        device,
+    )
+    weights = cfg.get("multi_task", {}).get(
+        "loss_weights",
+        {task: 1.0 for task in bundle.target_cols},
+    )
+    normalize = cfg.get("multi_task", {}).get(
+        "normalize_loss_by_active_tasks", True
+    )
+    hierarchy_cfg = (
+        cfg.get("multi_task", {}).get("hierarchy_loss", {})
+        if profile.hierarchy
+        else {}
+    )
+    matrix = None
+    if hierarchy_cfg.get("enabled", False):
+        parent_task = hierarchy_cfg.get("parent_task", "genus")
+        child_task = hierarchy_cfg.get("child_task", "species")
+        matrix = build_child_to_parent_matrix(
+            bundle.label_to_index_by_task,
+            parent_task,
+            child_task,
+            device,
+            hierarchy_cfg.get("child_to_parent"),
+        )
+        print(
+            f"Using hierarchy loss: {child_task} -> {parent_task} with weight "
+            f"{hierarchy_cfg.get('weight', weights.get('hierarchy', 0.1))}"
+        )
+
+    optimizer = torch.optim.AdamW(
+        filter(lambda parameter: parameter.requires_grad, model.parameters()),
+        lr=cfg["training"]["lr"],
+        weight_decay=cfg["training"]["weight_decay"],
+    )
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+        optimizer,
+        T_max=cfg["training"]["epochs"],
+    )
+    use_amp = cfg["training"].get("use_amp", True)
+    scaler = torch.amp.GradScaler(
+        enabled=use_amp and device.type == "cuda"
+    )
+
+    early = cfg.get("early_stopping", {})
+    early_enabled = early.get("enabled", True)
+    patience = early.get("patience", 3)
+    min_delta = early.get("min_delta", 0.001)
+    best = -float("inf")
+    best_epoch = 0
+    stale = 0
+    history = []
+    selection = cfg.get("multi_task", {}).get(
+        "selection_metric", "mean_macro_f1"
+    )
+    interval = cfg["training"].get("val_interval", 3)
+
+    print(
+        f"Training for {cfg['training']['epochs']} epochs with early stopping: "
+        f"{early_enabled}, patience: {patience}, min_delta: {min_delta}"
+    )
+    for epoch in range(1, cfg["training"]["epochs"] + 1):
+        train_metrics, _, _ = run_hierarchy_epoch(
+            model,
+            bundle.train_loader,
+            criteria,
+            optimizer,
+            device,
+            True,
+            scaler,
+            use_amp,
+            weights,
+            normalize,
+            hierarchy_cfg,
+            matrix,
+        )
+        validate = (
+            epoch == 1
+            or epoch % interval == 0
+            or epoch == cfg["training"]["epochs"]
+        )
+        if validate:
+            val_metrics = run_hierarchy_epoch(
+                model,
+                bundle.val_loader,
+                criteria,
+                None,
+                device,
+                False,
+                None,
+                use_amp,
+                weights,
+                normalize,
+                hierarchy_cfg,
+                matrix,
+            )[0]
+        else:
+            val_metrics = {}
+
+        learning_rate = float(optimizer.param_groups[0]["lr"])
+        scheduler.step()
+        history.append(
+            {
+                "epoch": epoch,
+                **{f"train_{key}": value for key, value in train_metrics.items()},
+                **{f"val_{key}": value for key, value in val_metrics.items()},
+            }
+        )
+        if wandb_run is not None:
+            wandb_run.log(
+                {
+                    "epoch": epoch,
+                    "learning_rate": learning_rate,
+                    **_wandb_metrics("train", train_metrics),
+                    **_wandb_metrics("val", val_metrics),
+                }
+            )
+
+        if not validate:
+            print(
+                f"[{run_name}] Epoch {epoch:03d}/{cfg['training']['epochs']} | "
+                f"train loss {train_metrics['loss']:.4f} | validation skipped"
+            )
+            continue
+
+        if selection not in val_metrics:
+            raise ValueError(
+                f"multi_task.selection_metric={selection!r} is not available. "
+                f"Available validation metrics: {list(val_metrics)}"
+            )
+        score = score_for_selection(val_metrics, selection)
+        print(
+            f"[{run_name}] Epoch {epoch:03d}/{cfg['training']['epochs']} | "
+            f"train loss {train_metrics['loss']:.4f} | "
+            f"val {selection} {val_metrics[selection]:.4f} | "
+            "complete exact-match "
+            f"{val_metrics['complete_exact_match_accuracy']:.4f} "
+            f"n={val_metrics['complete_exact_match_n']}"
+        )
+        for task in bundle.target_cols:
+            print(
+                f"    {task}: val macro-F1 "
+                f"{val_metrics[f'{task}_macro_f1']:.4f} | val bal-acc "
+                f"{val_metrics[f'{task}_balanced_accuracy']:.4f} | "
+                f"n={val_metrics[f'{task}_n']}"
+            )
+
+        improved = score > best + min_delta
+        if improved or epoch == 1:
+            best = score
+            best_epoch = epoch
+            stale = 0
+            payload = build_checkpoint_payload(
+                profile=profile,
+                model_state=model.state_dict(),
+                cfg=cfg,
+                label_to_index_by_task=bundle.label_to_index_by_task,
+                index_to_label_by_task=bundle.index_to_label_by_task,
+                best_val_score=best,
+                selection_metric=selection,
+                best_epoch=best_epoch,
+                colour_retention=colour_retention,
+                colour_percent=colour_percent,
+                training_condition=input_condition,
+            )
+            save_checkpoint(payload, out_dir / "best_model.pt")
+            if wandb_run is not None:
+                wandb_run.summary.update(
+                    {
+                        "best_epoch": best_epoch,
+                        "best_val_score": best,
+                        "selection_metric": selection,
+                    }
+                )
+            print(
+                f"[{run_name}] New best model saved | best val {selection} "
+                f"{best:.4f} at epoch {best_epoch}"
+            )
+        else:
+            stale += 1
+            print(
+                f"[{run_name}] No improvement for {stale}/{patience} "
+                "validation checks"
+            )
+
+        if early_enabled and stale >= patience:
+            print(
+                f"[{run_name}] Early stopping at epoch {epoch}. Best val "
+                f"{selection} {best:.4f} at epoch {best_epoch}."
+            )
+            break
+
+    pd.DataFrame(history).to_csv(out_dir / "history.csv", index=False)
+    checkpoint = load_checkpoint(
+        out_dir / "best_model.pt",
+        map_location=device,
+    )
+    model.load_state_dict(checkpoint["model_state"])
+    test_metrics, true, pred = run_hierarchy_epoch(
+        model,
+        bundle.test_loader,
+        criteria,
+        None,
+        device,
+        False,
+        None,
+        use_amp,
+        weights,
+        normalize,
+        hierarchy_cfg,
+        matrix,
+    )
+
+    for task in bundle.target_cols:
+        labels = list(range(len(bundle.index_to_label_by_task[task])))
+        names = [bundle.index_to_label_by_task[task][index] for index in labels]
+        y_true = np.array(true[task], dtype=int)
+        y_pred = np.array(pred[task], dtype=int)
+        if not len(y_true):
+            pd.DataFrame(
+                [{"note": "No labelled test examples for this task."}]
+            ).to_csv(
+                out_dir / f"classification_report_{task}.csv",
+                index=False,
+            )
+            pd.DataFrame().to_csv(out_dir / f"confusion_matrix_{task}.csv")
+            continue
+
+        report = classification_report(
+            y_true,
+            y_pred,
+            labels=labels,
+            target_names=names,
+            output_dict=True,
+            zero_division=0,
+        )
+        matrix_frame = confusion_matrix(y_true, y_pred, labels=labels)
+        pd.DataFrame(report).transpose().to_csv(
+            out_dir / f"classification_report_{task}.csv"
+        )
+        pd.DataFrame(
+            matrix_frame,
+            index=names,
+            columns=names,
+        ).to_csv(out_dir / f"confusion_matrix_{task}.csv")
+        if profile.loader_mode == "colour" and wandb_run is not None:
+            wandb_run.log(
+                {
+                    f"confusion_matrix_{task}": create_wandb_confusion_matrix(
+                        y_true,
+                        y_pred,
+                        names,
+                        f"Confusion Matrix ({task})",
+                    )
+                }
+            )
+
+    save_json(test_metrics, out_dir / "test_metrics.json")
+    if profile.loader_mode == "colour" and wandb_run is not None:
+        test_mean_macro_f1 = float(
+            test_metrics.get("mean_macro_f1", float("nan"))
+        )
+        wandb_run.log({"test/mean_macro_f1": test_mean_macro_f1})
+        if test_mean_macro_f1 >= 0.90:
+            wandb_run.alert(
+                title="Test macro-F1 reached 0.90",
+                text=(
+                    f"Run {wandb_run.name} achieved test/mean_macro_f1 = "
+                    f"{test_mean_macro_f1:.4f}"
+                ),
+            )
+
+    stress = {"enabled": False, "n_conditions": 0}
+    if profile.stress_evaluation:
+        stress = evaluate_test_cue_suppression(
+            cfg=cfg,
+            run_name=run_name,
+            out_dir=out_dir,
+            model=model,
+            baseline_metrics=test_metrics,
+            test_loader_context=bundle.test_loader_context,
+            criteria=criteria,
+            target_cols=bundle.target_cols,
+            device=device,
+            use_amp=use_amp,
+            task_loss_weights=weights,
+            normalize_loss_by_active_tasks=normalize,
+            hierarchy_cfg=hierarchy_cfg,
+            child_to_parent_matrix=matrix,
+            wandb_run=wandb_run,
+        )
+
+    result = {
+        "run_name": run_name,
+        "out_dir": str(out_dir),
+        "best_val_score": best,
+        "selection_metric": selection,
+        **{f"test_{key}": value for key, value in test_metrics.items()},
+    }
+    if profile.loader_mode == "colour":
+        result = {
+            "run_name": run_name,
+            "out_dir": str(out_dir),
+            "colour_retention": colour_retention,
+            "colour_percent": colour_percent,
+            "best_epoch": best_epoch,
+            "best_val_score": best,
+            "selection_metric": selection,
+            **{f"test_{key}": value for key, value in test_metrics.items()},
+        }
+    elif profile.loader_mode == "condition":
+        result = {
+            "run_name": run_name,
+            "model": cfg.get("model", {}).get("name"),
+            "out_dir": str(out_dir),
+            "colour_retention": colour_retention,
+            "colour_percent": colour_percent,
+            "train_condition": input_condition["condition"],
+            "train_feature": input_condition["feature"],
+            "train_transform": input_condition["transform"],
+            "train_strength": input_condition.get("strength"),
+            "train_condition_parameters": json.dumps(
+                {
+                    key: value
+                    for key, value in input_condition.items()
+                    if key
+                    not in {"condition", "feature", "transform", "strength"}
+                },
+                sort_keys=True,
+            ),
+            "best_epoch": best_epoch,
+            "best_val_score": best,
+            "selection_metric": selection,
+            "cue_suppression_enabled": stress["enabled"],
+            "cue_suppression_n_conditions": stress["n_conditions"],
+            "cue_suppression_n_unique_evaluations": stress.get(
+                "n_unique_evaluations", 0
+            ),
+            **{f"test_{key}": value for key, value in test_metrics.items()},
+        }
+
+    if profile.run_summary:
+        save_json(result, out_dir / "run_summary.json")
+
+    if wandb_run is not None:
+        wandb_run.log(_wandb_metrics("test", test_metrics))
+        for key, value in _wandb_metrics("test", test_metrics).items():
+            wandb_run.summary[key] = value
+        if profile.loader_mode in {"colour", "condition"}:
+            wandb_run.summary.update(
+                {
+                    "colour_retention": colour_retention,
+                    "colour_percent": colour_percent,
+                }
+            )
+        if profile.loader_mode == "condition":
+            wandb_run.summary.update(
+                {
+                    "train_condition": input_condition["condition"],
+                    "train_feature": input_condition["feature"],
+                    "train_transform": input_condition["transform"],
+                    "train_strength": input_condition.get("strength"),
+                }
+            )
+        if cfg.get("wandb", {}).get("log_model", False):
+            metadata = {
+                "best_epoch": best_epoch,
+                "best_val_score": best,
+                "selection_metric": selection,
+            }
+            if profile.loader_mode in {"colour", "condition"}:
+                metadata.update(
+                    {
+                        "colour_retention": colour_retention,
+                        "colour_percent": colour_percent,
+                    }
+                )
+            if profile.loader_mode == "condition":
+                metadata["training_condition"] = input_condition
+            artifact = wandb.Artifact(
+                name=f"{run_name}-best-model",
+                type="model",
+                metadata=metadata,
+            )
+            artifact.add_file(str(out_dir / "best_model.pt"))
+            wandb_run.log_artifact(artifact)
+        wandb_run.finish()
+
+    print("\nTest metrics:")
+    print(test_metrics)
+    return result

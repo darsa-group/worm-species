@@ -1,5 +1,17 @@
-"""Data preparation helpers shared by legacy training entry points."""
+"""Lightweight data-package exports.
 
-from .labels import build_label_maps, read_csvs_from_dir
+Transform and dataset implementations remain available from their named
+modules.  Keeping this initializer small preserves the historical behavior of
+``import worm_species.data.labels`` without eagerly importing torchvision or
+OpenCV.
+"""
 
-__all__ = ["build_label_maps", "read_csvs_from_dir"]
+from .labels import (
+    build_label_maps,
+    read_csvs_from_dir,
+)
+
+__all__ = [
+    "build_label_maps",
+    "read_csvs_from_dir",
+]

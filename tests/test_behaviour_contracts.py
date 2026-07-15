@@ -30,6 +30,8 @@ from src.dataset_multitask import (
 from src.utils import apply_overrides, make_run_name, parse_scalar, short_hash
 from src.worm_species.models.multitask import MultiTaskClassifier
 from src.worm_species.data.labels import read_csvs_from_dir
+from src.worm_species.training.checkpoints import checkpoint_keys
+from src.worm_species.training.modes import get_profile
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -331,21 +333,15 @@ class LossMetricAndCheckpointContracts(unittest.TestCase):
         self.assertEqual(true, predicted)
 
     def test_checkpoint_top_level_schemas(self) -> None:
-        trainer_root = ROOT / "scripts" / "training"
-        ordinary = [
-            trainer_root / "train_multitask_masked.py",
-            trainer_root / "train_multitask_masked_hloss.py",
-            trainer_root / "train_multitask_masked_hloss_wandb.py",
-        ]
-        for path in ordinary:
-            self.assertIn(ORDINARY_CHECKPOINT_KEYS, torch_save_dict_keys(path))
-        self.assertIn(
+        for profile in ("masked", "masked_hloss", "masked_hloss_wandb"):
+            self.assertEqual(checkpoint_keys(get_profile(profile)), ORDINARY_CHECKPOINT_KEYS)
+        self.assertEqual(
+            checkpoint_keys(get_profile("colour_ablation")),
             ORDINARY_CHECKPOINT_KEYS | {"colour_retention", "colour_percent"},
-            torch_save_dict_keys(trainer_root / "train_multitask_colour_ablation.py"),
         )
-        self.assertIn(
+        self.assertEqual(
+            checkpoint_keys(get_profile("cue_suppression")),
             ORDINARY_CHECKPOINT_KEYS | {"colour_retention", "colour_percent", "training_condition"},
-            torch_save_dict_keys(trainer_root / "train_multitask_cue_suppression.py"),
         )
 
 

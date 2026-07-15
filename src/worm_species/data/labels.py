@@ -2,8 +2,80 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from typing import Any
 
 import pandas as pd
+
+
+MISSING_LABEL = -1
+MISSING_LABEL_INDEX = -1
+DEFAULT_MISSING_VALUES = {
+    "", "na", "n/a", "nan", "none", "null", "unknown", "unidentified",
+    "missing", "not_available",
+}
+
+
+def is_missing_label(value, missing_values: list[str] | None = None) -> bool:
+    """Return whether a task label must be masked without dropping its row."""
+    if value is None:
+        return True
+    try:
+        if pd.isna(value):
+            return True
+    except TypeError:
+        pass
+    text = str(value).strip()
+    if text == "":
+        return True
+    configured = {
+        "na", "n/a", "nan", "none", "null", "missing", "unknown",
+        "unidentified",
+    }
+    if missing_values is not None:
+        configured.update(str(item).strip().lower() for item in missing_values)
+    return text.lower() in configured
+
+
+def missing_values_from_config(config: dict) -> set[str]:
+    values = config.get("data", {}).get("missing_label_values", [])
+    return DEFAULT_MISSING_VALUES | {str(value).strip().lower() for value in values}
+
+
+def normalise_missing_series(
+    series: pd.Series,
+    missing_values: set[str],
+) -> pd.Series:
+    """Convert configured missing strings to ``pd.NA`` without changing labels."""
+    result = series.copy()
+    result = result.replace(r"^\s*$", pd.NA, regex=True)
+    mask = result.astype("string").str.strip().str.lower().isin(missing_values)
+    return result.mask(mask, pd.NA)
+
+
+def clean_label_value(value: Any, missing_values: set[str]) -> str | None:
+    if pd.isna(value):
+        return None
+    cleaned = str(value).strip()
+    if cleaned.lower() in missing_values:
+        return None
+    return cleaned
+
+
+def get_target_cols(config: dict) -> dict[str, str]:
+    """Return the configured task-to-metadata-column mapping."""
+    target_cols = config.get("data", {}).get("target_cols")
+    if target_cols is None:
+        target_cols = {
+            "genus": "genus",
+            "species": "species_label",
+            "age": "life_stage",
+        }
+    if not isinstance(target_cols, dict) or len(target_cols) == 0:
+        raise ValueError(
+            "data.target_cols must be a non-empty mapping, for example: "
+            "{genus: genus, species: species_label, age: life_stage}"
+        )
+    return target_cols
 
 
 def build_label_maps(
