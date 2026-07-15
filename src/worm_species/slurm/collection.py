@@ -16,6 +16,9 @@ DUAL_OUTPUT_NAMES = (
     "rgb_model_cue_suppression_test_metrics.csv",
     "rgb_model_cue_suppression_transform_summary.csv",
     "matched_vs_rgb_stress_test.csv",
+    "condition_matrix_evaluations.csv",
+    "condition_matrix_task_metrics.csv",
+    "condition_matrix_collection_summary.json",
 )
 
 

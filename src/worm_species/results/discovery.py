@@ -68,6 +68,9 @@ EXPERIMENT_ARTIFACT_NAMES = {
     "matched_condition_macro_f1_long.csv",
     "matched_condition_results.csv",
     "matched_vs_rgb_stress_test.csv",
+    "condition_matrix_evaluations.csv",
+    "condition_matrix_task_metrics.csv",
+    "condition_matrix_collection_summary.json",
     "rgb_model_cue_suppression_macro_f1_ratios.csv",
     "rgb_model_cue_suppression_test_metrics.csv",
     "rgb_model_cue_suppression_transform_summary.csv",
@@ -459,6 +462,47 @@ def _collect_run_artifacts(
         }:
             try:
                 artifacts.append(artifact_record(path, root, f"cue_suppression/{name}"))
+            except OSError:
+                continue
+    matrix_dir = run_dir / "condition_matrix_evaluation"
+    for name, path in inventory.get(matrix_dir, {}).items():
+        if name in {"manifest.json", "condition_metrics.csv", "task_metrics.csv"}:
+            try:
+                artifacts.append(
+                    artifact_record(path, root, f"condition_matrix/{name}")
+                )
+            except OSError:
+                continue
+    for directory, files in inventory.items():
+        try:
+            relative = directory.relative_to(matrix_dir)
+        except ValueError:
+            continue
+        if len(relative.parts) != 2:
+            continue
+        category, condition = relative.parts
+        if category not in {"classification_reports", "confusion_matrices"}:
+            continue
+        for name, path in files.items():
+            if (
+                category == "classification_reports"
+                and not name.startswith("classification_report_")
+            ) or (
+                category == "confusion_matrices"
+                and not name.startswith("confusion_matrix_")
+            ):
+                continue
+            if not name.endswith(".csv"):
+                continue
+            kind = (
+                "condition_matrix/classification_report"
+                if category == "classification_reports"
+                else "condition_matrix/confusion_matrix"
+            )
+            try:
+                artifacts.append(
+                    artifact_record(path, root, f"{kind}/{condition}/{name}")
+                )
             except OSError:
                 continue
     return sorted(artifacts, key=lambda item: item.relative_path)
