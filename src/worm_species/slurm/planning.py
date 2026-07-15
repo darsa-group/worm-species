@@ -167,6 +167,11 @@ def generate_external_specs(
         isinstance(test_schedule, dict)
         and test_schedule.get("evaluate_original_training", False)
     )
+    legacy_matched = config.get("matched_condition_training", {}) or {}
+    legacy_matched_enabled = bool(
+        isinstance(legacy_matched, dict)
+        and legacy_matched.get("enabled", False)
+    )
 
     specs: list[tuple[str, list[str], str, str]] = []
     for index, item in enumerate(items):
@@ -199,7 +204,7 @@ def generate_external_specs(
                 )
             else:
                 overrides.extend(condition_overrides(condition))
-                if compatibility_kind == "dual_cue":
+                if compatibility_kind == "dual_cue" or legacy_matched_enabled:
                     cue_enabled = (
                         evaluate_original
                         and condition["transform"] == "original"
