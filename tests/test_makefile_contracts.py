@@ -29,6 +29,7 @@ class MakefileContracts(unittest.TestCase):
         help_result = self._make("help")
         self.assertEqual(help_result.returncode, 0, help_result.stdout)
         self.assertIn("make dashboard-prepare", help_result.stdout)
+        self.assertIn("EXPERIMENT", help_result.stdout)
         self.assertNotIn("PROFILE", help_result.stdout)
 
         validate = self._make(
@@ -40,6 +41,39 @@ class MakefileContracts(unittest.TestCase):
         self.assertIn("2 task(s)", validate.stdout)
         self.assertIn("modes=multitask", validate.stdout)
         self.assertNotIn("profile=", validate.stdout)
+
+    def test_experiment_shorthand_and_explicit_config_precedence(self) -> None:
+        shorthand = self._make(
+            "validate",
+            "EXPERIMENT=patch_shuffle_matrix",
+            "CLUSTER=configs/clusters/local.yaml",
+        )
+        self.assertEqual(shorthand.returncode, 0, shorthand.stdout)
+        self.assertIn("patch_shuffle_matrix", shorthand.stdout)
+        self.assertIn("12 task(s)", shorthand.stdout)
+
+        explicit = self._make(
+            "validate",
+            "EXPERIMENT=dual_cue",
+            "CONFIG=configs/experiments/standard.yaml",
+            "CLUSTER=configs/clusters/local.yaml",
+        )
+        self.assertEqual(explicit.returncode, 0, explicit.stdout)
+        self.assertIn("standard", explicit.stdout)
+        self.assertIn("2 task(s)", explicit.stdout)
+
+    def test_validate_and_inspect_delegate_to_public_slurm_cli(self) -> None:
+        for target in ("validate", "inspect"):
+            with self.subTest(target=target):
+                result = self._make(
+                    "-n",
+                    target,
+                    "CONFIG=configs/experiments/standard.yaml",
+                    "CLUSTER=configs/clusters/local.yaml",
+                )
+                self.assertEqual(result.returncode, 0, result.stdout)
+                self.assertIn(f"-m worm_species.slurm {target}", result.stdout)
+                self.assertNotIn("python -c", result.stdout)
 
     def test_dry_run_renders_module_trainer_without_submission(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_dir:

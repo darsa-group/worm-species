@@ -8,6 +8,8 @@ import shlex
 import sys
 from pathlib import Path
 
+import yaml
+
 from .collection import CollectionError
 from .collection import collect_existing_results
 from .config import SlurmConfigError
@@ -21,7 +23,11 @@ from .submission import submit_manifest
 from .status import build_status_report
 
 
-def _add_plan_arguments(parser: argparse.ArgumentParser) -> None:
+def _add_config_arguments(
+    parser: argparse.ArgumentParser,
+    *,
+    include_json: bool = True,
+) -> None:
     parser.add_argument("--config", default="config.yaml")
     parser.add_argument("--cluster-config")
     parser.add_argument(
@@ -38,8 +44,13 @@ def _add_plan_arguments(parser: argparse.ArgumentParser) -> None:
             "launchers. Ambient launcher variables are ignored by default."
         ),
     )
+    if include_json:
+        parser.add_argument("--json", action="store_true", dest="json_output")
+
+
+def _add_plan_arguments(parser: argparse.ArgumentParser) -> None:
+    _add_config_arguments(parser)
     parser.add_argument("--artifacts-dir", required=True)
-    parser.add_argument("--json", action="store_true", dest="json_output")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -51,6 +62,17 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
+
+    validate = subparsers.add_parser(
+        "validate", help="validate the resolved configuration and run plan"
+    )
+    _add_config_arguments(validate)
+
+    inspect = subparsers.add_parser(
+        "inspect", help="print the resolved configuration and run plan"
+    )
+    _add_config_arguments(inspect, include_json=False)
+    inspect.add_argument("--format", choices=("yaml", "json"), default="yaml")
 
     render = subparsers.add_parser("render", help="write artifacts; never submit")
     _add_plan_arguments(render)
@@ -86,14 +108,31 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _render(args: argparse.Namespace) -> tuple[dict, list[list[str]]]:
+def _load_plan(args: argparse.Namespace):
     config = load_submission_config(
         args.config,
         cluster_config=args.cluster_config,
         overrides=args.override,
         import_legacy_environment=args.legacy_env,
     )
-    plan = plan_submission(config)
+    return config, plan_submission(config)
+
+
+def _plan_summary(plan) -> dict:
+    return {
+        "experiment_type": plan.experiment_type,
+        "cluster_profile": plan.cluster_profile,
+        "trainer_selection": "configuration",
+        "training_modes": list(plan.training_modes),
+        "models": list(plan.models),
+        "condition_count": len(plan.conditions),
+        "total_run_count": plan.array_size,
+        "internal_runs_per_task": plan.expected_internal_training_runs_per_task,
+    }
+
+
+def _render(args: argparse.Namespace) -> tuple[dict, list[list[str]]]:
+    config, plan = _load_plan(args)
     manifest = write_artifact_bundle(plan, config, args.artifacts_dir)
     commands = build_submission_commands(manifest)
     return manifest, commands
@@ -124,6 +163,27 @@ def _print_render_summary(
 
 
 def execute(args: argparse.Namespace) -> int:
+    if args.command in {"validate", "inspect"}:
+        config, plan = _load_plan(args)
+        summary = _plan_summary(plan)
+        if args.command == "validate":
+            if args.json_output:
+                print(json.dumps(summary, indent=2, sort_keys=True))
+            else:
+                print(
+                    f"valid: {plan.experiment_type}; {plan.array_size} task(s); "
+                    f"modes={','.join(plan.training_modes)}; "
+                    f"cluster={plan.cluster_profile}"
+                )
+            return 0
+
+        inspected = {"plan": summary, "resolved_config": config}
+        if args.format == "json":
+            print(json.dumps(inspected, indent=2, sort_keys=False))
+        else:
+            print(yaml.safe_dump(inspected, sort_keys=False).rstrip())
+        return 0
+
     if args.command == "status":
         report = build_status_report(
             args.results_root,

@@ -1,7 +1,8 @@
 .DEFAULT_GOAL := help
 
 PYTHON ?= python
-CONFIG ?= configs/experiments/standard.yaml
+EXPERIMENT ?= standard
+CONFIG ?= configs/experiments/$(EXPERIMENT).yaml
 CLUSTER ?= configs/clusters/local.yaml
 TRAIN_CONFIG ?= config.yaml
 RESULTS_ROOT ?= outputs_slurm
@@ -50,16 +51,21 @@ help: ## Show the supported repository commands.
 	@echo "  make clean-generated    Remove only generated plans/local indexes."
 	@echo
 	@echo "Variables: CONFIG CLUSTER TRAIN_CONFIG RESULTS_ROOT MAX_ACTIVE MODEL"
+	@echo "           EXPERIMENT (standard, hierarchy, dual_cue, colour_ablation,"
+	@echo "                       patch_shuffle_matrix, persistent_hierarchy)"
 	@echo "           SLURM_RESULTS_ROOT SINGLE_TASK_RESULTS_ROOT ARTIFACTS_DIR"
 	@echo "           DASHBOARD_INDEX DASHBOARD_DERIVED PYTHON"
+	@echo
+	@echo "Examples:"
+	@echo "  make dry-run EXPERIMENT=patch_shuffle_matrix"
+	@echo "  make submit EXPERIMENT=dual_cue CLUSTER=configs/clusters/genome.yaml"
+	@echo "  make train MODEL=convnext_base"
 
 validate: ## Validate configuration and prove the plan is internally consistent.
-	@PYTHONPATH=src $(PYTHON) -c 'import sys; from worm_species.slurm.config import load_submission_config; from worm_species.slurm.planning import plan_submission; config = load_submission_config(sys.argv[1], sys.argv[2] or None, sys.argv[3:]); plan = plan_submission(config); print(f"valid: {plan.experiment_type}; {plan.array_size} task(s); modes=" + ",".join(plan.training_modes) + f"; cluster={plan.cluster_profile}")' \
-		"$(CONFIG)" "$(CLUSTER)" $(PLAN_OVERRIDE_VALUES)
+	@$(SLURM) validate --config "$(CONFIG)" $(CLUSTER_ARG) $(PLAN_OVERRIDE_ARGS)
 
 inspect: ## Print the resolved submission configuration and concise plan summary.
-	@PYTHONPATH=src $(PYTHON) -c 'import sys, yaml; from worm_species.slurm.config import load_submission_config; from worm_species.slurm.planning import plan_submission; config = load_submission_config(sys.argv[1], sys.argv[2] or None, sys.argv[3:]); plan = plan_submission(config); print(yaml.safe_dump({"plan": {"experiment_type": plan.experiment_type, "cluster_profile": plan.cluster_profile, "trainer_selection": "configuration", "training_modes": list(plan.training_modes), "models": list(plan.models), "condition_count": len(plan.conditions), "total_run_count": plan.array_size, "internal_runs_per_task": plan.expected_internal_training_runs_per_task}, "resolved_config": config}, sort_keys=False).rstrip())' \
-		"$(CONFIG)" "$(CLUSTER)" $(PLAN_OVERRIDE_VALUES)
+	@$(SLURM) inspect --config "$(CONFIG)" $(CLUSTER_ARG) $(PLAN_OVERRIDE_ARGS)
 
 dry-run: ## Render self-contained SLURM artifacts without calling sbatch.
 	$(SLURM) launch --dry-run --config "$(CONFIG)" $(CLUSTER_ARG) \

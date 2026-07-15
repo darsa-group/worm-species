@@ -180,6 +180,40 @@ class SlurmExecutionContracts(unittest.TestCase):
         self.assertFalse(state["submitted"])
         self.assertEqual(state["scheduler_calls"], 0)
 
+    def test_validate_and_inspect_are_read_only_public_commands(self):
+        common = [
+            "--config",
+            str(ROOT / "configs/experiments/patch_shuffle_matrix.yaml"),
+            "--cluster-config",
+            str(ROOT / "configs/clusters/local.yaml"),
+        ]
+        with patch(
+            "src.worm_species.slurm.cli.write_artifact_bundle",
+            side_effect=AssertionError("read-only command rendered artifacts"),
+        ), patch(
+            "src.worm_species.slurm.cli.submit_manifest",
+            side_effect=AssertionError("read-only command submitted jobs"),
+        ):
+            validate_output = io.StringIO()
+            validate = build_parser().parse_args(["validate", *common])
+            with contextlib.redirect_stdout(validate_output):
+                self.assertEqual(execute(validate), 0)
+            self.assertIn("12 task(s)", validate_output.getvalue())
+
+            inspect_output = io.StringIO()
+            inspect = build_parser().parse_args(
+                ["inspect", *common, "--format", "json"]
+            )
+            with contextlib.redirect_stdout(inspect_output):
+                self.assertEqual(execute(inspect), 0)
+            payload = json.loads(inspect_output.getvalue())
+            self.assertEqual(payload["plan"]["total_run_count"], 12)
+            self.assertEqual(payload["plan"]["internal_runs_per_task"], 1)
+            self.assertEqual(
+                payload["resolved_config"]["slurm"]["cluster_profile"],
+                "local",
+            )
+
     def test_checksum_tamper_is_rejected(self):
         script = next((self.local_root / "generated_slurm").glob("*.sh"))
         original = script.read_text()
