@@ -566,8 +566,13 @@ def _render_bundle(
             collector_command = shell_join(
                 [
                     "python",
-                    str(Path(slurm.get("paths", {}).get("project_root", ".")).resolve() / "collect_dual_cue_results.py"),
+                    "-m",
+                    "src.worm_species.slurm",
+                    "collect",
+                    "--results-root",
                     str(Path(plan.results_root).resolve()),
+                    "--kind",
+                    "dual-cue",
                 ]
             )
         else:
