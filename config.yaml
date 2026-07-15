@@ -1,9 +1,24 @@
 seed: 42
 
+wandb:
+  enabled: true
+  project: worm-species-cues
+  entity: null
+  group: null
+  name: null
+  mode: offline
+  job_type: train
+  tags:
+    - multitask
+    - earthworm_color
+    - slurm
+  save_code: true
+  log_model: false
+
 data:
   root_dir: "../petridish-worm-images"
   metadata_csv: "../petridish-worm-images/01_Segmented/global_metadata.csv"
-
+  colour_retention: 1.0
   # choose one:
   # rel_path_seg      = segmented RGB image
   # rel_path_raw      = raw image
@@ -60,14 +75,14 @@ data:
 multi_task:
   loss_weights:
     genus: 1.0
-    species: 1.0
-    age: 1.0
+    species: 0.5
+    age: 2.0
 
   hierarchy_loss:
     enabled: true
     parent_task: genus
     child_task: species
-    weight: 0.1
+    weight: 0.5
 
   # Recommended because not every image has all three labels.
   normalize_loss_by_active_tasks: true
@@ -75,12 +90,23 @@ multi_task:
   # Other valid choices include genus_macro_f1, species_macro_f1, age_macro_f1.
   selection_metric: mean_macro_f1
 
+
+
+
+
+colour_ablation:
+  enabled: false
+  start_percent: 100
+  stop_percent: 0
+  step_percent: 1
+  combine_with_sweep: true
+
 early_stopping:
   enabled: true
   monitor: "macro_f1"
   mode: "max"
-  patience: 3
-  min_delta: 0.001
+  patience: 4
+  min_delta: 0.0001
 
 split:
   test_size: 0.20
@@ -96,8 +122,8 @@ model:
 
 training:
   epochs: 200
-  batch_size: 128
-  lr: 0.001
+  batch_size: 256
+  lr: 0.0005
   weight_decay: 0.0001
   use_amp: true
   class_weight: true
@@ -115,6 +141,54 @@ cache:
   rebuild: false
   num_workers: 6
 
+
+test_cue_suppression:
+  enabled: true
+
+  saturation:
+    enabled: true
+    start: 1.0
+    stop: 0.0
+    step: 0.01
+
+  grayscale:
+    enabled: true
+
+  channel_shuffle:
+    enabled: true
+    orders:
+      - [2, 0, 1]
+
+  bilateral_filter:
+    enabled: true
+    settings:
+      - diameter: 5
+        sigma_colour: 25
+        sigma_space: 25
+      - diameter: 7
+        sigma_colour: 50
+        sigma_space: 50
+      - diameter: 9
+        sigma_colour: 100
+        sigma_space: 100
+
+  gaussian_blur:
+    enabled: true
+    sigmas: [0.5, 1.0, 2.0, 4.0]
+
+  patch_shuffle:
+    enabled: true
+    grid_sizes: [2, 4, 8]
+    seed: 2026
+      
+
+
+matched_condition_training:
+  enabled: true
+  include_original: true
+  deduplicate_equivalent_conditions: true
+  evaluate_original_model_on_all_test_conditions: true
+
 sweep:
   enabled: true
 
@@ -123,51 +197,10 @@ sweep:
       - 'convnext_base'
       - "vit_b_16"
 
-    training.lr:
-      - 0.0001
-      - 0.00005
-
-    training.batch_size:
-      - 256
-
-    model.freeze_backbone:
-      - false
-
-    multitask.loss_weights.genus:
-      - 1.0
-      - 0.5
-      - 2.0
-
-      
-    multitask.loss_weights.species:
-      - 2.0
-      - 1.0
-      - 0.5
-      
-    multitask.hierarchy_loss.weight:
-      - 0
-      - 0.1
-      - 0.5
-      - 1.0
-      
-    multitask.loss_weights.age:
-      - 1.0
-      - 0.5
-      - 2.0
-     
-    split.use_predefined_splits:
-      - true
+   
     
-    early_stopping.enabled:
-      - true
-      - false
     
-    early_stopping.min_delta:
-      - 0.0001
-
-    early_stopping.monitor:
-      - "macro_f1"
-
+  
       
 
 

@@ -30,6 +30,10 @@ __pycache__/
 *.so
 
 *.vscode
+#for wandb
+wandb/
+*.wandb/*
+*.wandb
 
 
 # Distribution / packaging
@@ -52,6 +56,14 @@ share/python-wheels/
 *.egg
 MANIFEST
 
+
+#for wandb
+*.wandb/
+*.wandb
+*/wandb/*
+wandb/
+*.wandb/*
+*.wandb
 # PyInstaller
 #   Usually these files are written by a python script from a template
 #   before PyInstaller builds the exe, so as to inject date/other infos into it.
