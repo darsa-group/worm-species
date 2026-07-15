@@ -20,10 +20,13 @@ SCRATCH_ROOT=@@SCRATCH_ROOT@@
 TMP_RESERVE_GB=@@TMP_RESERVE_GB@@
 
 : "${SLURM_ARRAY_TASK_ID:?SLURM_ARRAY_TASK_ID is required}"
-RUN_ID=$(awk -F '\t' -v index="$SLURM_ARRAY_TASK_ID" 'NR > 1 && $1 == index {print $2}' "$RUN_INDEX_FILE")
+RUN_ID=$(awk -F '\t' -v task_id="$SLURM_ARRAY_TASK_ID" 'NR > 1 && $1 == task_id {print $2}' "$RUN_INDEX_FILE")
 RUN_SPEC_FILE="${RUN_SPECS_DIR}/${RUN_ID}.args"
 RESOLVED_CONFIG="${RESOLVED_CONFIG_DIR}/${RUN_ID}.yaml"
-[[ -n "$RUN_ID" && -f "$RUN_SPEC_FILE" && -f "$RESOLVED_CONFIG" ]] || exit 2
+[[ -n "$RUN_ID" && -f "$RUN_SPEC_FILE" && -f "$RESOLVED_CONFIG" ]] || {
+    echo "Incomplete run artifacts for array index $SLURM_ARRAY_TASK_ID" >&2
+    exit 1
+}
 
 JOB_TMP="${TMPDIR:-${TMP:-/tmp/${SLURM_JOB_ID:?SLURM_JOB_ID is required}}}"
 LOCAL_ROOT="${JOB_TMP}/worm_species"
@@ -32,6 +35,7 @@ RUN_SCRATCH_OUT="${LOCAL_ROOT}/outputs/${RUN_ID}"
 RUN_BACK_OUT="${RESULTS_ROOT}/${RUN_ID}"
 CACHE_INPUT="$CACHE_ROOT"
 mkdir -p "$RUN_SCRATCH_OUT" "$RUN_BACK_OUT"
+cp "$RUN_SPEC_FILE" "$RUN_SCRATCH_OUT/run_overrides.args"
 
 copy_results_back() {
     local status=$?
@@ -47,31 +51,78 @@ copy_results_back() {
 trap copy_results_back EXIT
 [[ -d "$CACHE_ROOT" && -f "$CACHE_READY_MARKER" ]] || {
     echo "Persistent cache is not ready: $CACHE_ROOT" >&2
-    exit 2
+    exit 1
 }
 
+case "$COPY_CACHE_TO_TMP" in
+    0|1|auto) ;;
+    *)
+        echo "COPY_CACHE_TO_TMP must be auto, 0, or 1" >&2
+        exit 1
+        ;;
+esac
 if [[ "$COPY_CACHE_TO_TMP" != "0" ]]; then
     cache_bytes=$(du -sb "$CACHE_ROOT" | awk '{print $1}')
     available_bytes=$(df -PB1 "$JOB_TMP" | awk 'NR == 2 {print $4}')
     reserve_bytes=$((TMP_RESERVE_GB * 1024 * 1024 * 1024))
+    [[ "$cache_bytes" =~ ^[0-9]+$ ]] || {
+        echo "Could not determine persistent-cache size: $CACHE_ROOT" >&2
+        exit 1
+    }
+    [[ "$available_bytes" =~ ^[0-9]+$ ]] || {
+        echo "Could not determine available job-local space: $JOB_TMP" >&2
+        exit 1
+    }
     if (( available_bytes >= cache_bytes + reserve_bytes )); then
         mkdir -p "$LOCAL_CACHE"
         rsync -a "$CACHE_ROOT/" "$LOCAL_CACHE/"
+        local_ready_marker="${LOCAL_CACHE}/$(basename "$CACHE_READY_MARKER")"
+        [[ -f "$local_ready_marker" ]] || {
+            echo "Copied cache has no readiness marker: $local_ready_marker" >&2
+            exit 1
+        }
         CACHE_INPUT="$LOCAL_CACHE"
     elif [[ "$COPY_CACHE_TO_TMP" == "1" ]]; then
         echo "Insufficient job-local space for required cache copy" >&2
-        exit 2
+        exit 1
     fi
 fi
 
 if [[ -n "$CONDA_SH" ]]; then source "$CONDA_SH"; conda activate "$CONDA_ENV"; fi
 cd "$PROJECT_ROOT"
 export PYTHONPATH="$PROJECT_ROOT/src${PYTHONPATH:+:$PYTHONPATH}"
+export CUDA_LAUNCH_BLOCKING="${CUDA_LAUNCH_BLOCKING:-1}"
+export WANDB_NAME="$RUN_ID"
+python - <<'PY'
+import os
+
+import torch
+
+print("CUDA_VISIBLE_DEVICES:", os.environ.get("CUDA_VISIBLE_DEVICES"))
+print("PyTorch:", torch.__version__)
+print("PyTorch CUDA:", torch.version.cuda)
+print("CUDA available:", torch.cuda.is_available())
+print("GPU count:", torch.cuda.device_count())
+if not torch.cuda.is_available():
+    raise SystemExit("CUDA is not available in this array task.")
+print("GPU:", torch.cuda.get_device_name(0))
+if os.getenv("WANDB_ENABLED", "false").lower() in {"1", "true", "yes", "on"}:
+    import wandb
+    print("Weights & Biases:", wandb.__version__)
+else:
+    print("Weights & Biases: disabled")
+PY
+CACHE_PARENT=$(dirname "$CACHE_INPUT")
 status=0
-@@TRAIN_COMMAND@@ --config "$RESOLVED_CONFIG" --single-run --override \
+srun @@TRAIN_COMMAND@@ --config "$RESOLVED_CONFIG" --single-run --override \
     data.root_dir="$DATA_ROOT" data.metadata_csv="$METADATA_CSV" \
     output.out_dir="$RUN_SCRATCH_OUT" sweep.enabled=false \
     colour_ablation.enabled=false matched_condition_training.enabled=false \
+    wandb.enabled="${WANDB_ENABLED:-false}" \
+    wandb.project="${WANDB_PROJECT:-worm-species}" \
+    wandb.entity="${WANDB_ENTITY:-}" wandb.mode="${WANDB_MODE:-online}" \
+    wandb.group="${WANDB_RUN_GROUP:-}" wandb.name="$RUN_ID" \
     cache.enabled=true cache.cache_dir="$CACHE_INPUT" cache.dir="$CACHE_INPUT" \
-    cache.root_dir="$CACHE_INPUT" cache.root_dir_cache="$CACHE_INPUT" || status=$?
+    cache.root_dir="$CACHE_INPUT" cache.root_dir_cache="$CACHE_PARENT" \
+    split.predefined_split_dir="$PROJECT_ROOT" || status=$?
 exit "$status"

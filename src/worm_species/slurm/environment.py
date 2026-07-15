@@ -301,6 +301,16 @@ def resolve_submission_environment(
         # Genome historically treated PROJECT_ROOT as a symlinkable repository
         # entry, then derived separate source and data roots from its real path.
         project_entry = context.environ.get("PROJECT_ROOT")
+        project_provenance = "legacy:PROJECT_ROOT"
+        cluster_profile = _get_nested(resolved, "slurm.cluster_profile")
+        if project_entry is None and cluster_profile == "genome":
+            home = context.environ.get("HOME")
+            if not home:
+                raise EnvironmentResolutionError(
+                    "Genome legacy resolution requires HOME or PROJECT_ROOT"
+                )
+            project_entry = str(Path(home) / "worm-species")
+            project_provenance = "legacy-default:HOME"
         direct_source = any(
             name in context.environ for name in ("SOURCE_ROOT", "PROJECT_SRC")
         )
@@ -313,40 +323,28 @@ def resolve_submission_environment(
             if not entry_path.is_absolute():
                 entry_path = context.cwd / entry_path
             real_entry = entry_path.resolve(strict=False)
-            imported.append("PROJECT_ROOT")
+            if "PROJECT_ROOT" in context.environ:
+                imported.append("PROJECT_ROOT")
             if not direct_source:
                 set_nested(resolved, "slurm.paths.project_root", str(real_entry / "source"))
-                provenance["slurm.paths.project_root"] = "legacy:PROJECT_ROOT"
+                provenance["slurm.paths.project_root"] = project_provenance
             if not direct_data:
                 set_nested(resolved, "slurm.paths.data_root", str(real_entry / "data"))
-                provenance["slurm.paths.data_root"] = "legacy:PROJECT_ROOT"
+                provenance["slurm.paths.data_root"] = project_provenance
                 if "METADATA_CSV" not in context.environ:
                     set_nested(
                         resolved,
                         "slurm.paths.metadata_csv",
                         str(real_entry / "data" / "01_Segmented" / "global_metadata.csv"),
                     )
-                    provenance["slurm.paths.metadata_csv"] = "legacy:PROJECT_ROOT"
+                    provenance["slurm.paths.metadata_csv"] = project_provenance
                 if "CACHE_DIR" not in context.environ:
                     set_nested(
                         resolved,
                         "slurm.paths.cache_root",
                         str(real_entry / "data" / "image_cache"),
                     )
-                    provenance["slurm.paths.cache_root"] = "legacy:PROJECT_ROOT"
-
-            if "RESULTS_ROOT" not in context.environ and context.submission_stamp:
-                set_nested(
-                    resolved,
-                    "slurm.paths.results_root",
-                    str(
-                        real_entry
-                        / "source"
-                        / "outputs_slurm"
-                        / f"persistent_cache_sweep_{context.submission_stamp}"
-                    ),
-                )
-                provenance["slurm.paths.results_root"] = "legacy:PROJECT_ROOT"
+                    provenance["slurm.paths.cache_root"] = project_provenance
 
         for binding in LEGACY_ENVIRONMENT_BINDINGS:
             selected = _selected_environment(binding, context.environ)
@@ -379,6 +377,32 @@ def resolve_submission_environment(
                     str(data_root / "image_cache"),
                 )
                 provenance["slurm.paths.cache_root"] = f"legacy:{data_name}"
+
+        if (
+            cluster_profile == "genome"
+            and "RESULTS_ROOT" not in context.environ
+            and context.submission_stamp
+        ):
+            source_root = _get_nested(resolved, "slurm.paths.project_root")
+            if not isinstance(source_root, str) or not source_root:
+                raise EnvironmentResolutionError(
+                    "Genome legacy result resolution requires a source root"
+                )
+            source_root = _expand_path(
+                source_root, context, "slurm.paths.project_root"
+            )
+            set_nested(
+                resolved,
+                "slurm.paths.results_root",
+                str(
+                    Path(source_root)
+                    / "outputs_slurm"
+                    / f"persistent_cache_sweep_{context.submission_stamp}"
+                ),
+            )
+            provenance["slurm.paths.results_root"] = provenance.get(
+                "slurm.paths.project_root", project_provenance
+            )
 
         # GHPC launchers used the current project directory as their entry and
         # generated unique result/scratch roots from one timestamp and PID.

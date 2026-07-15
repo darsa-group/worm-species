@@ -140,8 +140,6 @@ def _select_array_template(config: dict[str, Any]) -> str:
         return "node_local_training_array_job.sh.tmpl"
     if expansion == "dual_cue":
         return "job_local_cue_array_job.sh.tmpl"
-    if bool((config.get("wandb", {}) or {}).get("enabled", False)):
-        return "persistent_cache_wandb_array_job.sh.tmpl"
     return "persistent_cache_array_job.sh.tmpl"
 
 
@@ -247,6 +245,11 @@ def _resource_job(
         "stderr": str(logs / f"{safe_name}_%A_%a.err" if array else logs / f"{safe_name}_%j.err"),
         "exports": {"ALL": None},
         "extra_args": list(slurm.get("submission", {}).get("extra_sbatch_args", [])) if role == "train_array" else [],
+        "exclude_nodes": (
+            list(slurm.get("submission", {}).get("exclude_nodes", []))
+            if role == "train_array"
+            else []
+        ),
     }
 
 
@@ -505,6 +508,30 @@ def _render_bundle(
     array_template = _select_array_template(config)
     generated = root / "generated_slurm"
     script_names: dict[str, str] = {}
+
+    if scratch.get("mode") == "persistent_cache":
+        paths = slurm.get("paths", {})
+        environment = slurm.get("environment", {})
+        setup = slurm.get("setup", {})
+        cache_build_name = "cache_build_job.sh"
+        cache_build_context = {
+            "ACCOUNT": shell_quote(slurm.get("account", "")),
+            "CACHE_ROOT": shell_quote(paths.get("cache_root", "cache/images")),
+            "CONFIG_PATH": shell_quote(root.resolve() / "resolved_submission_config.yaml"),
+            "CONDA_ENV": shell_quote(environment.get("conda_env", "wormspecies")),
+            "CONDA_SH": shell_quote(environment.get("conda_sh", "")),
+            "CPUS_PER_TASK": shell_quote(setup.get("cpus_per_task", 8)),
+            "DATA_ROOT": shell_quote(paths.get("data_root", "data")),
+            "MEMORY": shell_quote(setup.get("memory", "16G")),
+            "METADATA_CSV": shell_quote(paths.get("metadata_csv", "metadata.csv")),
+            "PROJECT_ROOT": shell_quote(paths.get("project_root", ".")),
+            "TIME_LIMIT": shell_quote(setup.get("time_limit", "02:00:00")),
+        }
+        _write(
+            generated / cache_build_name,
+            render_template("cache_build_job.sh.tmpl", cache_build_context),
+            0o755,
+        )
 
     array_context = _array_context(
         plan,

@@ -138,6 +138,13 @@ def build_sbatch_argv(
     partition = job.get("partition")
     if partition:
         argv.insert(3, f"--partition={partition}")
+    excluded = job.get("exclude_nodes", [])
+    if not isinstance(excluded, list) or any(
+        not isinstance(node, str) or not node for node in excluded
+    ):
+        raise SubmissionError(f"Job {job['name']} exclude_nodes must be a string list")
+    if excluded:
+        argv.append("--exclude=" + ",".join(excluded))
     gpus = int(job.get("gpus_per_task", 0))
     if gpus:
         argv.append(f"--gres=gpu:{gpus}")
