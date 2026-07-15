@@ -30,6 +30,14 @@ def _add_plan_arguments(parser: argparse.ArgumentParser) -> None:
         default=[],
         help="Scheduler/config override key=value; repeat for multiple values.",
     )
+    parser.add_argument(
+        "--legacy-env",
+        action="store_true",
+        help=(
+            "Import the allow-listed environment variables used by historical "
+            "launchers. Ambient launcher variables are ignored by default."
+        ),
+    )
     parser.add_argument("--artifacts-dir", required=True)
     parser.add_argument("--json", action="store_true", dest="json_output")
 
@@ -83,6 +91,7 @@ def _render(args: argparse.Namespace) -> tuple[dict, list[list[str]]]:
         args.config,
         cluster_config=args.cluster_config,
         overrides=args.override,
+        import_legacy_environment=args.legacy_env,
     )
     plan = plan_submission(config)
     manifest = write_artifact_bundle(plan, config, args.artifacts_dir)

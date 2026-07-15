@@ -11,12 +11,16 @@ import copy
 import os
 import re
 import shlex
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Mapping
 
 import yaml
 
 from ..config.overrides import parse_scalar, set_nested
+from .environment import EnvironmentResolutionError
+from .environment import ResolutionContext
+from .environment import resolve_submission_environment
 
 
 class SlurmConfigError(ValueError):
@@ -97,6 +101,7 @@ _PATH_FIELDS = (
     ("paths", "cache_root"),
     ("logging", "directory"),
 )
+
 _MANAGED_SBATCH_OPTIONS = frozenset({
     "--array",
     "--dependency",
@@ -164,18 +169,14 @@ def _apply_overrides(config: dict[str, Any], overrides: list[str]) -> dict[str, 
     return resolved
 
 
-def _expand_selected_paths(config: dict[str, Any]) -> None:
-    slurm = config.get("slurm", {})
-    for section, key in _PATH_FIELDS:
-        mapping = slurm.get(section, {})
-        if isinstance(mapping, dict) and isinstance(mapping.get(key), str):
-            mapping[key] = os.path.expandvars(os.path.expanduser(mapping[key]))
-
-
 def load_submission_config(
     experiment_config: str | Path,
     cluster_config: str | Path | None = None,
     overrides: list[str] | None = None,
+    *,
+    import_legacy_environment: bool = False,
+    environment: Mapping[str, str] | None = None,
+    cwd: str | Path | None = None,
 ) -> dict[str, Any]:
     """Resolve base, cluster defaults, experiment overlay, and CLI overrides.
 
@@ -210,8 +211,27 @@ def load_submission_config(
             )
     else:
         resolved = copy.deepcopy(experiment)
+    context = ResolutionContext(
+        cwd=Path.cwd() if cwd is None else Path(cwd),
+        environ=dict(os.environ if environment is None else environment),
+        submission_stamp=datetime.now().strftime("%Y%m%d_%H%M%S"),
+        process_id=os.getpid(),
+    )
+    try:
+        resolved = resolve_submission_environment(
+            resolved,
+            context,
+            import_legacy=import_legacy_environment,
+        ).config
+    except EnvironmentResolutionError as exc:
+        raise SlurmConfigError(str(exc)) from exc
+    # Explicit CLI overrides remain authoritative over imported compatibility
+    # aliases. Resolve their path templates in a second pure pass.
     resolved = _apply_overrides(resolved, overrides or [])
-    _expand_selected_paths(resolved)
+    try:
+        resolved = resolve_submission_environment(resolved, context).config
+    except EnvironmentResolutionError as exc:
+        raise SlurmConfigError(str(exc)) from exc
     validate_slurm_config(resolved)
     return resolved
 
