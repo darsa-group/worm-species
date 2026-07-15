@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import tempfile
 import unittest
 from pathlib import Path
@@ -21,6 +22,12 @@ from src.worm_species.training.modes import resolve_configured_profile
 ROOT = Path(__file__).resolve().parents[1]
 EXPERIMENTS = ROOT / "configs" / "experiments"
 CLUSTERS = ROOT / "configs" / "clusters"
+PRE_REFACTOR_ARGS_MANIFEST_SHA256 = (
+    "0c9f4238c956d59eb4c46e0a70e7003bb868de994415ccd565bc945af2a53115"
+)
+PRE_REFACTOR_SWEEP_PLAN_SHA256 = (
+    "8340964b84ae0677304324384a3e81703e3f5b9829497ee08ecc7849f920954c"
+)
 
 
 class SlurmPlanningContracts(unittest.TestCase):
@@ -54,6 +61,21 @@ class SlurmPlanningContracts(unittest.TestCase):
                 ROOT / "config.yaml", specs, root / "sweep_plan.tsv"
             )
             self.assertEqual(count, 224)
+            manifest = b"".join(
+                hashlib.sha256(path.read_bytes()).hexdigest().encode("ascii")
+                + b"  "
+                + path.name.encode("utf-8")
+                + b"\n"
+                for path in sorted(specs.glob("*.args"))
+            )
+            self.assertEqual(
+                hashlib.sha256(manifest).hexdigest(),
+                PRE_REFACTOR_ARGS_MANIFEST_SHA256,
+            )
+            self.assertEqual(
+                hashlib.sha256((root / "sweep_plan.tsv").read_bytes()).hexdigest(),
+                PRE_REFACTOR_SWEEP_PLAN_SHA256,
+            )
             for run_spec in plan.run_specs:
                 self.assertEqual(
                     run_spec.args_text.encode(),
