@@ -17,6 +17,9 @@ from typing import Any, Mapping
 
 import yaml
 
+from ..config.loading import ConfigLoadError
+from ..config.loading import deep_merge
+from ..config.loading import load_config
 from ..config.overrides import parse_scalar, set_nested
 from .environment import EnvironmentResolutionError
 from .environment import ResolutionContext
@@ -117,37 +120,6 @@ _TIME_RE = re.compile(
 )
 
 
-def deep_merge(base: Mapping[str, Any], overlay: Mapping[str, Any]) -> dict[str, Any]:
-    """Recursively merge mappings without mutating either input."""
-    merged = copy.deepcopy(dict(base))
-    for key, value in overlay.items():
-        if isinstance(value, Mapping) and isinstance(merged.get(key), Mapping):
-            merged[key] = deep_merge(merged[key], value)
-        else:
-            merged[key] = copy.deepcopy(value)
-    return merged
-
-
-def _load_extended(path: Path, stack: tuple[Path, ...] = ()) -> dict[str, Any]:
-    path = path.resolve()
-    if path in stack:
-        cycle = " -> ".join(str(item) for item in (*stack, path))
-        raise SlurmConfigError(f"Configuration extends cycle: {cycle}")
-    try:
-        loaded = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-    except FileNotFoundError as exc:
-        raise SlurmConfigError(f"Configuration not found: {path}") from exc
-    if not isinstance(loaded, dict):
-        raise SlurmConfigError(f"Configuration must be a YAML mapping: {path}")
-    parent = loaded.pop("extends", None)
-    if parent is None:
-        return loaded
-    if not isinstance(parent, str) or not parent.strip():
-        raise SlurmConfigError(f"extends must be a non-empty path string: {path}")
-    parent_config = _load_extended(path.parent / parent, (*stack, path))
-    return deep_merge(parent_config, loaded)
-
-
 def _apply_overrides(config: dict[str, Any], overrides: list[str]) -> dict[str, Any]:
     resolved = copy.deepcopy(config)
     for item in overrides:
@@ -184,9 +156,16 @@ def load_submission_config(
     They may replace generic experiment resources, while explicit command-line
     overrides take precedence over both.
     """
-    experiment = _load_extended(Path(experiment_config))
-    if cluster_config is not None:
-        cluster = _load_extended(Path(cluster_config))
+    try:
+        experiment = load_config(experiment_config)
+        cluster = (
+            load_config(cluster_config)
+            if cluster_config is not None
+            else None
+        )
+    except ConfigLoadError as exc:
+        raise SlurmConfigError(str(exc)) from exc
+    if cluster is not None:
         unexpected = set(cluster) - {"slurm"}
         if unexpected:
             raise SlurmConfigError(

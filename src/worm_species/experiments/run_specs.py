@@ -4,14 +4,13 @@ import argparse
 import json
 from pathlib import Path
 
-import yaml
-
+from ..config.loading import load_config
 from ..config.validation import validate_config
 from .conditions import condition_overrides, format_override, generate_conditions, sweep_combinations
 
 
 def write_run_specs(config_path: Path, run_specs_dir: Path, sweep_plan_path: Path) -> int:
-    config = yaml.safe_load(config_path.read_text()) or {}
+    config = load_config(config_path)
     # Validate before creating directories or removing stale specifications.
     # Run-spec generation intentionally does not require local data paths or a
     # torchvision import: it is a dry-run/cluster-submission workflow.

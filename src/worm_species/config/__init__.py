@@ -1,6 +1,6 @@
 """Configuration loading, dotted overrides, and sweep expansion."""
 
-from .loading import load_config
+from .loading import ConfigLoadError, deep_merge, load_config
 from .overrides import apply_overrides, parse_scalar, set_nested
 from .sweeps import (
     generate_colour_retention_values,
@@ -23,7 +23,9 @@ __all__ = [
     "apply_overrides",
     "CONFIG_FIELDS",
     "ConfigField",
+    "ConfigLoadError",
     "ConfigValidationError",
+    "deep_merge",
     "generate_colour_retention_values",
     "generate_sweep_configs",
     "get_colour_sweep_parameters_from_config",

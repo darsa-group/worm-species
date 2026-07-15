@@ -58,7 +58,7 @@ class SlurmPlanningContracts(unittest.TestCase):
             root = Path(directory)
             specs = root / "specs"
             count = write_run_specs(
-                ROOT / "config.yaml", specs, root / "sweep_plan.tsv"
+                EXPERIMENTS / "dual_cue.yaml", specs, root / "sweep_plan.tsv"
             )
             self.assertEqual(count, 224)
             manifest = b"".join(
