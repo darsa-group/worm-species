@@ -50,11 +50,23 @@ MIGRATED_NOTEBOOKS = {
     "notebooks/interpretability/worm_umap_top_model_families.ipynb",
 }
 
-CANONICAL_IMPORT_NOTEBOOKS = {
+USER_OWNED_EXCLUSIONS = {
+    "notebooks/analysis/earthworm_cue_suppression_analysis_v2.ipynb",
+}
+
+MIGRATED_NOTEBOOKS -= USER_OWNED_EXCLUSIONS
+
+PACKAGE_IMPORT_NOTEBOOKS = {
     "notebooks/data/dataset_tes.ipynb",
     "notebooks/diagnostics/worm_same_individual_predictions_top_models.ipynb",
     "notebooks/interpretability/gradcam_multitask_all_tasks.ipynb",
     "notebooks/interpretability/worm_gradcam_top_model_families.ipynb",
+    "notebooks/interpretability/worm_umap_top_model_families.ipynb",
+}
+
+MODERN_PACKAGE_IMPORT_NOTEBOOKS = {
+    "notebooks/diagnostics/worm_same_individual_predictions_top_models.ipynb",
+    "notebooks/interpretability/gradcam_multitask_all_tasks.ipynb",
     "notebooks/interpretability/worm_umap_top_model_families.ipynb",
 }
 
@@ -212,12 +224,22 @@ class NotebookMigrationContracts(unittest.TestCase):
                 self.assertEqual(dpi_values(old_source), dpi_values(new_source))
 
     def test_canonical_imports_replace_legacy_multitask_imports(self) -> None:
-        for relative_path in sorted(CANONICAL_IMPORT_NOTEBOOKS):
+        for relative_path in sorted(PACKAGE_IMPORT_NOTEBOOKS):
             with self.subTest(notebook=relative_path):
                 source = code_source(json.loads((ROOT / relative_path).read_text(encoding="utf-8")))
                 self.assertNotIn("from src.dataset_multitask", source)
                 self.assertNotIn("from src.models", source)
-                self.assertIn("src.worm_species", source)
+
+    def test_modern_package_notebooks_bootstrap_src_and_fail_clearly(self) -> None:
+        for relative_path in sorted(MODERN_PACKAGE_IMPORT_NOTEBOOKS):
+            with self.subTest(notebook=relative_path):
+                source = code_source(json.loads((ROOT / relative_path).read_text(encoding="utf-8")))
+                self.assertNotIn("from src.worm_species", source)
+                self.assertIn("from worm_species", source)
+                self.assertIn('SOURCE_ROOT = PROJECT_ROOT / "src"', source)
+                self.assertIn("sys.path.insert(0, str(SOURCE_ROOT))", source)
+                self.assertIn("if not PROJECT_ROOT_CANDIDATES:", source)
+                self.assertIn("raise FileNotFoundError(", source)
 
     def test_future_generated_outputs_are_routed_outside_run_directories(self) -> None:
         for relative_path, markers in ROUTING_MARKERS.items():
