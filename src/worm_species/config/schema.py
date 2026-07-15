@@ -1,0 +1,210 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Any
+
+
+class _MissingDefault:
+    def __repr__(self) -> str:
+        return "<required>"
+
+
+MISSING_DEFAULT = _MissingDefault()
+
+
+@dataclass(frozen=True)
+class ConfigField:
+    """Description of one public dictionary-configuration field."""
+
+    path: str
+    expected_types: tuple[type, ...]
+    default: Any = MISSING_DEFAULT
+    required_in: frozenset[str] = frozenset()
+    choices: tuple[Any, ...] = ()
+    range_description: str | None = None
+    consumers: tuple[str, ...] = ()
+    categories: tuple[str, ...] = ()
+    status: str = "current"
+
+
+def _field(
+    path: str,
+    *expected_types: type,
+    default: Any = MISSING_DEFAULT,
+    required_in: tuple[str, ...] = (),
+    choices: tuple[Any, ...] = (),
+    range_description: str | None = None,
+    consumers: tuple[str, ...] = (),
+    categories: tuple[str, ...] = (),
+    status: str = "current",
+) -> ConfigField:
+    return ConfigField(
+        path=path,
+        expected_types=expected_types,
+        default=default,
+        required_in=frozenset(required_in),
+        choices=choices,
+        range_description=range_description,
+        consumers=consumers,
+        categories=categories,
+        status=status,
+    )
+
+
+# This registry documents the dictionary contract; defaults are descriptive and
+# are deliberately not injected into loaded configurations.
+CONFIG_FIELDS: tuple[ConfigField, ...] = (
+    _field("seed", int, required_in=("training",), consumers=("training", "conditions")),
+    _field("wandb.enabled", bool, default=False, consumers=("wandb",), categories=("logging",)),
+    _field("wandb.project", str, type(None), default=None, consumers=("wandb",), categories=("logging",)),
+    _field("wandb.entity", str, type(None), default=None, consumers=("wandb",), categories=("logging",)),
+    _field("wandb.group", str, type(None), default=None, consumers=("wandb",), categories=("logging",)),
+    _field("wandb.name", str, type(None), default=None, consumers=("wandb",), categories=("logging",)),
+    _field("wandb.mode", str, type(None), default=None, consumers=("wandb",), categories=("logging",)),
+    _field("wandb.job_type", str, default="train", consumers=("wandb",), categories=("logging",)),
+    _field("wandb.tags", list, default=(), consumers=("wandb",), categories=("logging",)),
+    _field("wandb.save_code", bool, default=True, consumers=("wandb",), categories=("logging",)),
+    _field("wandb.log_model", bool, default=False, consumers=("wandb",), categories=("logging",)),
+    _field("data.root_dir", str, required_in=("training",), consumers=("metadata", "dataset", "cache"), categories=("storage",)),
+    _field("data.metadata_csv", str, required_in=("training",), consumers=("metadata",), categories=("storage",)),
+    _field("data.colour_retention", int, float, default=1.0, range_description="[0, 1]", consumers=("transforms",)),
+    _field("data.image_col", str, required_in=("training",), consumers=("metadata", "dataset", "run_name")),
+    _field("data.mask_col", str, type(None), default=None, consumers=("dataset", "cache")),
+    _field("data.target_col", str, required_in=("training",), consumers=("metadata", "run_name"), status="legacy"),
+    _field("data.group_col", str, required_in=("training",), consumers=("metadata", "splits")),
+    _field("data.strip_final_number_from_group", bool, default=False, consumers=("metadata",)),
+    _field("data.min_individuals_per_class", int, default=1, range_description=">= 0", consumers=("metadata",)),
+    _field("data.crop_to_foreground", bool, default=True, consumers=("dataset", "cache")),
+    _field("data.crop_pad", int, float, default=0.15, range_description=">= 0", consumers=("dataset", "cache")),
+    _field("data.image_size", int, default=224, required_in=("training",), range_description="> 0", consumers=("transforms", "cache")),
+    _field("data.barcode_col", str, default="barcode", consumers=("taxonomy",)),
+    _field("data.species_requires_binomial", bool, default=True, consumers=("taxonomy",)),
+    _field("data.target_cols", dict, required_in=("training",), consumers=("labels", "model", "metrics")),
+    _field("data.target_cols.*", str, consumers=("labels", "model", "metrics")),
+    _field("data.split_target_col", str, default="__taxon_for_split__", consumers=("splits",)),
+    _field("data.missing_label_values", list, default=(), consumers=("taxonomy", "labels")),
+    _field("data.min_individuals_per_class_by_task", dict, default={}, consumers=("metadata",)),
+    _field("data.min_individuals_per_class_by_task.*", int, range_description=">= 0", consumers=("metadata",)),
+    _field("data.taxonomic_uncertainty.uncertain_species_labels", list, default=(), consumers=("taxonomy",)),
+    _field("data.taxonomic_uncertainty.uncertain_species_patterns", list, default=(), consumers=("taxonomy",)),
+    _field("data.taxonomic_uncertainty.resolved_species_label_overrides", dict, default={}, consumers=("taxonomy",)),
+    _field("data.taxonomic_uncertainty.life_stage_overrides", dict, default={}, consumers=("taxonomy",)),
+    _field("multi_task.loss_weights", dict, default={}, consumers=("losses",)),
+    _field("multi_task.loss_weights.*", int, float, range_description=">= 0", consumers=("losses",)),
+    _field("multi_task.normalize_loss_by_active_tasks", bool, default=True, consumers=("losses",)),
+    _field("multi_task.selection_metric", str, default="mean_macro_f1", consumers=("checkpoints",)),
+    _field("multi_task.hierarchy_loss.enabled", bool, default=False, consumers=("losses",)),
+    _field("multi_task.hierarchy_loss.parent_task", str, default="genus", consumers=("losses",)),
+    _field("multi_task.hierarchy_loss.child_task", str, default="species", consumers=("losses",)),
+    _field("multi_task.hierarchy_loss.weight", int, float, default=0.1, range_description=">= 0", consumers=("losses",)),
+    _field("multi_task.hierarchy_loss.child_to_parent", dict, type(None), default=None, consumers=("losses",)),
+    _field("multitask.*", object, status="legacy", consumers=("historical run specifications",), categories=("sweeps",)),
+    _field("early_stopping.enabled", bool, default=True, consumers=("training",)),
+    _field("early_stopping.monitor", str, default="macro_f1", status="legacy", consumers=("saved configuration",)),
+    _field("early_stopping.mode", str, default="max", choices=("min", "max"), status="legacy", consumers=("saved configuration",)),
+    _field("early_stopping.patience", int, default=3, range_description=">= 0", consumers=("training",)),
+    _field("early_stopping.min_delta", int, float, default=0.001, range_description=">= 0", consumers=("training",)),
+    _field("split.test_size", int, float, default=0.2, required_in=("training",), range_description="(0, 1)", consumers=("splits",)),
+    _field("split.val_size", int, float, default=0.15, required_in=("training",), range_description="(0, 1)", consumers=("splits",)),
+    _field("split.predefined_split_dir", str, default=".", consumers=("splits",), categories=("storage",)),
+    _field("split.use_predefined_splits", bool, default=False, consumers=("splits",)),
+    _field("split.save_splits", bool, default=False, consumers=("splits",)),
+    _field("model.name", str, required_in=("training", "run_specs"), consumers=("model_factory", "run_specs")),
+    _field("model.pretrained", bool, default=True, consumers=("model_factory",)),
+    _field("model.freeze_backbone", bool, default=False, consumers=("model_factory",)),
+    _field("training.epochs", int, required_in=("training",), range_description="> 0", consumers=("training",)),
+    _field("training.batch_size", int, required_in=("training",), range_description="> 0", consumers=("loaders",)),
+    _field("training.lr", int, float, required_in=("training",), range_description="> 0", consumers=("optimiser",)),
+    _field("training.weight_decay", int, float, required_in=("training",), range_description=">= 0", consumers=("optimiser",)),
+    _field("training.use_amp", bool, default=True, consumers=("training",)),
+    _field("training.class_weight", bool, default=True, consumers=("losses",)),
+    _field("training.mode", str, consumers=("canonical trainer profile resolution",)),
+    _field("training.use_masked_labels", bool, default=True, consumers=("canonical trainer profile resolution",)),
+    _field("training.num_workers", int, default=4, range_description=">= 0", consumers=("loaders",)),
+    _field("training.val_interval", int, default=3, range_description="> 0", consumers=("training",)),
+    _field("output.out_dir", str, required_in=("training",), consumers=("training",), categories=("storage",)),
+    _field("cache.enabled", bool, default=False, consumers=("cache",)),
+    _field("cache.dir", str, default="cache/images", consumers=("cache",), categories=("storage",)),
+    _field("cache.root_dir_cache", str, default=None, consumers=("cache",), categories=("storage",)),
+    _field("cache.format", str, default="png", choices=("png", "jpg", "jpeg"), consumers=("cache",)),
+    _field("cache.rebuild", bool, default=False, consumers=("cache",)),
+    _field("cache.num_workers", int, default=4, range_description=">= 0", consumers=("cache",)),
+    _field("cache.cache_dir", str, status="runtime", consumers=("SLURM cache setup",), categories=("storage", "SLURM")),
+    _field("cache.root_dir", str, status="runtime", consumers=("SLURM cache setup",), categories=("storage", "SLURM")),
+    _field("colour_ablation.enabled", bool, default=False, consumers=("colour trainer", "sweeps")),
+    _field("colour_ablation.start_percent", int, default=100, range_description="[0, 100]", consumers=("sweeps",)),
+    _field("colour_ablation.stop_percent", int, default=0, range_description="[0, 100]", consumers=("sweeps",)),
+    _field("colour_ablation.step_percent", int, default=1, range_description="> 0", consumers=("sweeps",)),
+    _field("colour_ablation.combine_with_sweep", bool, default=False, consumers=("sweeps",)),
+    _field("test_cue_suppression.enabled", bool, default=False, consumers=("fixed RGB evaluation",)),
+    _field("test_cue_suppression.saturation.enabled", bool, default=True, consumers=("conditions",)),
+    _field("test_cue_suppression.saturation.start", int, float, default=1.0, range_description="[0, 1]", consumers=("conditions",)),
+    _field("test_cue_suppression.saturation.stop", int, float, default=0.0, range_description="[0, 1]", consumers=("conditions",)),
+    _field("test_cue_suppression.saturation.step", int, float, default=0.01, range_description="> 0", consumers=("conditions",)),
+    _field("test_cue_suppression.saturation.values", list, consumers=("conditions",)),
+    _field("test_cue_suppression.grayscale.enabled", bool, default=True, consumers=("conditions",)),
+    _field("test_cue_suppression.channel_shuffle.enabled", bool, default=True, consumers=("conditions",)),
+    _field("test_cue_suppression.channel_shuffle.orders", list, default=((2, 0, 1),), consumers=("conditions",)),
+    _field("test_cue_suppression.bilateral_filter.enabled", bool, default=True, consumers=("conditions",)),
+    _field("test_cue_suppression.bilateral_filter.settings", list, consumers=("conditions",)),
+    _field("test_cue_suppression.gaussian_blur.enabled", bool, default=True, consumers=("conditions",)),
+    _field("test_cue_suppression.gaussian_blur.sigmas", list, consumers=("conditions",)),
+    _field("test_cue_suppression.patch_shuffle.enabled", bool, default=True, consumers=("conditions",)),
+    _field("test_cue_suppression.patch_shuffle.grid_sizes", list, consumers=("conditions",)),
+    _field("test_cue_suppression.patch_shuffle.seed", int, consumers=("conditions",)),
+    _field("matched_condition_training.enabled", bool, default=False, consumers=("run_specs",)),
+    _field("matched_condition_training.include_original", bool, default=True, consumers=("run_specs",)),
+    _field("matched_condition_training.deduplicate_equivalent_conditions", bool, default=True, consumers=("run_specs",)),
+    _field("matched_condition_training.evaluate_original_model_on_all_test_conditions", bool, default=True, consumers=("run_specs",)),
+    _field("matched_condition_training.condition_names", list, consumers=("run_specs",)),
+    _field("experiment.type", str, consumers=("canonical trainer profile resolution",)),
+    _field("experiment.training_condition", dict, str, type(None), consumers=("canonical trainer profile resolution",)),
+    _field("experiment.training_condition.*", object, consumers=("canonical trainer profile resolution",)),
+    _field("sweep.enabled", bool, default=False, consumers=("sweeps",)),
+    _field("sweep.parameters", dict, default={}, consumers=("sweeps",)),
+    _field("sweep.parameters.*", list, consumers=("sweeps",)),
+    _field("input_condition.enabled", bool, default=False, status="runtime", consumers=("matched-condition trainer",)),
+    _field("input_condition.condition", str, status="runtime", consumers=("matched-condition trainer",)),
+    _field("input_condition.name", str, status="runtime", consumers=("matched-condition trainer",)),
+    _field("input_condition.feature", str, status="runtime", consumers=("matched-condition trainer",)),
+    _field("input_condition.transform", str, status="runtime", consumers=("matched-condition trainer",)),
+    _field("input_condition.strength", int, float, status="runtime", consumers=("matched-condition trainer",)),
+    _field("input_condition.retention", int, float, status="runtime", consumers=("matched-condition trainer",)),
+    _field("input_condition.order", list, tuple, str, status="runtime", consumers=("matched-condition trainer",)),
+    _field("input_condition.diameter", int, status="runtime", consumers=("matched-condition trainer",)),
+    _field("input_condition.sigma_colour", int, float, status="runtime", consumers=("matched-condition trainer",)),
+    _field("input_condition.sigma_space", int, float, status="runtime", consumers=("matched-condition trainer",)),
+    _field("input_condition.sigma", int, float, status="runtime", consumers=("matched-condition trainer",)),
+    _field("input_condition.grid_size", int, status="runtime", consumers=("matched-condition trainer",)),
+    _field("input_condition.seed", int, status="runtime", consumers=("matched-condition trainer",)),
+)
+
+
+def field_for_path(path: str) -> ConfigField | None:
+    """Return the most specific registered field matching ``path``."""
+    exact = next((field for field in CONFIG_FIELDS if field.path == path), None)
+    if exact is not None:
+        return exact
+    matches = [
+        field
+        for field in CONFIG_FIELDS
+        if field.path.endswith(".*")
+        and path.startswith(field.path[:-1])
+        and len(path) > len(field.path) - 1
+    ]
+    if not matches:
+        return None
+    return max(matches, key=lambda field: len(field.path))
+
+
+def is_known_config_path(path: str) -> bool:
+    return bool(path) and field_for_path(path) is not None
+
+
+__all__ = [
+    "CONFIG_FIELDS",
+    "ConfigField",
+    "MISSING_DEFAULT",
+    "field_for_path",
+    "is_known_config_path",
+]

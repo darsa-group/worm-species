@@ -10,9 +10,20 @@ from .sweeps import (
     get_sweep_parameters_from_config,
     parse_sweep_item,
 )
+from .schema import CONFIG_FIELDS, ConfigField, field_for_path, is_known_config_path
+from .validation import (
+    ConfigValidationError,
+    ValidationIssue,
+    resolve_workflow,
+    validate_config,
+    validate_override_items,
+)
 
 __all__ = [
     "apply_overrides",
+    "CONFIG_FIELDS",
+    "ConfigField",
+    "ConfigValidationError",
     "generate_colour_retention_values",
     "generate_sweep_configs",
     "get_colour_sweep_parameters_from_config",
@@ -22,4 +33,10 @@ __all__ = [
     "parse_scalar",
     "parse_sweep_item",
     "set_nested",
+    "ValidationIssue",
+    "field_for_path",
+    "is_known_config_path",
+    "resolve_workflow",
+    "validate_config",
+    "validate_override_items",
 ]

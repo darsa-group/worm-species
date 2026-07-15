@@ -6,11 +6,21 @@ from pathlib import Path
 
 import yaml
 
+from ..config.validation import validate_config
 from .conditions import condition_overrides, format_override, generate_conditions, sweep_combinations
 
 
 def write_run_specs(config_path: Path, run_specs_dir: Path, sweep_plan_path: Path) -> int:
     config = yaml.safe_load(config_path.read_text()) or {}
+    # Validate before creating directories or removing stale specifications.
+    # Run-spec generation intentionally does not require local data paths or a
+    # torchvision import: it is a dry-run/cluster-submission workflow.
+    validate_config(
+        config,
+        workflow="run_specs",
+        check_paths=False,
+        check_model_registry=False,
+    )
     conditions = generate_conditions(config)
     combinations = sweep_combinations(config)
     matched_config = config.get("matched_condition_training", {}) or {}
