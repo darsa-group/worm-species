@@ -1,0 +1,12 @@
+extends: colour_ablation.yaml
+
+# GHPC colour-ablation runs retain their dedicated historical W&B project.
+wandb:
+  enabled: true
+  project: worm-species-color-ablation
+  mode: online
+
+slurm:
+  collection:
+    enabled: true
+    kind: colour-ablation

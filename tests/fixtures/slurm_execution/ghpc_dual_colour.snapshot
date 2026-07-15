@@ -1,0 +1,162 @@
+{
+  "colour": {
+    "array": "0-201%2",
+    "array_size": 202,
+    "collector": {
+      "enabled": true,
+      "kind": "colour-ablation",
+      "schema_version": 1
+    },
+    "collector_dependencies": [
+      {
+        "job": "train_array",
+        "kind": "afterany"
+      }
+    ],
+    "condition_count": 101,
+    "gate": {
+      "cleanup": [
+        [
+          "gpu01",
+          [
+            {
+              "job": "train_array",
+              "kind": "afterany"
+            }
+          ]
+        ],
+        [
+          "gpu02",
+          [
+            {
+              "job": "train_array",
+              "kind": "afterany"
+            }
+          ]
+        ]
+      ],
+      "nodes": [
+        "gpu01",
+        "gpu02"
+      ],
+      "root_contains_submission_id": true,
+      "setup_nodes": [
+        "gpu01",
+        "gpu02"
+      ],
+      "train_dependencies": [
+        {
+          "job": "setup:gpu01",
+          "kind": "afterok"
+        },
+        {
+          "job": "setup:gpu02",
+          "kind": "afterok"
+        }
+      ],
+      "unique_per_submission": true
+    },
+    "generated_files": [
+      "node_local_cleanup_job.sh",
+      "node_local_colour_array_job.sh",
+      "node_local_setup_job.sh",
+      "result_collector_job.sh"
+    ],
+    "models": [
+      "convnext_base",
+      "vit_b_16"
+    ],
+    "resources": {
+      "cpus_per_task": 16,
+      "max_active": 2,
+      "memory_mib": 16384,
+      "time_limit": "04:00:00"
+    },
+    "wandb": {
+      "enabled": "true",
+      "group": "results-colour",
+      "mode": "online",
+      "project": "worm-species-color-ablation"
+    }
+  },
+  "dual": {
+    "array": "0-223%2",
+    "array_size": 224,
+    "collector": {
+      "enabled": true,
+      "kind": "dual-cue",
+      "schema_version": 1
+    },
+    "collector_dependencies": [
+      {
+        "job": "train_array",
+        "kind": "afterany"
+      }
+    ],
+    "condition_count": 112,
+    "gate": {
+      "cleanup": [
+        [
+          "gpu01",
+          [
+            {
+              "job": "train_array",
+              "kind": "afterany"
+            }
+          ]
+        ],
+        [
+          "gpu02",
+          [
+            {
+              "job": "train_array",
+              "kind": "afterany"
+            }
+          ]
+        ]
+      ],
+      "nodes": [
+        "gpu01",
+        "gpu02"
+      ],
+      "root_contains_submission_id": true,
+      "setup_nodes": [
+        "gpu01",
+        "gpu02"
+      ],
+      "train_dependencies": [
+        {
+          "job": "setup:gpu01",
+          "kind": "afterok"
+        },
+        {
+          "job": "setup:gpu02",
+          "kind": "afterok"
+        }
+      ],
+      "unique_per_submission": true
+    },
+    "generated_files": [
+      "node_local_cleanup_job.sh",
+      "node_local_cue_array_job.sh",
+      "node_local_setup_job.sh",
+      "result_collector_job.sh"
+    ],
+    "models": [
+      "convnext_base",
+      "vit_b_16"
+    ],
+    "resources": {
+      "cpus_per_task": 16,
+      "max_active": 2,
+      "memory_mib": 16384,
+      "time_limit": "04:00:00"
+    },
+    "wandb": {
+      "enabled": "true",
+      "group": "results-dual",
+      "mode": "online",
+      "project": "worm-species"
+    }
+  }
+}
