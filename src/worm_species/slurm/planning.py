@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import copy
 import hashlib
-import itertools
 from dataclasses import dataclass
 from pathlib import PurePosixPath
 from typing import Any
@@ -12,13 +11,12 @@ from typing import Any
 import yaml
 
 from ..config.overrides import apply_overrides
-from ..config.sweeps import get_colour_sweep_parameters_from_config
+from ..config.normalization import normalize_config
+from ..config.sweeps import expand_sweep_items
 from ..config.validation import ConfigValidationError, validate_config
 from ..experiments.conditions import (
     condition_overrides,
     format_override,
-    generate_conditions,
-    sweep_combinations,
 )
 from ..training.modes import infer_experiment_type
 from ..training.modes import resolve_configured_profile
@@ -134,87 +132,82 @@ def _config_hash(config: dict[str, Any]) -> str:
     return hashlib.sha256(payload).hexdigest()
 
 
-def _ordinary_specs(config: dict[str, Any]) -> list[tuple[str, list[str], str, str]]:
-    combinations = sweep_combinations(config)
-    specs = []
-    for index, combination in enumerate(combinations):
-        overrides = [
-            f"{key}={format_override(value)}" for key, value in combination.items()
-        ]
-        model = str(
-            combination.get(
-                "model.name", config.get("model", {}).get("name", "model")
-            )
-        )
-        specs.append((f"run_{index:03d}", overrides, model, "original"))
-    return specs
+def _legacy_condition(condition: dict[str, Any]) -> dict[str, Any]:
+    """Materialise the established run-spec spelling from one canonical object."""
+    legacy = {
+        "condition": condition["name"],
+        "feature": condition.get("feature", "baseline"),
+        "transform": condition["transform"],
+        "strength": condition.get("strength", 0.0),
+    }
+    parameters = condition.get("parameters", {}) or {}
+    if not isinstance(parameters, dict):
+        raise SlurmConfigError("Canonical condition parameters must be a mapping")
+    legacy.update(copy.deepcopy(parameters))
+    return legacy
 
 
-def _colour_specs(config: dict[str, Any]) -> list[tuple[str, list[str], str, str]]:
-    parameters = get_colour_sweep_parameters_from_config(config)
-    if not parameters:
-        return _ordinary_specs(config)
-    keys = list(parameters)
-    value_lists = [parameters[key] for key in keys]
-    specs = []
-    for index, combination in enumerate(itertools.product(*value_lists)):
-        values = dict(zip(keys, combination))
-        retention = values.get("data.colour_retention")
-        if retention is None:
-            run_id = f"run_{index:03d}"
-        else:
-            percent = int(round(float(retention) * 100))
-            run_id = (
-                f"colour_{percent:03d}pct"
-                if len(keys) == 1
-                else f"run_{index:03d}_colour_{percent:03d}pct"
-            )
-        overrides = [
-            f"{key}={format_override(value)}" for key, value in values.items()
-        ]
-        model = str(
-            values.get("model.name", config.get("model", {}).get("name", "model"))
-        )
-        condition_retention = 1.0 if retention is None else float(retention)
-        specs.append(
-            (
-                run_id,
-                overrides,
-                model,
-                f"colour_{int(round(condition_retention * 100)):03d}pct",
-            )
-        )
-    return specs
-
-
-def _dual_cue_specs(config: dict[str, Any]) -> list[tuple[str, list[str], str, str]]:
-    conditions = generate_conditions(config)
-    combinations = sweep_combinations(config)
-    evaluate_rgb_all = bool(
-        (config.get("matched_condition_training", {}) or {}).get(
-            "evaluate_original_model_on_all_test_conditions", True
-        )
+def _generic_specs(config: dict[str, Any]) -> list[tuple[str, list[str], str, str]]:
+    """Expand every experiment through the one canonical sweep engine."""
+    canonical = normalize_config(config)
+    items = expand_sweep_items(canonical)
+    planning = (config.get("slurm", {}) or {}).get("planning", {}) or {}
+    compatibility_kind = str(planning.get("external_expansion", "sweep"))
+    canonical_sweep = canonical.get("sweep", {}) or {}
+    parameter_count = len(canonical_sweep.get("parameters", {}) or {})
+    evaluation = canonical.get("evaluation", {}) or {}
+    test_schedule = (
+        evaluation.get("test_conditions", {}) or {}
+        if isinstance(evaluation, dict)
+        else {}
     )
-    specs = []
-    index = 0
-    for combination in combinations:
+    evaluate_original = bool(
+        isinstance(test_schedule, dict)
+        and test_schedule.get("evaluate_original_training", False)
+    )
+
+    specs: list[tuple[str, list[str], str, str]] = []
+    for index, item in enumerate(items):
+        assignments = item.parameter_values
+        overrides = [
+            f"{key}={format_override(value)}"
+            for key, value in assignments.items()
+        ]
         model = str(
-            combination.get(
-                "model.name", config.get("model", {}).get("name", "model")
+            assignments.get(
+                "model.name", canonical.get("model", {}).get("name", "model")
             )
         )
-        for condition in conditions:
-            overrides = [
-                f"{key}={format_override(value)}" for key, value in combination.items()
-            ]
-            overrides.extend(condition_overrides(condition))
-            cue_enabled = evaluate_rgb_all and condition["transform"] == "original"
-            overrides.append(
-                f"test_cue_suppression.enabled={'true' if cue_enabled else 'false'}"
-            )
-            overrides.append("matched_condition_training.enabled=false")
-            specs.append((f"run_{index:03d}", overrides, model, condition["condition"]))
-            index += 1
+        condition_name = "original"
+        run_id = f"run_{index:03d}"
+
+        if item.condition is not None:
+            condition = _legacy_condition(item.condition)
+            condition_name = str(condition["condition"])
+            if compatibility_kind == "colour_ablation":
+                retention = float(condition.get("retention", 1.0))
+                percent = int(round(retention * 100))
+                overrides.append(
+                    f"data.colour_retention={format_override(retention)}"
+                )
+                run_id = (
+                    f"colour_{percent:03d}pct"
+                    if parameter_count == 0
+                    else f"run_{index:03d}_colour_{percent:03d}pct"
+                )
+            else:
+                overrides.extend(condition_overrides(condition))
+                if compatibility_kind == "dual_cue":
+                    cue_enabled = (
+                        evaluate_original
+                        and condition["transform"] == "original"
+                    )
+                    overrides.append(
+                        "test_cue_suppression.enabled="
+                        + ("true" if cue_enabled else "false")
+                    )
+                    overrides.append("matched_condition_training.enabled=false")
+        specs.append((run_id, overrides, model, condition_name))
     return specs
 
 
@@ -305,21 +298,7 @@ def plan_submission(config: dict[str, Any]) -> SubmissionPlan:
     validate_slurm_config(config)
     planning = config.get("slurm", {}).get("planning", {}) or {}
     experiment_type = str(planning.get("experiment_type", "standard"))
-    expansion = str(
-        (config.get("slurm", {}).get("planning", {}) or {}).get(
-            "external_expansion", "sweep"
-        )
-    )
-    if expansion == "sweep":
-        raw_specs = _ordinary_specs(config)
-    elif expansion == "colour_ablation":
-        raw_specs = _colour_specs(config)
-    elif expansion == "dual_cue":
-        raw_specs = _dual_cue_specs(config)
-    else:
-        raise SlurmConfigError(
-            f"Unsupported slurm.planning.external_expansion: {expansion!r}"
-        )
+    raw_specs = _generic_specs(config)
     if not raw_specs:
         raise SlurmConfigError("No run specifications were generated")
 
