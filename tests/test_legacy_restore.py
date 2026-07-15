@@ -13,6 +13,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 MANIFEST = ROOT / "legacy" / "compatibility.map"
 RESTORE = ROOT / "legacy" / "restore_compatibility.sh"
+EXPECTED_RESTORE_PATHS = 42
 
 
 def manifest_rows() -> list[dict[str, str]]:
@@ -23,7 +24,7 @@ def manifest_rows() -> list[dict[str, str]]:
 class LegacyArchiveContracts(unittest.TestCase):
     def test_manifest_is_complete_and_active_paths_are_absent(self) -> None:
         rows = manifest_rows()
-        self.assertEqual(len(rows), 37)
+        self.assertEqual(len(rows), EXPECTED_RESTORE_PATHS)
         active_paths = [row["active_path"] for row in rows]
         self.assertEqual(len(active_paths), len(set(active_paths)))
         for row in rows:
@@ -58,7 +59,9 @@ class LegacyArchiveContracts(unittest.TestCase):
                 capture_output=True,
                 text=True,
             )
-            self.assertEqual(result.stdout.count("WOULD RESTORE:"), 37)
+            self.assertEqual(
+                result.stdout.count("WOULD RESTORE:"), EXPECTED_RESTORE_PATHS
+            )
             self.assertEqual(list(target.iterdir()), [])
 
     def test_restore_recreates_regular_files_and_relative_links(self) -> None:
@@ -75,7 +78,9 @@ class LegacyArchiveContracts(unittest.TestCase):
                 capture_output=True,
                 text=True,
             )
-            self.assertEqual(first.stdout.count("RESTORED:"), 37)
+            self.assertEqual(
+                first.stdout.count("RESTORED:"), EXPECTED_RESTORE_PATHS
+            )
 
             for row in rows:
                 with self.subTest(active=row["active_path"]):
@@ -101,7 +106,10 @@ class LegacyArchiveContracts(unittest.TestCase):
                 capture_output=True,
                 text=True,
             )
-            self.assertEqual(second.stdout.count("ALREADY RESTORED:"), 37)
+            self.assertEqual(
+                second.stdout.count("ALREADY RESTORED:"),
+                EXPECTED_RESTORE_PATHS,
+            )
             self.assertNotIn("RESTORED:", second.stdout.replace("ALREADY RESTORED:", ""))
 
     def test_conflict_fails_before_any_restore(self) -> None:

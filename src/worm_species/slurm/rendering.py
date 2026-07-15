@@ -25,16 +25,11 @@ _TEMPLATES = frozenset(
     {
         "cache_build_job.sh.tmpl",
         "persistent_cache_array_job.sh.tmpl",
-        "persistent_cache_wandb_array_job.sh.tmpl",
         "node_local_setup_job.sh.tmpl",
         "node_local_array_job.sh.tmpl",
-        "node_local_training_array_job.sh.tmpl",
-        "node_local_colour_array_job.sh.tmpl",
-        "node_local_cue_array_job.sh.tmpl",
         "job_local_cue_array_job.sh.tmpl",
         "node_local_cleanup_job.sh.tmpl",
         "result_collector_job.sh.tmpl",
-        "colour_collector_job.sh.tmpl",
     }
 )
 

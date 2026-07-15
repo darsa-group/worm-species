@@ -23,6 +23,9 @@ idempotent. There is deliberately no force option.
 - `compatibility/scripts/`: former Python entry points below `scripts/`.
 - `compatibility/src/`: historical `src.*` import and generator adapters.
 - `slurm/`: exact historical SLURM launcher bodies.
+- `slurm/templates/`: superseded specialised template bodies retained after the
+  canonical renderer adopted shared node-local, persistent-cache, and collector
+  templates.
 - `configs/config_old.yaml`: the previous configuration body.
 - `python/experiments/generate_sweep_run_specs.py`: the exact ordinary sweep
   generator retained for provenance.

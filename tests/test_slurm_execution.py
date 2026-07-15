@@ -123,19 +123,15 @@ class SlurmExecutionContracts(unittest.TestCase):
         self.assertIn("--kind colour-ablation", collector)
         self.assertIn('export PYTHONPATH="$PROJECT_ROOT/src', collector)
 
-    def test_node_local_templates_use_canonical_metadata_import(self):
-        for name in (
-            "node_local_colour_array_job.sh.tmpl",
-            "node_local_cue_array_job.sh.tmpl",
-            "node_local_training_array_job.sh.tmpl",
-        ):
-            with self.subTest(template=name):
-                source = (ROOT / "slurm" / "templates" / name).read_text()
-                self.assertIn(
-                    "from worm_species.data.metadata import prepare_metadata",
-                    source,
-                )
-                self.assertNotIn("from src.dataset_multitask", source)
+    def test_shared_node_local_template_uses_canonical_metadata_import(self):
+        source = (
+            ROOT / "slurm" / "templates" / "node_local_array_job.sh.tmpl"
+        ).read_text()
+        self.assertIn(
+            "from worm_species.data.metadata import prepare_metadata",
+            source,
+        )
+        self.assertNotIn("from src.dataset_multitask", source)
 
     def test_exact_dependency_dags_and_non_secret_wandb_exports(self):
         ghpc = json.loads((self.ghpc_root / "submission_manifest.json").read_text())
