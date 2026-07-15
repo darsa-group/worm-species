@@ -109,11 +109,6 @@ class SubmissionPlan:
     def expected_internal_training_runs_per_task(self) -> int:
         return 1
 
-    @property
-    def training_profile(self) -> str:
-        """Temporary API compatibility for the pending Makefile migration."""
-        return "configured"
-
     def as_dict(self) -> dict[str, Any]:
         return {
             "schema_version": self.schema_version,

@@ -5,23 +5,22 @@ CONFIG ?= configs/experiments/standard.yaml
 CLUSTER ?= configs/clusters/local.yaml
 TRAIN_CONFIG ?= config.yaml
 RESULTS_ROOT ?= outputs_slurm
+SLURM_RESULTS_ROOT ?= $(RESULTS_ROOT)
+SINGLE_TASK_RESULTS_ROOT ?= single_task/outputs
 MAX_ACTIVE ?=
 MODEL ?=
-PROFILE ?=
 ARTIFACTS_DIR ?= slurm/generated/plan-$(shell date -u +%Y%m%dT%H%M%S%N)
 DASHBOARD_INDEX ?= .cache/worm-species-dashboard/index.sqlite3
+DASHBOARD_DERIVED ?= .cache/worm-species-dashboard/derived
 
 SLURM = PYTHONPATH=src $(PYTHON) -m worm_species.slurm
 CLUSTER_ARG = $(if $(strip $(CLUSTER)),--cluster-config "$(CLUSTER)",)
 PLAN_OVERRIDE_VALUES = slurm.paths.results_root=$(RESULTS_ROOT) \
 	$(if $(strip $(MAX_ACTIVE)),slurm.array.max_active=$(MAX_ACTIVE),) \
-	$(if $(strip $(MODEL)),model.name=$(MODEL),) \
-	$(if $(strip $(PROFILE)),slurm.planning.training_profile=$(PROFILE),)
+	$(if $(strip $(MODEL)),model.name=$(MODEL),)
 PLAN_OVERRIDE_ARGS = --override "slurm.paths.results_root=$(RESULTS_ROOT)" \
 	$(if $(strip $(MAX_ACTIVE)),--override "slurm.array.max_active=$(MAX_ACTIVE)",) \
-	$(if $(strip $(MODEL)),--override "model.name=$(MODEL)",) \
-	$(if $(strip $(PROFILE)),--override "slurm.planning.training_profile=$(PROFILE)",)
-TRAIN_PROFILE_ARG = $(if $(strip $(PROFILE)),--profile "$(PROFILE)",)
+	$(if $(strip $(MODEL)),--override "model.name=$(MODEL)",)
 TRAIN_OVERRIDE_VALUES = sweep.enabled=false \
 	colour_ablation.enabled=false \
 	matched_condition_training.enabled=false \
@@ -29,7 +28,7 @@ TRAIN_OVERRIDE_VALUES = sweep.enabled=false \
 	$(if $(filter-out file undefined,$(origin RESULTS_ROOT)),output.out_dir=$(RESULTS_ROOT),)
 TRAIN_OVERRIDE_ARGS = $(if $(strip $(TRAIN_OVERRIDE_VALUES)),--override $(TRAIN_OVERRIDE_VALUES),)
 
-.PHONY: help validate inspect dry-run train submit status collect dashboard \
+.PHONY: help validate inspect dry-run train submit status collect dashboard-prepare dashboard \
 	test test-unit test-contracts test-integration clean-generated
 
 help: ## Show the supported repository commands.
@@ -42,6 +41,7 @@ help: ## Show the supported repository commands.
 	@echo "  make submit             Explicitly render and submit to SLURM."
 	@echo "  make status             Summarise filesystem and scheduler status."
 	@echo "  make collect            Re-run canonical result aggregation."
+	@echo "  make dashboard-prepare  Prepare cached metrics and confusion matrices."
 	@echo "  make dashboard          Launch the read-only local dashboard."
 	@echo "  make test               Run the complete CPU-only unittest suite."
 	@echo "  make test-unit          Run focused unit tests."
@@ -50,14 +50,15 @@ help: ## Show the supported repository commands.
 	@echo "  make clean-generated    Remove only generated plans/local indexes."
 	@echo
 	@echo "Variables: CONFIG CLUSTER TRAIN_CONFIG RESULTS_ROOT MAX_ACTIVE MODEL"
-	@echo "           PROFILE ARTIFACTS_DIR DASHBOARD_INDEX PYTHON"
+	@echo "           SLURM_RESULTS_ROOT SINGLE_TASK_RESULTS_ROOT ARTIFACTS_DIR"
+	@echo "           DASHBOARD_INDEX DASHBOARD_DERIVED PYTHON"
 
 validate: ## Validate configuration and prove the plan is internally consistent.
-	@PYTHONPATH=src $(PYTHON) -c 'import sys; from worm_species.slurm.config import load_submission_config; from worm_species.slurm.planning import plan_submission; config = load_submission_config(sys.argv[1], sys.argv[2] or None, sys.argv[3:]); plan = plan_submission(config); print(f"valid: {plan.experiment_type}; {plan.array_size} task(s); profile={plan.training_profile}; cluster={plan.cluster_profile}")' \
+	@PYTHONPATH=src $(PYTHON) -c 'import sys; from worm_species.slurm.config import load_submission_config; from worm_species.slurm.planning import plan_submission; config = load_submission_config(sys.argv[1], sys.argv[2] or None, sys.argv[3:]); plan = plan_submission(config); print(f"valid: {plan.experiment_type}; {plan.array_size} task(s); modes=" + ",".join(plan.training_modes) + f"; cluster={plan.cluster_profile}")' \
 		"$(CONFIG)" "$(CLUSTER)" $(PLAN_OVERRIDE_VALUES)
 
 inspect: ## Print the resolved submission configuration and concise plan summary.
-	@PYTHONPATH=src $(PYTHON) -c 'import sys, yaml; from worm_species.slurm.config import load_submission_config; from worm_species.slurm.planning import plan_submission; config = load_submission_config(sys.argv[1], sys.argv[2] or None, sys.argv[3:]); plan = plan_submission(config); print(yaml.safe_dump({"plan": {"experiment_type": plan.experiment_type, "cluster_profile": plan.cluster_profile, "training_profile": plan.training_profile, "models": list(plan.models), "condition_count": len(plan.conditions), "total_run_count": plan.array_size, "internal_runs_per_task": plan.expected_internal_training_runs_per_task}, "resolved_config": config}, sort_keys=False).rstrip())' \
+	@PYTHONPATH=src $(PYTHON) -c 'import sys, yaml; from worm_species.slurm.config import load_submission_config; from worm_species.slurm.planning import plan_submission; config = load_submission_config(sys.argv[1], sys.argv[2] or None, sys.argv[3:]); plan = plan_submission(config); print(yaml.safe_dump({"plan": {"experiment_type": plan.experiment_type, "cluster_profile": plan.cluster_profile, "trainer_selection": "configuration", "training_modes": list(plan.training_modes), "models": list(plan.models), "condition_count": len(plan.conditions), "total_run_count": plan.array_size, "internal_runs_per_task": plan.expected_internal_training_runs_per_task}, "resolved_config": config}, sort_keys=False).rstrip())' \
 		"$(CONFIG)" "$(CLUSTER)" $(PLAN_OVERRIDE_VALUES)
 
 dry-run: ## Render self-contained SLURM artifacts without calling sbatch.
@@ -65,8 +66,8 @@ dry-run: ## Render self-contained SLURM artifacts without calling sbatch.
 		$(PLAN_OVERRIDE_ARGS) --artifacts-dir "$(ARTIFACTS_DIR)"
 
 train: ## Run one local process through the canonical trainer.
-	PYTHONPATH=src $(PYTHON) train.py --config "$(TRAIN_CONFIG)" \
-		$(TRAIN_PROFILE_ARG) --single-run $(TRAIN_OVERRIDE_ARGS)
+	PYTHONPATH=src $(PYTHON) -m worm_species.training --config "$(TRAIN_CONFIG)" \
+		--single-run $(TRAIN_OVERRIDE_ARGS)
 
 submit: ## Explicitly render and submit the validated plan to SLURM.
 	$(SLURM) launch --submit --config "$(CONFIG)" $(CLUSTER_ARG) \
@@ -80,9 +81,17 @@ collect: ## Aggregate existing results without retraining.
 	PYTHONPATH=src $(PYTHON) -m worm_species.slurm collect \
 		--results-root "$(RESULTS_ROOT)"
 
+dashboard-prepare: ## Prepare cached metrics and combined confusion matrices read-only.
+	PYTHONPATH=src $(PYTHON) -m worm_species.results.derive \
+		--source "slurm=$(SLURM_RESULTS_ROOT)" \
+		--source "single_task=$(SINGLE_TASK_RESULTS_ROOT)" \
+		--cache "$(DASHBOARD_DERIVED)" --render all
+
 dashboard: ## Launch the read-only Streamlit result browser.
 	PYTHONPATH=src:. streamlit run dashboard/app.py -- \
-		--results-root "$(RESULTS_ROOT)" --cache "$(DASHBOARD_INDEX)"
+		--source "slurm=$(SLURM_RESULTS_ROOT)" \
+		--source "single_task=$(SINGLE_TASK_RESULTS_ROOT)" \
+		--cache "$(DASHBOARD_INDEX)" --derived-cache "$(DASHBOARD_DERIVED)"
 
 test: ## Run every standard-library test without external data or GPUs.
 	PYTHONPATH=.:src $(PYTHON) -m unittest discover -s tests -p 'test_*.py'
@@ -97,6 +106,8 @@ test-contracts: ## Run public CLI, import, and scientific behaviour contracts.
 
 test-integration: ## Run lightweight result-discovery integration tests.
 	PYTHONPATH=.:src $(PYTHON) -m unittest discover -s tests -p 'test_result_discovery.py'
+	PYTHONPATH=.:src $(PYTHON) -m unittest discover -s tests -p 'test_result_derivation.py'
+	PYTHONPATH=.:src $(PYTHON) -m unittest discover -s tests -p 'test_dashboard_multi_root.py'
 
 clean-generated: ## Delete only repository-local generated plans and indexes.
 	@root="$$(realpath -m slurm/generated)"; \
@@ -107,3 +118,7 @@ clean-generated: ## Delete only repository-local generated plans and indexes.
 		cache_root="$$(realpath -m "$(CURDIR)/.cache")"; \
 		case "$$cache" in "$$cache_root"/*) rm -f -- "$$cache" "$$cache-shm" "$$cache-wal" ;; \
 		*) echo "Refusing to remove dashboard index outside $(CURDIR)/.cache: $$cache" >&2; exit 2 ;; esac
+	@derived="$$(realpath -m "$(DASHBOARD_DERIVED)")"; \
+		cache_root="$$(realpath -m "$(CURDIR)/.cache")"; \
+		case "$$derived" in "$$cache_root"/*) if test -d "$$derived"; then rm -rf -- "$$derived"; fi ;; \
+		*) echo "Refusing to remove derived dashboard cache outside $(CURDIR)/.cache: $$derived" >&2; exit 2 ;; esac
