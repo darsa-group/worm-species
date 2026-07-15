@@ -38,7 +38,8 @@ from src.dataset_multitask import (
     prepare_metadata,
 )
 from src.cache import build_image_cache
-from src.models import build_model
+from src.worm_species.models.multitask import MultiTaskClassifier, build_multitask_model
+from src.worm_species.data.labels import build_label_maps, read_csvs_from_dir
 from src.splits import make_individual_level_splits
 from src.utils import (
     load_config,
@@ -49,6 +50,13 @@ from src.utils import (
     save_json,
     make_run_name,
 )
+from src.worm_species.config.sweeps import (
+    generate_colour_retention_values,
+    generate_sweep_configs as _generate_sweep_configs,
+    get_colour_sweep_parameters_from_config as get_sweep_parameters_from_config,
+    get_sweep_parameters_from_cli,
+    parse_sweep_item,
+)
 
 
 # ---------------------------------------------------------------------
@@ -56,112 +64,15 @@ from src.utils import (
 # ---------------------------------------------------------------------
 
 
-def parse_sweep_item(item: str) -> tuple[str, list]:
-    """Parse command-line sweep item, e.g. model.name=resnet18,efficientnet_b0."""
-    if "=" not in item:
-        raise ValueError(f"Sweep item must look like key=v1,v2. Got: {item}")
-
-    key, values = item.split("=", 1)
-    vals = [parse_scalar(v) for v in values.split(",") if v.strip()]
-
-    if len(vals) == 0:
-        raise ValueError(f"No values supplied for sweep key: {key}")
-
-    return key, vals
-
-
-def generate_colour_retention_values(cfg: dict) -> list[float]:
-    """Generate an inclusive colour-retention sequence from percentages.
-
-    Example: start_percent=100, stop_percent=0, step_percent=1 produces
-    [1.00, 0.99, ..., 0.01, 0.00].
-    """
-    ablation_cfg = cfg.get("colour_ablation", {}) or {}
-    if not ablation_cfg.get("enabled", False):
-        return []
-
-    start = int(ablation_cfg.get("start_percent", 100))
-    stop = int(ablation_cfg.get("stop_percent", 0))
-    step = int(ablation_cfg.get("step_percent", 1))
-
-    if not 0 <= start <= 100 or not 0 <= stop <= 100:
-        raise ValueError("Colour-ablation percentages must be between 0 and 100.")
-    if step <= 0:
-        raise ValueError("colour_ablation.step_percent must be greater than zero.")
-
-    if start >= stop:
-        percentages = list(range(start, stop - 1, -step))
-    else:
-        percentages = list(range(start, stop + 1, step))
-
-    # Include the requested endpoint even when the interval is not divisible by step.
-    if not percentages or percentages[-1] != stop:
-        percentages.append(stop)
-
-    return [percentage / 100.0 for percentage in percentages]
-
-
-def get_sweep_parameters_from_config(cfg: dict) -> dict:
-    sweep_cfg = cfg.get("sweep", {}) or {}
-    params = {}
-
-    if sweep_cfg.get("enabled", False):
-        configured_params = sweep_cfg.get("parameters", {}) or {}
-        if not isinstance(configured_params, dict):
-            raise ValueError("sweep.parameters must be a dictionary.")
-        params = copy.deepcopy(configured_params)
-
-    colour_values = generate_colour_retention_values(cfg)
-    if colour_values:
-        ablation_cfg = cfg.get("colour_ablation", {}) or {}
-        if params and not ablation_cfg.get("combine_with_sweep", False):
-            raise ValueError(
-                "Colour ablation is enabled while an ordinary parameter sweep is also enabled. "
-                "Disable sweep.enabled for a controlled colour-only experiment, or set "
-                "colour_ablation.combine_with_sweep=true intentionally."
-            )
-        if "data.colour_retention" in params:
-            raise ValueError(
-                "data.colour_retention is defined both by sweep.parameters and colour_ablation."
-            )
-        params["data.colour_retention"] = colour_values
-
-    return params
-
-
-def get_sweep_parameters_from_cli(sweep_items: list[str]) -> dict:
-    params = {}
-    for item in sweep_items:
-        key, values = parse_sweep_item(item)
-        params[key] = values
-    return params
-
-
 def generate_sweep_configs(
     base_cfg: dict,
     cli_sweep_items: list[str] | None = None,
 ) -> list[dict]:
-    cli_sweep_items = cli_sweep_items or []
-
-    if len(cli_sweep_items) > 0:
-        sweep_params = get_sweep_parameters_from_cli(cli_sweep_items)
-    else:
-        sweep_params = get_sweep_parameters_from_config(base_cfg)
-
-    if len(sweep_params) == 0:
-        return [base_cfg]
-
-    keys = list(sweep_params.keys())
-    values = [sweep_params[k] for k in keys]
-
-    configs = []
-    for combo in itertools.product(*values):
-        cfg = copy.deepcopy(base_cfg)
-        for key, value in zip(keys, combo):
-            set_nested(cfg, key, value)
-        configs.append(cfg)
-
-    return configs
+    return _generate_sweep_configs(
+        base_cfg,
+        cli_sweep_items,
+        include_colour_ablation=True,
+    )
 
 
 # ---------------------------------------------------------------------
@@ -169,141 +80,10 @@ def generate_sweep_configs(
 # ---------------------------------------------------------------------
 
 
-class MultiTaskClassifier(nn.Module):
-    """
-    Shared image backbone with one classification head per task.
-
-    Assumes build_model returns a torchvision-like classifier, for example:
-    - ResNet with .fc
-    - EfficientNet/MobileNet/DenseNet with .classifier
-    - torchvision ViT with .heads.head
-    """
-
-    def __init__(self, base_model: nn.Module, num_classes_by_task: dict[str, int]):
-        super().__init__()
-        self.backbone = base_model
-        feature_dim = self._remove_classifier_and_get_feature_dim()
-
-        self.heads = nn.ModuleDict({
-            task: nn.Linear(feature_dim, num_classes)
-            for task, num_classes in num_classes_by_task.items()
-        })
-
-    def _remove_classifier_and_get_feature_dim(self) -> int:
-        if hasattr(self.backbone, "fc") and isinstance(self.backbone.fc, nn.Linear):
-            feature_dim = self.backbone.fc.in_features
-            self.backbone.fc = nn.Identity()
-            return feature_dim
-
-        if hasattr(self.backbone, "classifier"):
-            classifier = self.backbone.classifier
-
-            if isinstance(classifier, nn.Linear):
-                feature_dim = classifier.in_features
-                self.backbone.classifier = nn.Identity()
-                return feature_dim
-
-            if isinstance(classifier, nn.Sequential):
-                for i in range(len(classifier) - 1, -1, -1):
-                    if isinstance(classifier[i], nn.Linear):
-                        feature_dim = classifier[i].in_features
-                        classifier[i] = nn.Identity()
-                        return feature_dim
-
-        if hasattr(self.backbone, "heads") and hasattr(self.backbone.heads, "head"):
-            head = self.backbone.heads.head
-            if isinstance(head, nn.Linear):
-                feature_dim = head.in_features
-                self.backbone.heads.head = nn.Identity()
-                return feature_dim
-
-        raise ValueError(
-            "Could not identify the final classifier layer. "
-            "Add a case in MultiTaskClassifier._remove_classifier_and_get_feature_dim "
-            "for your model."
-        )
-
-    def forward(self, x: torch.Tensor) -> dict[str, torch.Tensor]:
-        features = self.backbone(x)
-
-        if isinstance(features, (tuple, list)):
-            features = features[0]
-
-        if features.ndim > 2:
-            features = torch.flatten(torch.nn.functional.adaptive_avg_pool2d(features, 1), 1)
-
-        return {task: head(features) for task, head in self.heads.items()}
-
-
-def build_multitask_model(cfg: dict, num_classes_by_task: dict[str, int]) -> nn.Module:
-    # The single-task head is removed immediately after construction.
-    temporary_num_classes = max(num_classes_by_task.values())
-
-    base_model = build_model(
-        name=cfg["model"]["name"],
-        num_classes=temporary_num_classes,
-        pretrained=cfg["model"].get("pretrained", True),
-        freeze_backbone=cfg["model"].get("freeze_backbone", False),
-    )
-
-    return MultiTaskClassifier(
-        base_model=base_model,
-        num_classes_by_task=num_classes_by_task,
-    )
-
-
 # ---------------------------------------------------------------------
 # Data
 # ---------------------------------------------------------------------
 
-
-def build_label_maps(
-    train_df: pd.DataFrame,
-    target_cols: dict[str, str],
-) -> tuple[dict[str, dict[str, int]], dict[str, dict[int, str]]]:
-    label_to_index_by_task = {}
-    index_to_label_by_task = {}
-
-    for task, col in target_cols.items():
-        labels = sorted(train_df.loc[train_df[col].notna(), col].astype(str).unique())
-
-        if len(labels) == 0:
-            raise ValueError(
-                f"Task '{task}' has no labelled examples in the training split. "
-                f"Check column '{col}' or reduce min_individuals_per_class for this task."
-            )
-
-        if len(labels) == 1:
-            print(
-                f"Warning: task '{task}' has only one class in training: {labels}. "
-                "The head can train, but evaluation is not biologically informative."
-            )
-
-        label_to_index = {label: i for i, label in enumerate(labels)}
-        index_to_label = {i: label for label, i in label_to_index.items()}
-
-        label_to_index_by_task[task] = label_to_index
-        index_to_label_by_task[task] = index_to_label
-
-    return label_to_index_by_task, index_to_label_by_task
-
-#READ PREFINED CSV'S split_csv/train_split.csv
-def read_csvs_from_dir(dir_path: str) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-    train_csv_path = os.path.join(dir_path,"split_csv", "train_split.csv")
-    val_csv_path = os.path.join(dir_path,"split_csv", "val_split.csv")
-    test_csv_path = os.path.join(dir_path,"split_csv", "test_split.csv")
-    train_csv_path = Path(train_csv_path)
-    val_csv_path = Path(val_csv_path)
-    test_csv_path = Path(test_csv_path)
-    print(f"Reading train/val/test splits from {train_csv_path}, {val_csv_path}, {test_csv_path}")
-    if not train_csv_path.exists() or not val_csv_path.exists() or not test_csv_path.exists():
-        raise FileNotFoundError(f"One or more split CSV files not found in {dir_path}")
-
-    train_df = pd.read_csv(train_csv_path)
-    val_df = pd.read_csv(val_csv_path)
-    test_df = pd.read_csv(test_csv_path)
-
-    return train_df, val_df, test_df
 
 def make_loaders(cfg: dict):
     df = prepare_metadata(cfg)

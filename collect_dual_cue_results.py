@@ -1,224 +1,24 @@
-from __future__ import annotations
+"""Compatibility wrapper for dual-cue result collection."""
 
-import argparse
-import json
-import math
-from pathlib import Path
+from src.worm_species.experiments.result_collection import (
+    add_equivalent_condition_aliases,
+    build_comparison,
+    collect_nested_csv,
+    collect_results,
+    main,
+    matched_results_long,
+    read_json,
+)
 
-import pandas as pd
-
-
-def read_json(path: Path) -> dict | None:
-    try:
-        return json.loads(path.read_text())
-    except Exception as exc:
-        print(f"Skipping unreadable JSON {path}: {exc}")
-        return None
-
-
-def collect_nested_csv(root: Path, relative_path: str, output_name: str) -> pd.DataFrame:
-    frames: list[pd.DataFrame] = []
-    for csv_path in sorted(root.rglob(relative_path)):
-        try:
-            frame = pd.read_csv(csv_path)
-        except Exception as exc:
-            print(f"Skipping unreadable CSV {csv_path}: {exc}")
-            continue
-        frame["source_path"] = str(csv_path.relative_to(root))
-        frames.append(frame)
-
-    if not frames:
-        return pd.DataFrame()
-
-    combined = pd.concat(frames, ignore_index=True)
-    output_path = root / output_name
-    combined.to_csv(output_path, index=False)
-    print(f"Wrote {len(combined)} rows to {output_path}")
-    return combined
-
-
-def matched_results_long(results: pd.DataFrame) -> pd.DataFrame:
-    rows: list[dict] = []
-    for _, row in results.iterrows():
-        for column in results.columns:
-            prefix = "test_"
-            suffix = "_macro_f1"
-            if not column.startswith(prefix) or not column.endswith(suffix):
-                continue
-            task = column[len(prefix):-len(suffix)]
-            value = row.get(column)
-            try:
-                macro_f1 = float(value)
-            except (TypeError, ValueError):
-                macro_f1 = float("nan")
-
-            base = {
-                "run_name": row.get("run_name"),
-                "model": row.get("model"),
-                "task": task,
-                "train_condition": row.get("train_condition", "original"),
-                "train_feature": row.get("train_feature", "baseline"),
-                "train_transform": row.get("train_transform", "original"),
-                "train_strength": row.get("train_strength"),
-                "matched_test_macro_f1": macro_f1,
-                "best_epoch": row.get("best_epoch"),
-                "best_val_score": row.get("best_val_score"),
-                "selection_metric": row.get("selection_metric"),
-                "out_dir": row.get("out_dir"),
-                "summary_path": row.get("summary_path"),
-            }
-            rows.append(base)
-
-    return pd.DataFrame(rows)
-
-
-def add_equivalent_condition_aliases(matched_long: pd.DataFrame) -> pd.DataFrame:
-    if matched_long.empty:
-        return matched_long
-
-    frames = [matched_long.copy()]
-    original = matched_long[matched_long["train_condition"] == "original"].copy()
-    if not original.empty:
-        original["train_condition"] = "saturation_100pct"
-        original["condition_alias_of"] = "original"
-        frames.append(original)
-
-    grayscale = matched_long[matched_long["train_condition"] == "grayscale"].copy()
-    if not grayscale.empty:
-        grayscale["train_condition"] = "saturation_000pct"
-        grayscale["condition_alias_of"] = "grayscale"
-        frames.append(grayscale)
-
-    combined = pd.concat(frames, ignore_index=True)
-    if "condition_alias_of" not in combined:
-        combined["condition_alias_of"] = pd.NA
-    return combined
-
-
-def build_comparison(matched_long: pd.DataFrame, cue_ratios: pd.DataFrame) -> pd.DataFrame:
-    if matched_long.empty or cue_ratios.empty:
-        return pd.DataFrame()
-
-    cue_cols = [
-        "model",
-        "task",
-        "condition",
-        "feature",
-        "transform",
-        "strength",
-        "macro_f1",
-        "original_macro_f1",
-        "ratio_to_original",
-        "relative_drop",
-    ]
-    available = [c for c in cue_cols if c in cue_ratios.columns]
-    cue = cue_ratios[available].copy()
-    cue = cue.rename(
-        columns={
-            "condition": "train_condition",
-            "feature": "test_feature",
-            "transform": "test_transform",
-            "strength": "test_strength",
-            "macro_f1": "rgb_model_test_macro_f1",
-            "original_macro_f1": "rgb_original_macro_f1",
-            "ratio_to_original": "rgb_ratio_to_original",
-            "relative_drop": "rgb_relative_drop",
-        }
-    )
-
-    matched_aliases = add_equivalent_condition_aliases(matched_long)
-    comparison = matched_aliases.merge(
-        cue,
-        on=["model", "task", "train_condition"],
-        how="inner",
-        validate="many_to_one",
-    )
-
-    comparison["adaptation_gain_macro_f1"] = (
-        comparison["matched_test_macro_f1"]
-        - comparison["rgb_model_test_macro_f1"]
-    )
-    comparison["matched_ratio_to_rgb_original"] = comparison.apply(
-        lambda row: (
-            row["matched_test_macro_f1"] / row["rgb_original_macro_f1"]
-            if pd.notna(row["matched_test_macro_f1"])
-            and pd.notna(row["rgb_original_macro_f1"])
-            and float(row["rgb_original_macro_f1"]) != 0.0
-            else float("nan")
-        ),
-        axis=1,
-    )
-    comparison["matched_relative_drop_from_rgb_original"] = (
-        1.0 - comparison["matched_ratio_to_rgb_original"]
-    )
-    return comparison.sort_values(
-        ["model", "task", "test_feature", "test_transform", "test_strength"],
-        na_position="first",
-    ).reset_index(drop=True)
-
-
-def main() -> None:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("results_root")
-    args = parser.parse_args()
-    root = Path(args.results_root)
-
-    rows: list[dict] = []
-    for summary_path in sorted(root.rglob("run_summary.json")):
-        row = read_json(summary_path)
-        if row is None:
-            continue
-        row["summary_path"] = str(summary_path.relative_to(root))
-        rows.append(row)
-
-    results = pd.DataFrame(rows)
-    if not results.empty:
-        sort_cols = [c for c in ["model", "train_feature", "train_transform", "train_strength"] if c in results]
-        if sort_cols:
-            results = results.sort_values(sort_cols, na_position="first").reset_index(drop=True)
-        path = root / "matched_condition_results.csv"
-        results.to_csv(path, index=False)
-        print(f"Wrote {len(results)} completed matched-condition runs to {path}")
-
-        matched_long = matched_results_long(results)
-        matched_long_path = root / "matched_condition_macro_f1_long.csv"
-        matched_long.to_csv(matched_long_path, index=False)
-        print(f"Wrote {len(matched_long)} task-level rows to {matched_long_path}")
-    else:
-        matched_long = pd.DataFrame()
-        print("No run_summary.json files were found")
-
-    failed: list[dict] = []
-    for status_path in sorted(root.glob("*/run_status.txt")):
-        status = status_path.read_text().strip()
-        if status != "0":
-            failed.append({"array_run": status_path.parent.name, "status": status})
-    if failed:
-        failed_path = root / "failed_runs.csv"
-        pd.DataFrame(failed).to_csv(failed_path, index=False)
-        print(f"Recorded {len(failed)} failed runs in {failed_path}")
-
-    cue_ratios = collect_nested_csv(
-        root,
-        "cue_suppression/macro_f1_ratios.csv",
-        "rgb_model_cue_suppression_macro_f1_ratios.csv",
-    )
-    collect_nested_csv(
-        root,
-        "cue_suppression/test_condition_metrics.csv",
-        "rgb_model_cue_suppression_test_metrics.csv",
-    )
-    collect_nested_csv(
-        root,
-        "cue_suppression/transform_summary.csv",
-        "rgb_model_cue_suppression_transform_summary.csv",
-    )
-
-    comparison = build_comparison(matched_long, cue_ratios)
-    if not comparison.empty:
-        comparison_path = root / "matched_vs_rgb_stress_test.csv"
-        comparison.to_csv(comparison_path, index=False)
-        print(f"Wrote {len(comparison)} comparison rows to {comparison_path}")
+__all__ = [
+    "add_equivalent_condition_aliases",
+    "build_comparison",
+    "collect_nested_csv",
+    "collect_results",
+    "main",
+    "matched_results_long",
+    "read_json",
+]
 
 
 if __name__ == "__main__":
