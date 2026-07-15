@@ -54,6 +54,20 @@ class ConfigurationValidationContracts(unittest.TestCase):
     def test_unknown_override_paths_are_rejected(self) -> None:
         with self.assertRaisesRegex(ConfigValidationError, "unknown configuration"):
             validate_override_items(["training.not_a_real_key=1"])
+        self.assertEqual(
+            validate_override_items(["training.profile=cue_suppression"]),
+            ("training.profile",),
+        )
+
+    def test_unknown_training_profile_and_experiment_type_are_rejected(self) -> None:
+        self.assert_invalid(
+            {"training": {"profile": "legacy_script_name"}},
+            "training.profile: must be one of",
+        )
+        self.assert_invalid(
+            {"experiment": {"type": "combined_ambiguous_mode"}},
+            "experiment.type: must be one of",
+        )
 
     def test_sweep_values_must_be_non_empty_lists(self) -> None:
         config = {
