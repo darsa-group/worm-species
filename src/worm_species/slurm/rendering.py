@@ -218,6 +218,11 @@ def _resource_job(
     resource = dict(slurm)
     if stage is not None:
         resource.update(stage)
+    if stage is not None and "partition" in stage:
+        configured_partition = stage["partition"]
+        partition = "" if configured_partition is None else str(configured_partition)
+    else:
+        partition = str(slurm.get("partition", ""))
     logs = Path(str(slurm.get("logging", {}).get("directory", "logs/slurm")))
     safe_name = name.replace(":", "_")
     return {
@@ -225,7 +230,7 @@ def _resource_job(
         "role": role,
         "script": script,
         "account": str(slurm.get("account", "")),
-        "partition": str(resource.get("partition") or slurm.get("partition", "")),
+        "partition": partition,
         "nodes": int(resource.get("nodes", slurm.get("nodes", 1))),
         "ntasks": int(resource.get("ntasks", slurm.get("ntasks", 1))),
         "cpus_per_task": int(resource.get("cpus_per_task", 1)),

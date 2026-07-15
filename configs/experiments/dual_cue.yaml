@@ -12,6 +12,10 @@ multi_task:
 
 wandb:
   enabled: true
+  project: worm-species-cues
+  # Genome dual-cue submissions historically logged online unless the caller
+  # explicitly selected another mode through configuration or --legacy-env.
+  mode: online
 
 matched_condition_training:
   enabled: true

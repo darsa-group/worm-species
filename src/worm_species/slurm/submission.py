@@ -126,7 +126,6 @@ def build_sbatch_argv(
         "sbatch",
         "--parsable",
         f"--account={job['account']}",
-        f"--partition={job['partition']}",
         f"--nodes={job['nodes']}",
         f"--ntasks={job['ntasks']}",
         f"--cpus-per-task={job['cpus_per_task']}",
@@ -136,6 +135,9 @@ def build_sbatch_argv(
         f"--output={job['stdout']}",
         f"--error={job['stderr']}",
     ]
+    partition = job.get("partition")
+    if partition:
+        argv.insert(3, f"--partition={partition}")
     gpus = int(job.get("gpus_per_task", 0))
     if gpus:
         argv.append(f"--gres=gpu:{gpus}")

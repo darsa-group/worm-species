@@ -19,6 +19,9 @@ slurm:
     time_limit: "02:00:00"
   collection:
     enabled: true
+    # The historical Genome collector used the scheduler's default CPU
+    # partition rather than inheriting the GPU array partition.
+    partition: null
     cpus_per_task: 1
     memory: 4096
     time_limit: "00:20:00"
