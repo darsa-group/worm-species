@@ -163,6 +163,14 @@ def inspection_summary(config: dict[str, Any], workflow: str) -> dict[str, Any]:
     wandb = config.get("wandb", {}) or {}
     cue = config.get("test_cue_suppression", {}) or {}
     configured_test_names, effective_test_names = _fixed_rgb_test_conditions(config)
+    matrix = config.get("condition_matrix_evaluation", {}) or {}
+    matrix_enabled = isinstance(matrix, dict) and bool(matrix.get("enabled", False))
+    if matrix_enabled:
+        from ..evaluation.condition_matrix import resolve_condition_matrix_conditions
+
+        matrix_conditions = resolve_condition_matrix_conditions(config)
+    else:
+        matrix_conditions = []
 
     dimensions = []
     if bool((config.get("sweep", {}) or {}).get("enabled", False)):
@@ -231,6 +239,23 @@ def inspection_summary(config: dict[str, Any], workflow: str) -> dict[str, Any]:
             "requested_condition_names": cue.get("condition_names"),
             "configured_condition_names": configured_test_names,
             "effective_condition_names": effective_test_names,
+        },
+        "condition_matrix_evaluation": {
+            "enabled": matrix_enabled,
+            "condition_names": [
+                condition["condition"] for condition in matrix_conditions
+            ],
+            "test_condition_count": len(matrix_conditions),
+            "expected_condition_cells": (
+                len(combinations) * len(conditions) * len(matrix_conditions)
+            ),
+            "expected_task_rows": (
+                len(combinations)
+                * len(conditions)
+                * len(matrix_conditions)
+                * len(target_cols)
+            ),
+            "expands_training_runs": False,
         },
         "expansion": {
             "owner": expansion_owner,

@@ -184,6 +184,8 @@ def resolve_plan(
 
 
 def _plan_summary(profile, configs, experiment_types):
+    from ..evaluation.condition_matrix import resolve_condition_matrix_conditions
+
     models = sorted({str(c.get("model", {}).get("name")) for c in configs})
     conditions = sorted(
         {
@@ -199,6 +201,11 @@ def _plan_summary(profile, configs, experiment_types):
         first.get("multi_task", {}).get("hierarchy_loss", {})
         if profile.hierarchy
         else {}
+    )
+    matrix_cfg = first.get("condition_matrix_evaluation", {}) or {}
+    matrix_enabled = bool(matrix_cfg.get("enabled", False))
+    matrix_conditions = (
+        resolve_condition_matrix_conditions(first) if matrix_enabled else []
     )
     summary = {
         "configuration_driven": profile.name == "configured",
@@ -228,6 +235,16 @@ def _plan_summary(profile, configs, experiment_types):
         "post_training_rgb_stress": bool(
             profile.stress_evaluation
             and first.get("test_cue_suppression", {}).get("enabled", False)
+        ),
+        "post_training_condition_matrix": matrix_enabled,
+        "condition_matrix_test_conditions": [
+            condition["condition"] for condition in matrix_conditions
+        ],
+        "condition_matrix_evaluation_cells_per_training_run": len(
+            matrix_conditions
+        ),
+        "condition_matrix_task_rows_per_training_run": (
+            len(matrix_conditions) * len(tasks)
         ),
         "expected_output_paths": [
             str(

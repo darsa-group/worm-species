@@ -505,6 +505,45 @@ def _validate_sweeps(
         ))
 
 
+def _validate_condition_matrix(
+    config: dict[str, Any], issues: list[ValidationIssue], workflow: str
+) -> None:
+    matrix = config.get("condition_matrix_evaluation", {}) or {}
+    if not isinstance(matrix, dict) or not bool(matrix.get("enabled", False)):
+        return
+    path = "condition_matrix_evaluation.condition_names"
+    try:
+        from ..evaluation.condition_matrix import resolve_condition_matrix_conditions
+
+        conditions = resolve_condition_matrix_conditions(config)
+    except (KeyError, TypeError, ValueError) as exc:
+        issues.append(ValidationIssue(path, str(exc)))
+        return
+
+    if workflow != "training":
+        return
+    input_condition = config.get("input_condition", {}) or {}
+    if not isinstance(input_condition, dict) or not bool(
+        input_condition.get("enabled", False)
+    ):
+        issues.append(ValidationIssue(
+            "input_condition.enabled",
+            "must be true for a resolved condition-matrix training run",
+        ))
+        return
+    training_name = str(
+        input_condition.get("condition")
+        or input_condition.get("name")
+        or input_condition.get("transform", "original")
+    )
+    available = [str(condition["condition"]) for condition in conditions]
+    if training_name not in available:
+        issues.append(ValidationIssue(
+            path,
+            f"must include the resolved training condition {training_name!r}",
+        ))
+
+
 def _validate_tasks(config: dict[str, Any], issues: list[ValidationIssue]) -> None:
     target_cols = _get(config, "data.target_cols")
     if target_cols is _ABSENT:
@@ -672,7 +711,8 @@ def validate_config(
     for section in (
         "wandb", "data", "multi_task", "multitask", "early_stopping", "split",
         "model", "training", "output", "cache", "colour_ablation", "experiment",
-        "test_cue_suppression", "matched_condition_training", "sweep", "input_condition",
+        "test_cue_suppression", "condition_matrix_evaluation",
+        "matched_condition_training", "sweep", "input_condition",
     ):
         value = config.get(section, _ABSENT)
         if value is not _ABSENT and value is not None and not isinstance(value, dict):
@@ -749,6 +789,7 @@ def validate_config(
     _validate_tasks(config, issues)
     _validate_transform_parameters(config, issues)
     _validate_sweeps(config, issues, resolved_workflow)
+    _validate_condition_matrix(config, issues, resolved_workflow)
     _validate_canonical_training_switches(config, issues)
 
     if resolved_workflow == "run_specs" and _get(config, "input_condition.enabled") is True:

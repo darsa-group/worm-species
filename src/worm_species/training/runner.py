@@ -17,6 +17,7 @@ from src.utils import make_run_name
 from src.utils import save_json
 from src.utils import set_seed
 
+from ..evaluation.condition_matrix import evaluate_condition_matrix
 from ..evaluation.cue_suppression import evaluate_test_cue_suppression
 from ..models.multitask import build_multitask_model
 from .checkpoints import build_checkpoint_payload
@@ -527,6 +528,34 @@ def run_one(cfg: dict, profile: TrainingProfile) -> dict:
             wandb_run=wandb_run,
         )
 
+    condition_matrix = {"enabled": False, "n_conditions": 0, "n_task_rows": 0}
+    if bool(
+        (cfg.get("condition_matrix_evaluation", {}) or {}).get(
+            "enabled", False
+        )
+    ):
+        condition_matrix = evaluate_condition_matrix(
+            cfg=cfg,
+            run_name=run_name,
+            out_dir=out_dir,
+            model=model,
+            training_condition=input_condition,
+            baseline_metrics=test_metrics,
+            baseline_true=true,
+            baseline_pred=pred,
+            test_loader_context=bundle.test_loader_context,
+            criteria=criteria,
+            target_cols=bundle.target_cols,
+            index_to_label_by_task=bundle.index_to_label_by_task,
+            device=device,
+            use_amp=use_amp,
+            task_loss_weights=weights,
+            normalize_loss_by_active_tasks=normalize,
+            hierarchy_cfg=hierarchy_cfg,
+            child_to_parent_matrix=matrix,
+            use_masked_labels=profile.masked_labels,
+        )
+
     result = {
         "run_name": run_name,
         "out_dir": str(out_dir),
@@ -572,6 +601,18 @@ def run_one(cfg: dict, profile: TrainingProfile) -> dict:
             "cue_suppression_n_conditions": stress["n_conditions"],
             "cue_suppression_n_unique_evaluations": stress.get(
                 "n_unique_evaluations", 0
+            ),
+            "condition_matrix_enabled": condition_matrix["enabled"],
+            "condition_matrix_n_conditions": condition_matrix["n_conditions"],
+            "condition_matrix_n_task_rows": condition_matrix["n_task_rows"],
+            "condition_matrix_manifest_path": condition_matrix.get(
+                "manifest_path"
+            ),
+            "condition_matrix_condition_metrics_path": condition_matrix.get(
+                "condition_metrics_path"
+            ),
+            "condition_matrix_task_metrics_path": condition_matrix.get(
+                "task_metrics_path"
             ),
             **{f"test_{key}": value for key, value in test_metrics.items()},
         }

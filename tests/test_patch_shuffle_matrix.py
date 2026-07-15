@@ -126,24 +126,21 @@ class PatchShuffleMatrixContracts(unittest.TestCase):
                     spec.training_condition,
                 )
 
-    def test_all_valid_train_test_cells_are_represented_without_extra_training(self) -> None:
+    def test_full_train_test_matrix_is_represented_without_extra_training(self) -> None:
         cells: set[tuple[str, str, str]] = set()
         for spec in self.plan.run_specs:
-            if spec.training_condition == "original":
-                test_conditions = CONDITIONS
-            else:
-                test_conditions = (spec.training_condition,)
             cells.update(
                 (spec.model, spec.training_condition, test_condition)
-                for test_condition in test_conditions
+                for test_condition in CONDITIONS
             )
 
-        self.assertEqual(len(cells), 20)
+        self.assertEqual(len(cells), 36)
         for model in MODELS:
-            for grid in (2, 4):
-                condition = f"patch_shuffle_grid_{grid}"
-                self.assertIn((model, "original", condition), cells)
-                self.assertIn((model, condition, condition), cells)
+            for train_condition in CONDITIONS:
+                for test_condition in CONDITIONS:
+                    self.assertIn(
+                        (model, train_condition, test_condition), cells
+                    )
         self.assertEqual(self.plan.array_size, 12)
 
     def test_both_patch_grids_build_cpu_transforms_for_train_validation_and_test(self) -> None:

@@ -60,6 +60,17 @@ test_cue_suppression:
     grid_sizes: [2, 4]
     seed: 2026
 
+# This is post-training evaluation, not another sweep. Each of the 12 selected
+# checkpoints is evaluated on all three test conditions, yielding 36 condition
+# cells (and 108 task rows for genus/species/age) without additional training.
+condition_matrix_evaluation:
+  enabled: true
+  condition_names:
+    - original
+    - patch_shuffle_grid_2
+    - patch_shuffle_grid_4
+  write_reports: true
+
 slurm:
   planning:
     experiment_type: patch_shuffle_matrix
