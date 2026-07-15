@@ -19,10 +19,21 @@ from src.worm_species.results.readers import (
 )
 
 
-def discover_results(results_root, *, max_depth=DEFAULT_MAX_DEPTH):
+def discover_results(
+    results_root,
+    *,
+    max_depth=DEFAULT_MAX_DEPTH,
+    source_kind=None,
+    source_label=None,
+):
     """Retain the dashboard draft API for a parent results directory."""
 
-    return discover_results_root(results_root, max_depth=max_depth)
+    return discover_results_root(
+        results_root,
+        max_depth=max_depth,
+        source_kind=source_kind,
+        source_label=source_label,
+    )
 
 
 __all__ = [

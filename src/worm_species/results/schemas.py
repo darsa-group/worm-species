@@ -69,6 +69,9 @@ class RunRecord:
     run_name: str
     path: str
     relative_path: str
+    source_kind: str
+    source_label: str
+    source_root: str
     status: FilesystemRunState
     status_evidence: str
     updated_at: float
@@ -92,6 +95,10 @@ class RunRecord:
     signature: str = ""
     raw_exit_status: str | None = None
     terminal_metrics_present: bool = False
+    hyperparameters: dict[str, Any] = field(default_factory=dict)
+    effective_macro_f1: float | None = None
+    effective_macro_f1_label: str | None = None
+    epochs_ran: int | None = None
 
     def to_dict(self) -> dict[str, Any]:
         value = asdict(self)
@@ -111,6 +118,9 @@ class ExperimentRecord:
     name: str
     path: str
     relative_path: str
+    source_kind: str
+    source_label: str
+    source_root: str
     updated_at: float
     expected_run_count: int | None
     artifacts: list[ArtifactRecord] = field(default_factory=list)

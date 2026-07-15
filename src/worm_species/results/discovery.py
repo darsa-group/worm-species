@@ -250,6 +250,68 @@ def _nested(config: dict[str, Any], *keys: str, default: Any = None) -> Any:
     return value
 
 
+def _source_identity(
+    root: Path,
+    source_kind: str | None,
+    source_label: str | None,
+) -> tuple[str, str]:
+    """Return an explicit result provenance without inspecting run contents."""
+
+    if source_kind:
+        kind = str(source_kind)
+    elif root.name == "outputs_slurm" or "outputs_slurm" in root.parts:
+        kind = "slurm"
+    elif "single_task" in root.parts:
+        kind = "single_task"
+    else:
+        kind = "local"
+    return kind, str(source_label or kind)
+
+
+def _normalise_task_name(value: Any) -> str:
+    text = str(value)
+    return {
+        "species_label": "species",
+        "life_stage": "age",
+    }.get(text, text)
+
+
+def _hyperparameter_facets(config: dict[str, Any]) -> dict[str, Any]:
+    """Extract stable dashboard facets while retaining the full source config."""
+
+    weights = _nested(config, "multi_task", "loss_weights", default={})
+    if not isinstance(weights, dict):
+        weights = {}
+    return {
+        "epochs": _as_int(_nested(config, "training", "epochs")),
+        "batch_size": _as_int(_nested(config, "training", "batch_size")),
+        "learning_rate": _as_float(_nested(config, "training", "lr")),
+        "weight_decay": _as_float(_nested(config, "training", "weight_decay")),
+        "class_weight": _nested(config, "training", "class_weight"),
+        "use_amp": _nested(config, "training", "use_amp"),
+        "pretrained": _nested(config, "model", "pretrained"),
+        "freeze_backbone": _nested(config, "model", "freeze_backbone"),
+        "seed": _as_int(config.get("seed")),
+        "genus_loss_weight": _as_float(weights.get("genus")),
+        "species_loss_weight": _as_float(weights.get("species")),
+        "age_loss_weight": _as_float(weights.get("age")),
+        "hierarchy_loss_enabled": bool(
+            _nested(config, "multi_task", "hierarchy_loss", "enabled", default=False)
+        ),
+        "hierarchy_loss_weight": _as_float(
+            _nested(config, "multi_task", "hierarchy_loss", "weight")
+        ),
+        "wandb_enabled": bool(_nested(config, "wandb", "enabled", default=False)),
+        "early_stopping_enabled": bool(
+            _nested(config, "early_stopping", "enabled", default=False)
+        ),
+        "early_stopping_patience": _as_int(
+            _nested(config, "early_stopping", "patience")
+        ),
+        "colour_retention": _as_float(_nested(config, "data", "colour_retention")),
+    }
+
+
 def _as_float(value: Any) -> float | None:
     if value is None or isinstance(value, bool):
         return None
@@ -296,6 +358,44 @@ def _task_metrics(metrics: dict[str, Any], source: Path | None) -> list[MetricRe
             )
         )
     return records
+
+
+def _history_summary(
+    path: Path | None,
+    config: dict[str, Any],
+    warnings: list[WarningRecord],
+) -> tuple[int | None, int | None, float | None, str | None]:
+    """Read bounded epoch metadata for dashboards, without altering run files."""
+
+    if path is None or not _file_available(path):
+        return None, None, None, None
+    try:
+        rows = load_csv_rows(path, max_rows=10_000)
+    except Exception as exc:
+        warnings.append(WarningRecord("malformed_history", f"Could not read history: {exc}", str(path)))
+        return None, None, None, None
+    epochs = [_as_int(row.get("epoch")) for row in rows]
+    epochs_ran = max((epoch for epoch in epochs if epoch is not None), default=None)
+    configured_selection = _nested(
+        config, "multi_task", "selection_metric", default=None
+    )
+    candidates = [
+        f"val_{configured_selection}" if configured_selection else None,
+        "val_mean_macro_f1",
+        "val_macro_f1",
+    ]
+    for column in candidates:
+        if not column:
+            continue
+        scored = [
+            (_as_float(row.get(column)), _as_int(row.get("epoch")))
+            for row in rows
+        ]
+        valid = [(score, epoch) for score, epoch in scored if score is not None]
+        if valid:
+            best_score, best_epoch = max(valid, key=lambda item: item[0])
+            return epochs_ran, best_epoch, best_score, column.removeprefix("val_")
+    return epochs_ran, None, None, None
 
 
 def _artifact_signature(artifacts: Iterable[ArtifactRecord]) -> str:
@@ -416,6 +516,8 @@ def _build_run(
     experiment_uid: str,
     experiment_name: str,
     failed_statuses: dict[str, str],
+    source_kind: str,
+    source_label: str,
     *,
     now: float,
     active_window_seconds: float,
@@ -443,8 +545,9 @@ def _build_run(
     config = _warned_json(files.get("config.json"), warnings, "run config")
     summary = _warned_json(files.get("run_summary.json"), warnings, "run summary")
     test_metrics = _warned_json(files.get("test_metrics.json"), warnings, "test metrics")
+    label_map_path = files.get("label_to_index_by_task.json") or files.get("label_to_index.json")
     label_map = _warned_json(
-        files.get("label_to_index_by_task.json") or files.get("label_to_index.json"),
+        label_map_path,
         warnings,
         "label map",
     )
@@ -453,17 +556,26 @@ def _build_run(
         warnings,
         "run overrides",
     )
+    epochs_ran, history_best_epoch, history_best_score, history_selection = _history_summary(
+        files.get("history.csv"), config, warnings
+    )
 
     model = summary.get("model") or _nested(config, "model", "name")
     configured_tasks = _nested(config, "data", "target_cols", default=None)
     if isinstance(configured_tasks, dict):
         tasks = [str(key) for key in configured_tasks]
     elif isinstance(configured_tasks, list):
-        tasks = [str(item) for item in configured_tasks]
+        tasks = [_normalise_task_name(item) for item in configured_tasks]
     else:
         legacy_tasks = _nested(config, "multi_task", "target_cols", default=[])
-        tasks = [str(item) for item in legacy_tasks] if isinstance(legacy_tasks, list) else []
-    if not tasks:
+        tasks = (
+            [_normalise_task_name(item) for item in legacy_tasks]
+            if isinstance(legacy_tasks, list)
+            else []
+        )
+    if not tasks and _nested(config, "data", "target_col") is not None:
+        tasks = [_normalise_task_name(_nested(config, "data", "target_col"))]
+    if not tasks and label_map_path and label_map_path.name == "label_to_index_by_task.json":
         tasks = sorted(str(key) for key in label_map)
 
     input_condition = _nested(config, "input_condition", default={})
@@ -485,19 +597,35 @@ def _build_run(
         or _nested(config, "test_cue_suppression", "enabled", default=False)
     )
 
-    if test_metrics:
+    if test_metrics and "mean_macro_f1" in test_metrics:
         schema_version = "multitask_hierarchy" if "hierarchy_loss" in test_metrics else "multitask_legacy"
+    elif test_metrics and "macro_f1" in test_metrics:
+        schema_version = "single_task_legacy"
     elif summary:
         schema_version = "run_summary_only"
     else:
         schema_version = "partial"
     metric_source = files.get("test_metrics.json")
     metrics = _task_metrics(test_metrics, metric_source)
+    if schema_version == "single_task_legacy" and len(tasks) == 1:
+        for metric_record in metrics:
+            metric_record.task = tasks[0]
     if not metrics and summary:
         metrics = _task_metrics(
             {key[5:]: value for key, value in summary.items() if key.startswith("test_")},
             files.get("run_summary.json"),
         )
+
+    mean_macro_f1 = _as_float(test_metrics.get("mean_macro_f1"))
+    task_macro_f1 = _as_float(test_metrics.get("macro_f1"))
+    effective_macro_f1 = mean_macro_f1 if mean_macro_f1 is not None else task_macro_f1
+    effective_macro_f1_label = (
+        "mean macro-F1 across tasks"
+        if mean_macro_f1 is not None
+        else "single-task macro-F1"
+        if task_macro_f1 is not None
+        else None
+    )
 
     run_name = str(summary.get("run_name") or run_dir.name)
     return RunRecord(
@@ -508,6 +636,9 @@ def _build_run(
         run_name=run_name,
         path=str(run_dir.absolute()),
         relative_path=_safe_relative(run_dir.absolute(), root.absolute()),
+        source_kind=source_kind,
+        source_label=source_label,
+        source_root=str(root.absolute()),
         status=status,
         status_evidence=status_evidence,
         updated_at=updated_at,
@@ -519,9 +650,17 @@ def _build_run(
         train_transform=str(train_transform) if train_transform is not None else None,
         train_strength=train_strength,
         fixed_rgb_stress_evaluation=fixed_rgb_stress,
-        best_epoch=_as_int(summary.get("best_epoch")),
-        best_val_score=_as_float(summary.get("best_val_score")),
-        selection_metric=(str(summary["selection_metric"]) if summary.get("selection_metric") is not None else None),
+        best_epoch=_as_int(summary.get("best_epoch")) or history_best_epoch,
+        best_val_score=(
+            _as_float(summary.get("best_val_score"))
+            if _as_float(summary.get("best_val_score")) is not None
+            else history_best_score
+        ),
+        selection_metric=(
+            str(summary["selection_metric"])
+            if summary.get("selection_metric") is not None
+            else history_selection
+        ),
         config=config,
         overrides=overrides,
         metrics=metrics,
@@ -531,6 +670,10 @@ def _build_run(
         signature=_artifact_signature(artifacts),
         raw_exit_status=raw_exit_status,
         terminal_metrics_present=terminal_metrics_present,
+        hyperparameters=_hyperparameter_facets(config),
+        effective_macro_f1=effective_macro_f1,
+        effective_macro_f1_label=effective_macro_f1_label,
+        epochs_ran=epochs_ran,
     )
 
 
@@ -564,6 +707,8 @@ def _discover(
     limits: DiscoveryLimits,
     now: float,
     single_experiment: bool,
+    source_kind: str | None,
+    source_label: str | None,
 ) -> DiscoveryResult:
     """Discover result records without writing to or below ``results_root``."""
 
@@ -572,6 +717,9 @@ def _discover(
         raise ValueError(f"results root is not a directory: {root}")
     if limits.max_depth < 1:
         raise ValueError("max_depth must be at least 1")
+    resolved_source_kind, resolved_source_label = _source_identity(
+        root, source_kind, source_label
+    )
 
     inventory = _scan_directories(root, limits.max_depth)
     run_dirs = sorted(path for path, files in inventory.items() if _is_run_directory(files))
@@ -635,6 +783,9 @@ def _discover(
             name=path.name if path != root else root.name,
             path=str(path.absolute()),
             relative_path=_safe_relative(path.absolute(), root.absolute()),
+            source_kind=resolved_source_kind,
+            source_label=resolved_source_label,
+            source_root=str(root.absolute()),
             updated_at=updated_at,
             expected_run_count=expected_count,
             artifacts=artifacts,
@@ -665,6 +816,8 @@ def _discover(
                     experiment.uid,
                     experiment.name,
                     failed_by_experiment.get(experiment_path, {}),
+                    resolved_source_kind,
+                    resolved_source_label,
                     now=now,
                     active_window_seconds=limits.active_window_seconds,
                 )
@@ -702,6 +855,8 @@ def discover_results_root(
     limits: DiscoveryLimits | None = None,
     max_depth: int | None = None,
     now: float | None = None,
+    source_kind: str | None = None,
+    source_label: str | None = None,
 ) -> DiscoveryResult:
     """Discover experiments beneath a parent results directory."""
 
@@ -716,6 +871,8 @@ def discover_results_root(
         limits=selected_limits,
         now=time.time() if now is None else now,
         single_experiment=False,
+        source_kind=source_kind,
+        source_label=source_label,
     )
 
 
@@ -725,6 +882,8 @@ def discover_experiment(
     limits: DiscoveryLimits | None = None,
     max_depth: int | None = None,
     now: float | None = None,
+    source_kind: str | None = None,
+    source_label: str | None = None,
 ) -> ExperimentSnapshot:
     """Discover exactly one experiment rooted at ``experiment_root``."""
 
@@ -739,6 +898,8 @@ def discover_experiment(
         limits=selected_limits,
         now=time.time() if now is None else now,
         single_experiment=True,
+        source_kind=source_kind,
+        source_label=source_label,
     )
     return ExperimentSnapshot(
         experiment=result.experiments[0],

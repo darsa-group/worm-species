@@ -1,9 +1,10 @@
 # Experiment results dashboard
 
-This dashboard provides a read-only browser for heterogeneous experiments under
-`outputs_slurm/`. It discovers schemas from the lightweight files that are
-present, so interrupted and older runs remain visible even when some artifacts
-are missing.
+This dashboard provides a read-only browser for heterogeneous SLURM and local
+single-task experiments. By default it combines `outputs_slurm/` with
+`single_task/outputs/` when both exist. It discovers schemas from the lightweight
+files that are present, so interrupted and older runs remain visible even when
+some artifacts are missing.
 
 The indexer never opens checkpoint bodies and never writes in the result tree.
 It records checkpoint paths and file metadata only. Directory symlinks are not
@@ -17,7 +18,9 @@ The index is SQLite and uses only Python's standard library. Its default path is
 directories.
 
 ```bash
-python -m dashboard.index --results-root outputs_slurm
+python -m dashboard.index \
+  --source slurm=outputs_slurm \
+  --source single_task=single_task/outputs
 ```
 
 An index path inside the selected results root is rejected. Use `--cache` to put
@@ -29,13 +32,39 @@ Streamlit is an optional dependency:
 
 ```bash
 python -m pip install -r dashboard/requirements.txt
-streamlit run dashboard/app.py -- --results-root outputs_slurm
+streamlit run dashboard/app.py -- \
+  --source slurm=outputs_slurm \
+  --source single_task=single_task/outputs
 ```
 
-The application includes experiment/run filters, inferred completion status,
-configuration and override views, best-validation and test metrics, training
-curves, per-task reports and confusion matrices, cue-suppression tables, and the
-matched-condition versus fixed-RGB stress comparison.
+The application includes source, experiment, architecture, task, condition,
+status, epoch, learning-rate, weight-decay, batch-size, pretrained/frozen
+backbone, class-weighting, task-loss-weight, hierarchy-loss, and W&B filters.
+It also includes configuration and override views, best-validation and test
+metrics, training curves, per-task reports and confusion-matrix heatmaps,
+cue-suppression tables, and the matched-condition versus fixed-RGB stress
+comparison. A single-task `macro_f1` is explicitly labelled single-task
+macro-F1; it is never presented as a multitask mean.
+
+## Prepare combined confusion matrices
+
+Completed historical runs already contain confusion-matrix CSVs. The optional
+preparation step validates and combines those lightweight files into a cache
+outside the result trees; it does not rerun inference or open checkpoints.
+
+```bash
+python -m worm_species.results.derive \
+  --source slurm=outputs_slurm \
+  --source single_task=single_task/outputs \
+  --cache .cache/worm-species-dashboard/derived \
+  --render all
+```
+
+Use `--render selected --run RUN_UID` for a smaller image set, or `--render none`
+to build summaries only. The dashboard automatically joins
+`.cache/worm-species-dashboard/derived/manifest.json` by source label and stable
+run ID. Missing or malformed matrices produce warnings rather than changing a
+scientific result directory.
 
 Statuses are inferred from `run_status.txt`, `failed_runs.csv`, terminal metric
 files, and artifact timestamps. `possibly_active` means recent partial files; it
