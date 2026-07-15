@@ -147,7 +147,9 @@ def _legacy_condition(condition: dict[str, Any]) -> dict[str, Any]:
     return legacy
 
 
-def _generic_specs(config: dict[str, Any]) -> list[tuple[str, list[str], str, str]]:
+def generate_external_specs(
+    config: dict[str, Any],
+) -> list[tuple[str, list[str], str, str]]:
     """Expand every experiment through the one canonical sweep engine."""
     canonical = normalize_config(config)
     items = expand_sweep_items(canonical)
@@ -298,7 +300,7 @@ def plan_submission(config: dict[str, Any]) -> SubmissionPlan:
     validate_slurm_config(config)
     planning = config.get("slurm", {}).get("planning", {}) or {}
     experiment_type = str(planning.get("experiment_type", "standard"))
-    raw_specs = _generic_specs(config)
+    raw_specs = generate_external_specs(config)
     if not raw_specs:
         raise SlurmConfigError("No run specifications were generated")
 
