@@ -19,8 +19,8 @@ try:
 except ImportError:
     wandb = None
 
-from ..data.conditions import build_test_condition_transform
 from ..data.datasets import MultiTaskWormImageDataset
+from ..data.transforms import build_split_transform
 from ..results.writing import save_json
 from ..training.epochs import run_hierarchy_epoch as run_epoch
 
@@ -211,8 +211,12 @@ def _test_condition_signature(condition: dict, original_colour_retention: float)
 
 
 def make_test_condition_loader(test_loader_context: dict, condition: dict) -> DataLoader:
-    transform = build_test_condition_transform(
-        image_size=int(test_loader_context["image_size"]),
+    preprocessing = test_loader_context.get("preprocessing") or {
+        "image_size": int(test_loader_context["image_size"])
+    }
+    transform = build_split_transform(
+        split="test",
+        preprocessing=preprocessing,
         condition=condition,
         original_colour_retention=float(
             test_loader_context["original_colour_retention"]
@@ -229,6 +233,7 @@ def make_test_condition_loader(test_loader_context: dict, condition: dict) -> Da
         shuffle=False,
         **test_loader_context["loader_kwargs"],
     )
+
 
 def evaluate_test_cue_suppression(
     *,
