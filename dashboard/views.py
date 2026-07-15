@@ -7,6 +7,11 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from .condition_matrix import filter_matrix_rows
+from .condition_matrix import load_indexed_matrix_rows
+from .condition_matrix import load_matrix_completion_summary
+from .condition_matrix import macro_f1_pivot
+from .condition_matrix import matrix_relation_counts
 from .data_loader import load_csv_rows
 
 
@@ -314,10 +319,191 @@ def _cue_view(st: Any, run: dict[str, Any], experiment: dict[str, Any] | None) -
             st.warning(f"Matched/RGB curve could not be plotted: {exc}")
 
 
+def _condition_matrix_view(
+    st: Any,
+    run: dict[str, Any],
+    experiment: dict[str, Any] | None,
+    experiment_runs: list[dict[str, Any]],
+) -> None:
+    rows, warnings, source_paths, source_mode = load_indexed_matrix_rows(
+        experiment,
+        experiment_runs,
+    )
+    summary, summary_warning = load_matrix_completion_summary(experiment)
+    if summary_warning:
+        warnings.append(summary_warning)
+    if summary is not None:
+        if summary.get("status") == "complete":
+            st.success(
+                "Condition matrix complete: "
+                f"{summary.get('collected_condition_rows')} condition cells, "
+                f"{summary.get('collected_task_rows')} task rows."
+            )
+        else:
+            st.warning(
+                "Condition matrix is incomplete: "
+                f"{summary.get('collected_condition_rows')}/"
+                f"{summary.get('expected_condition_rows')} condition cells and "
+                f"{summary.get('collected_task_rows')}/"
+                f"{summary.get('expected_task_rows')} task rows."
+            )
+            if summary.get("warning_counts"):
+                st.write({"completion_warning_counts": summary["warning_counts"]})
+    elif rows:
+        st.warning(
+            "No aggregate completion summary is indexed; displaying bounded "
+            "per-run matrix data."
+        )
+    if warnings:
+        for warning in warnings[:20]:
+            st.warning(warning)
+        if len(warnings) > 20:
+            st.warning(f"{len(warnings) - 20} additional matrix warnings omitted")
+    if not rows:
+        st.info("No readable condition-matrix task metrics were indexed.")
+        return
+
+    st.caption(
+        f"Matrix data source: {source_mode}; {len(rows)} bounded task rows from "
+        f"{len(source_paths)} indexed artifact(s)."
+    )
+    with st.expander("Condition-matrix source paths", expanded=False):
+        st.code("\n".join(source_paths))
+
+    models = sorted({str(row["model"]) for row in rows})
+    train_conditions = sorted({str(row["train_condition"]) for row in rows})
+    test_conditions = sorted({str(row["test_condition"]) for row in rows})
+    relations = sorted({str(row["evaluation_relation"]) for row in rows})
+    tasks = sorted({str(row["task"]) for row in rows})
+    columns = st.columns(5)
+    selected_models = set(columns[0].multiselect("Matrix model", models, default=models))
+    selected_train = set(columns[1].multiselect(
+        "Matrix train condition", train_conditions, default=train_conditions
+    ))
+    selected_test = set(columns[2].multiselect(
+        "Matrix test condition", test_conditions, default=test_conditions
+    ))
+    selected_relations = set(columns[3].multiselect(
+        "Matrix relation", relations, default=relations
+    ))
+    selected_tasks = set(columns[4].multiselect("Matrix task", tasks, default=tasks))
+    filtered = filter_matrix_rows(
+        rows,
+        models=selected_models,
+        train_conditions=selected_train,
+        test_conditions=selected_test,
+        relations=selected_relations,
+        tasks=selected_tasks,
+    )
+    if not filtered:
+        st.info("No condition-matrix rows match these filters.")
+        return
+    counts = matrix_relation_counts(filtered)
+    relation_columns = st.columns(3)
+    relation_columns[0].metric("Matched cells", counts["matched"])
+    relation_columns[1].metric("RGB-stress cells", counts["rgb_stress"])
+    relation_columns[2].metric("Cross-condition cells", counts["cross_condition"])
+    st.caption(
+        "matched = identical train/test condition; rgb_stress = original-trained "
+        "checkpoint under a transformed test; cross_condition = transformed-trained "
+        "checkpoint under a different test condition."
+    )
+
+    pivot_models = sorted({str(row["model"]) for row in filtered})
+    pivot_tasks = sorted({str(row["task"]) for row in filtered})
+    left, right = st.columns(2)
+    preferred_model = str(run.get("model"))
+    model_index = pivot_models.index(preferred_model) if preferred_model in pivot_models else 0
+    pivot_model = left.selectbox("Matrix heatmap model", pivot_models, index=model_index)
+    pivot_task = right.selectbox("Matrix heatmap task", pivot_tasks)
+    pivot = macro_f1_pivot(filtered, model=pivot_model, task=pivot_task)
+    if pivot.empty:
+        st.info("No macro-F1 values are available for this model/task selection.")
+    else:
+        st.subheader("Train × test macro-F1")
+        st.dataframe(
+            pivot.style.background_gradient(cmap="viridis", axis=None).format("{:.4f}"),
+            use_container_width=True,
+        )
+
+    detail_train = st.selectbox(
+        "Report training condition",
+        sorted({str(row["train_condition"]) for row in filtered if str(row["model"]) == pivot_model}),
+    )
+    detail_test = st.selectbox(
+        "Report test condition",
+        sorted({
+            str(row["test_condition"])
+            for row in filtered
+            if str(row["model"]) == pivot_model
+            and str(row["train_condition"]) == detail_train
+        }),
+    )
+    detail_task = st.selectbox("Report matrix task", pivot_tasks)
+    matching_runs = [
+        item
+        for item in experiment_runs
+        if str(item.get("model")) == pivot_model
+        and str(item.get("train_condition")) == detail_train
+    ]
+    report_kind = (
+        "condition_matrix/classification_report/"
+        f"{detail_test}/classification_report_{detail_task}.csv"
+    )
+    confusion_kind = (
+        "condition_matrix/confusion_matrix/"
+        f"{detail_test}/confusion_matrix_{detail_task}.csv"
+    )
+    report = next(
+        (
+            artifact
+            for item in matching_runs
+            for artifact in item.get("artifacts", [])
+            if artifact.get("kind") == report_kind
+        ),
+        None,
+    )
+    confusion = next(
+        (
+            artifact
+            for item in matching_runs
+            for artifact in item.get("artifacts", [])
+            if artifact.get("kind") == confusion_kind
+        ),
+        None,
+    )
+    report_column, confusion_column = st.columns(2)
+    with report_column:
+        st.subheader("Selected classification report")
+        report_rows = _available_table(report)
+        if report_rows:
+            st.caption(report["path"])
+            st.dataframe(report_rows, use_container_width=True, hide_index=True)
+        else:
+            st.info("No indexed report for this train/test/task selection.")
+    with confusion_column:
+        st.subheader("Selected confusion matrix")
+        confusion_rows = _available_table(confusion)
+        if confusion_rows:
+            st.caption(confusion["path"])
+            try:
+                frame = _confusion_frame(confusion_rows, normalise=True)
+                st.dataframe(
+                    frame.style.background_gradient(cmap="Blues", axis=None),
+                    use_container_width=True,
+                )
+            except Exception as exc:
+                st.warning(f"Matrix could not be rendered: {exc}")
+                st.dataframe(confusion_rows, use_container_width=True, hide_index=True)
+        else:
+            st.info("No indexed confusion matrix for this selection.")
+
+
 def _run_detail(
     st: Any,
     run: dict[str, Any],
     experiments_by_uid: dict[str, dict[str, Any]],
+    experiment_runs: list[dict[str, Any]],
     derived: dict[str, Any] | None = None,
 ) -> None:
     st.header(run["run_name"])
@@ -352,7 +538,16 @@ def _run_detail(
         }
     )
 
-    tabs = st.tabs(["Metrics", "History", "Reports", "Cue suppression", "Configuration", "Artifacts", "Warnings"])
+    tabs = st.tabs([
+        "Metrics",
+        "History",
+        "Reports",
+        "Condition Matrix",
+        "Cue suppression",
+        "Configuration",
+        "Artifacts",
+        "Warnings",
+    ])
     with tabs[0]:
         st.dataframe(run.get("metrics", []), use_container_width=True, hide_index=True)
     with tabs[1]:
@@ -360,13 +555,20 @@ def _run_detail(
     with tabs[2]:
         _reports_view(st, run, derived)
     with tabs[3]:
-        _cue_view(st, run, experiments_by_uid.get(run["experiment_uid"]))
+        _condition_matrix_view(
+            st,
+            run,
+            experiments_by_uid.get(run["experiment_uid"]),
+            experiment_runs,
+        )
     with tabs[4]:
+        _cue_view(st, run, experiments_by_uid.get(run["experiment_uid"]))
+    with tabs[5]:
         st.code(json.dumps(run.get("config", {}), indent=2, sort_keys=True), language="json")
         st.text_area("Applied overrides", run.get("overrides") or "", height=120)
-    with tabs[5]:
-        st.dataframe(run.get("artifacts", []), use_container_width=True, hide_index=True)
     with tabs[6]:
+        st.dataframe(run.get("artifacts", []), use_container_width=True, hide_index=True)
+    with tabs[7]:
         warnings = [*run.get("warnings", []), *(derived or {}).get("warnings", [])]
         st.dataframe(warnings, use_container_width=True, hide_index=True) if warnings else st.success("No indexing warnings for this run.")
 
@@ -403,5 +605,10 @@ def render_dashboard(
         st,
         selected_run,
         {item["uid"]: item for item in experiments},
+        [
+            item
+            for item in runs
+            if item["experiment_uid"] == selected_run["experiment_uid"]
+        ],
         derived,
     )

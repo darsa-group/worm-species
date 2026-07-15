@@ -46,6 +46,15 @@ cue-suppression tables, and the matched-condition versus fixed-RGB stress
 comparison. A single-task `macro_f1` is explicitly labelled single-task
 macro-F1; it is never presented as a multitask mean.
 
+Condition-matrix experiments have a separate **Condition Matrix** tab; they are
+never merged with cue-suppression results. The tab filters model, training
+condition, test condition, relation (`matched`, `rgb_stress`, or
+`cross_condition`), and task. It displays completion warnings, relation counts,
+a train-by-test macro-F1 heatmap, and the selected classification report and
+confusion matrix with their source paths. The experiment-level aggregate is
+preferred when present. Otherwise the dashboard reads only already-indexed
+per-run matrix CSVs, with explicit artifact and row bounds.
+
 ## Prepare combined confusion matrices
 
 Completed historical runs already contain confusion-matrix CSVs. The optional
@@ -77,11 +86,16 @@ Run-level schemas include `config.json`, `test_metrics.json`, `history.csv`,
 reports, confusion matrices, `run_overrides.args`, `run_status.txt`, and
 checkpoint paths. Cue-suppression runs can additionally expose
 `cue_suppression/{test_condition_metrics,macro_f1_ratios,transform_summary}.csv`.
+Condition-matrix runs can expose
+`condition_matrix_evaluation/{manifest.json,condition_metrics.csv,task_metrics.csv}`
+and condition-specific classification reports and confusion matrices.
 
 Experiment-level schemas include sweep plans, failed-run tables, colour-ablation
 summaries, condition manifests, aggregate cue tables, and
-`matched_vs_rgb_stress_test.csv`. Unknown files are ignored rather than treated
-as evidence of completion.
+`matched_vs_rgb_stress_test.csv`. Matrix experiments can additionally expose
+`condition_matrix_evaluations.csv`, `condition_matrix_task_metrics.csv`, and
+`condition_matrix_collection_summary.json`. Unknown files are ignored rather
+than treated as evidence of completion.
 
 The stored `out_dir` in a historical `run_summary.json` may point to transient
 cluster scratch. Navigation always uses the discovered result path instead.
