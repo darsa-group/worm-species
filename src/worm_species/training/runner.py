@@ -232,6 +232,7 @@ def run_one(cfg: dict, profile: TrainingProfile) -> dict:
         cfg["data"]["group_col"],
         bundle.label_to_index_by_task,
         device,
+        use_class_weights=cfg.get("training", {}).get("class_weight", True),
     )
     weights = cfg.get("multi_task", {}).get(
         "loss_weights",

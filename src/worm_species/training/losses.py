@@ -34,16 +34,21 @@ def build_criteria(
     group_col: str,
     label_to_index_by_task: dict[str, dict[str, int]],
     device: torch.device,
+    *,
+    use_class_weights: bool = True,
 ) -> dict[str, nn.Module]:
+    """Build per-task losses, optionally preserving inverse-frequency weights."""
     criteria = {}
 
     for task, col in target_cols.items():
-        class_weights = compute_individual_class_weights(
-            train_df=train_df,
-            target_col=col,
-            group_col=group_col,
-            label_to_index=label_to_index_by_task[task],
-        ).to(device)
+        class_weights = None
+        if use_class_weights:
+            class_weights = compute_individual_class_weights(
+                train_df=train_df,
+                target_col=col,
+                group_col=group_col,
+                label_to_index=label_to_index_by_task[task],
+            ).to(device)
 
         criteria[task] = nn.CrossEntropyLoss(weight=class_weights)
 
