@@ -1,10 +1,11 @@
 # Legacy SLURM compatibility audit
 
-The eight historical root launchers remain public symlinks to their complete
-implementations under `scripts/slurm/`. None can safely be replaced by a thin
-canonical wrapper yet without changing externally visible scheduling or storage
-behaviour. The canonical planner is the preferred path for new submissions, but
-preserving old filenames currently requires preserving their implementations.
+The eight historical root launchers remain public symlinks through
+`scripts/slurm/` to byte-preserved implementations under `legacy/slurm/`. None
+can safely be replaced by a thin canonical wrapper yet without changing
+externally visible scheduling or storage behaviour. The canonical planner is the
+preferred path for new submissions, but preserving old filenames currently
+requires preserving their implementations.
 
 | Public launcher | Canonical scientific mapping | Current disposition | Main parity blocker |
 | --- | --- | --- | --- |

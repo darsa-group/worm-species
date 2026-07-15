@@ -174,6 +174,11 @@ Historical SLURM filenames remain available. They are retained as compatibility
 entry points where environment-variable, cache-building, or profiling semantics
 are not yet fully represented by the canonical planner. Review account,
 partition, Conda, data, scratch, and W&B settings before a real submission.
+Their byte-preserved implementations now live under `legacy/slurm/`; the root
+and `scripts/slurm/` paths remain compatible symlinks. The historical
+`config_old.yaml` and ordinary sweep generator are archived similarly under
+`legacy/configs/` and `legacy/python/`. See `legacy/README.md` for the complete
+mapping and for the active files intentionally kept outside the archive.
 
 ## Results dashboard
 
