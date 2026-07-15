@@ -7,14 +7,43 @@ import torch
 from torchvision import transforms
 from torchvision.transforms import functional as transform_functional
 
-from .transforms import ColourRetention
-
 try:
     import cv2
 except ImportError:
     cv2 = None
 else:
     cv2.setNumThreads(0)
+
+
+class ColourRetention:
+    """Retain a deterministic fraction of image chroma."""
+
+    def __init__(self, retention: float = 1.0):
+        retention = float(retention)
+        if not 0.0 <= retention <= 1.0:
+            raise ValueError(
+                f"colour_retention must be between 0 and 1, got {retention}."
+            )
+        self.retention = retention
+
+    def __call__(self, image: torch.Tensor) -> torch.Tensor:
+        if not torch.is_tensor(image):
+            raise TypeError(
+                "ColourRetention must be applied after transforms.ToTensor()."
+            )
+        if image.ndim != 3 or image.shape[0] != 3:
+            raise ValueError(
+                f"Expected an RGB tensor with shape [3, H, W], got {tuple(image.shape)}."
+            )
+        if self.retention == 1.0:
+            return image
+        greyscale = transform_functional.rgb_to_grayscale(
+            image, num_output_channels=3
+        )
+        return torch.lerp(greyscale, image, self.retention).clamp_(0.0, 1.0)
+
+    def __repr__(self) -> str:
+        return f"{self.__class__.__name__}(retention={self.retention:.3f})"
 
 
 class ChannelShuffle:
@@ -154,6 +183,66 @@ class PatchShuffle:
         return f"{self.__class__.__name__}(grid_size={self.grid_size}, seed={self.seed})"
 
 
+def _condition_parameters(condition: dict) -> dict:
+    """Resolve canonical nested parameters plus legacy flat parameters once."""
+    raw_parameters = condition.get("parameters", {}) or {}
+    if not isinstance(raw_parameters, dict):
+        raise TypeError("input condition parameters must be a mapping")
+    parameters = dict(raw_parameters)
+    for key in (
+        "retention",
+        "order",
+        "diameter",
+        "sigma_colour",
+        "sigma_space",
+        "sigma",
+        "grid_size",
+        "seed",
+    ):
+        if key in condition:
+            parameters[key] = condition[key]
+    return parameters
+
+
+def build_condition_operations(
+    condition: dict | None = None,
+    original_colour_retention: float = 1.0,
+) -> list:
+    """Build the tensor-stage operations for one experimental condition."""
+    condition = dict(condition or {})
+    transform_name = str(condition.get("transform", "original")).lower()
+    parameters = _condition_parameters(condition)
+
+    if transform_name == "saturation":
+        retention = float(parameters["retention"])
+    elif transform_name == "grayscale":
+        retention = 0.0
+    else:
+        retention = float(original_colour_retention)
+    operations = [ColourRetention(retention)]
+
+    if transform_name in {"original", "saturation", "grayscale"}:
+        pass
+    elif transform_name == "channel_shuffle":
+        operations.append(ChannelShuffle(parameters.get("order", [2, 0, 1])))
+    elif transform_name == "gaussian_blur":
+        operations.append(TensorGaussianBlur(float(parameters["sigma"])))
+    elif transform_name == "bilateral_filter":
+        operations.append(TensorBilateralFilter(
+            diameter=int(parameters["diameter"]),
+            sigma_colour=float(parameters["sigma_colour"]),
+            sigma_space=float(parameters["sigma_space"]),
+        ))
+    elif transform_name == "patch_shuffle":
+        operations.append(PatchShuffle(
+            grid_size=int(parameters["grid_size"]),
+            seed=int(parameters.get("seed", 0)),
+        ))
+    else:
+        raise ValueError(f"Unsupported input transform: {transform_name!r}.")
+    return operations
+
+
 def build_condition_transform(
     image_size: int,
     train: bool,
@@ -161,50 +250,14 @@ def build_condition_transform(
     original_colour_retention: float = 1.0,
 ) -> transforms.Compose:
     """Build one matched train/evaluation condition without changing ordering."""
-    condition = dict(condition or {})
-    transform_name = str(condition.get("transform", "original")).lower()
-    operations = [transforms.Resize((image_size, image_size))]
-    if train:
-        operations.extend([
-            transforms.RandomHorizontalFlip(p=0.5),
-            transforms.RandomVerticalFlip(p=0.5),
-            transforms.RandomRotation(degrees=270),
-        ])
-    operations.append(transforms.ToTensor())
+    from .transforms import build_split_transform
 
-    if transform_name == "saturation":
-        retention = float(condition["retention"])
-    elif transform_name == "grayscale":
-        retention = 0.0
-    else:
-        retention = float(original_colour_retention)
-    operations.append(ColourRetention(retention))
-
-    if transform_name in {"original", "saturation", "grayscale"}:
-        pass
-    elif transform_name == "channel_shuffle":
-        operations.append(ChannelShuffle(condition.get("order", [2, 0, 1])))
-    elif transform_name == "gaussian_blur":
-        operations.append(TensorGaussianBlur(float(condition["sigma"])))
-    elif transform_name == "bilateral_filter":
-        operations.append(TensorBilateralFilter(
-            diameter=int(condition["diameter"]),
-            sigma_colour=float(condition["sigma_colour"]),
-            sigma_space=float(condition["sigma_space"]),
-        ))
-    elif transform_name == "patch_shuffle":
-        operations.append(PatchShuffle(
-            grid_size=int(condition["grid_size"]),
-            seed=int(condition.get("seed", 0)),
-        ))
-    else:
-        raise ValueError(f"Unsupported input transform: {transform_name!r}.")
-
-    operations.append(transforms.Normalize(
-        mean=[0.485, 0.456, 0.406],
-        std=[0.229, 0.224, 0.225],
-    ))
-    return transforms.Compose(operations)
+    return build_split_transform(
+        split="train" if train else "validation",
+        preprocessing={"image_size": image_size},
+        condition=condition,
+        original_colour_retention=original_colour_retention,
+    )
 
 
 def build_test_condition_transform(
@@ -213,9 +266,11 @@ def build_test_condition_transform(
     original_colour_retention: float = 1.0,
 ) -> transforms.Compose:
     """Build a deterministic fixed-checkpoint evaluation transform."""
-    return build_condition_transform(
-        image_size=image_size,
-        train=False,
+    from .transforms import build_split_transform
+
+    return build_split_transform(
+        split="test",
+        preprocessing={"image_size": image_size},
         condition=condition,
         original_colour_retention=original_colour_retention,
     )
