@@ -1,0 +1,76 @@
+extends: ../../config.yaml
+
+# Focused patch-shuffle experiment used to exercise a non-default matrix.
+# Four pretrained architectures are trained once for each resolved condition:
+# original RGB, a 2x2 patch shuffle, and a 4x4 patch shuffle.  The canonical
+# planner therefore creates 4 models x 3 conditions = 12 training processes.
+model:
+  pretrained: true
+  freeze_backbone: false
+
+sweep:
+  enabled: true
+  parameters:
+    model.name:
+      - resnet18
+      - resnet50
+      - efficientnet_b0
+      - vit_b_16
+
+# Conditions are expanded by the launcher.  Every generated run specification
+# disables this switch before invoking the trainer, preserving one task = one
+# model training and preventing nested sweep expansion.
+matched_condition_training:
+  enabled: true
+  include_original: true
+  deduplicate_equivalent_conditions: true
+  evaluate_original_model_on_all_test_conditions: true
+  condition_names:
+    - original
+    - patch_shuffle_grid_2
+    - patch_shuffle_grid_4
+
+colour_ablation:
+  enabled: false
+
+input_condition:
+  enabled: false
+  condition: original
+  feature: baseline
+  transform: original
+  strength: 0.0
+
+# Only patch shuffle belongs to this experiment.  Original-trained checkpoints
+# are stress-tested at both grids; transformed-trained checkpoints retain their
+# matched train/validation/test condition and do not run the fixed-RGB battery.
+test_cue_suppression:
+  enabled: false
+  saturation:
+    enabled: false
+  grayscale:
+    enabled: false
+  channel_shuffle:
+    enabled: false
+  bilateral_filter:
+    enabled: false
+  gaussian_blur:
+    enabled: false
+  patch_shuffle:
+    enabled: true
+    grid_sizes: [2, 4]
+    seed: 2026
+
+slurm:
+  planning:
+    experiment_type: patch_shuffle_matrix
+    external_expansion: dual_cue
+  cpus_per_task: 16
+  memory: 16384
+  time_limit: "04:00:00"
+  array:
+    max_active: 2
+  collection:
+    enabled: true
+    cpus_per_task: 1
+    memory: 4096
+    time_limit: "00:20:00"
