@@ -200,9 +200,13 @@ def _plan_summary(profile, configs, experiment_types):
         if profile.hierarchy
         else {}
     )
-    return {
-        "selected_profile": profile.name,
+    summary = {
         "configuration_driven": profile.name == "configured",
+        "training_selection": (
+            "explicit_config_toggles"
+            if profile.name == "configured"
+            else "legacy_compatibility"
+        ),
         "loader_mode": profile.loader_mode,
         "experiment_type": experiment_types[0],
         "expected_internal_training_runs": len(configs),
@@ -233,6 +237,9 @@ def _plan_summary(profile, configs, experiment_types):
             for c in configs
         ],
     }
+    if profile.name != "configured":
+        summary["selected_profile"] = profile.name
+    return summary
 
 
 def execute(args, forced_profile: str | None = None):

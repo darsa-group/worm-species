@@ -109,6 +109,31 @@ class CanonicalTrainingCliContracts(unittest.TestCase):
         self.assertEqual(len(configs), 1)
         self.assertEqual(experiment_types, ["standard"])
 
+    def test_canonical_dry_run_exposes_toggles_without_a_profile_field(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            root = Path(temporary_dir)
+            config_path = root / "config.yaml"
+            config_path.write_text(
+                yaml.safe_dump(minimal_config(root / "outputs")),
+                encoding="utf-8",
+            )
+            args = argparse.Namespace(
+                config=str(config_path),
+                override=[],
+                sweep=[],
+                dry_run=True,
+                print_resolved_config=False,
+                single_run=True,
+            )
+            stream = io.StringIO()
+            with contextlib.redirect_stdout(stream):
+                self.assertEqual(execute(args), [])
+
+        plan = json.loads(stream.getvalue())["plan"]
+        self.assertEqual(plan["training_selection"], "explicit_config_toggles")
+        self.assertTrue(plan["configuration_driven"])
+        self.assertNotIn("selected_profile", plan)
+
     def test_explicit_switches_select_condition_and_colour_contracts(self) -> None:
         base = minimal_config(Path("outputs"))
         base["training"] = {"use_masked_labels": False}
