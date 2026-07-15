@@ -401,7 +401,8 @@ def _execution_metadata(
         "git": _git_metadata(),
         "experiment_type": plan.experiment_type,
         "cluster_profile": plan.cluster_profile,
-        "training_profile": plan.training_profile,
+        "training_modes": list(plan.training_modes),
+        "trainer_selection": "configuration",
         "config_hashes": {
             "submission": plan.resolved_config_sha256,
             "runs": {
@@ -454,7 +455,8 @@ def _render_bundle(
         _json(
             {
                 "experiment_type": plan.experiment_type,
-                "training_profile": plan.training_profile,
+                "training_modes": list(plan.training_modes),
+                "trainer_selection": "configuration",
                 "conditions": list(plan.conditions),
                 "models": list(plan.models),
                 "expected_run_count": plan.array_size,

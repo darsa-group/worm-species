@@ -1,5 +1,20 @@
 extends: ../../config.yaml
 
+# Standard masked multitask training uses the explicit canonical switches.  The
+# historical ``masked`` profile disabled hierarchy loss and W&B implicitly.
+experiment:
+  type: standard
+
+training:
+  use_masked_labels: true
+
+multi_task:
+  hierarchy_loss:
+    enabled: false
+
+wandb:
+  enabled: false
+
 matched_condition_training:
   enabled: false
 
@@ -13,7 +28,6 @@ slurm:
   planning:
     experiment_type: standard
     external_expansion: sweep
-    training_profile: masked
   cpus_per_task: 8
   memory: 16384
   time_limit: "04:00:00"

@@ -89,6 +89,8 @@ class SlurmExecutionContracts(unittest.TestCase):
         )
         self.assertEqual(manifest["array_size"], 224)
         self.assertEqual(manifest["metadata"]["counts"]["runs"], 224)
+        self.assertEqual(manifest["metadata"]["trainer_selection"], "configuration")
+        self.assertNotIn("training_profile", manifest["metadata"])
         self.assertIn("commit", manifest["metadata"]["git"])
         self.assertIn("warning", manifest["metadata"]["git"])
 
@@ -114,8 +116,25 @@ class SlurmExecutionContracts(unittest.TestCase):
         self.assertIn("WANDB_PROJECT", colour)
         self.assertIn("CACHE_READY", genome)
         self.assertIn("status=90", genome)
+        self.assertEqual(genome.count("python -m worm_species.training"), 1)
+        self.assertNotIn("--profile", genome)
+        self.assertIn('export PYTHONPATH="$PROJECT_ROOT/src', genome)
         self.assertIn("colour_ablation_results.csv", collector)
         self.assertIn("failed_runs.csv", collector)
+
+    def test_node_local_templates_use_canonical_metadata_import(self):
+        for name in (
+            "node_local_colour_array_job.sh.tmpl",
+            "node_local_cue_array_job.sh.tmpl",
+            "node_local_training_array_job.sh.tmpl",
+        ):
+            with self.subTest(template=name):
+                source = (ROOT / "slurm" / "templates" / name).read_text()
+                self.assertIn(
+                    "from worm_species.data.metadata import prepare_metadata",
+                    source,
+                )
+                self.assertNotIn("from src.dataset_multitask", source)
 
     def test_exact_dependency_dags_and_non_secret_wandb_exports(self):
         ghpc = json.loads((self.ghpc_root / "submission_manifest.json").read_text())

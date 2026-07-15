@@ -20,7 +20,9 @@ from ..experiments.conditions import (
     generate_conditions,
     sweep_combinations,
 )
-from ..training.modes import get_profile
+from ..training.modes import infer_experiment_type
+from ..training.modes import resolve_configured_profile
+from ..training.modes import validate_training_semantics
 from .config import SlurmConfigError, validate_slurm_config
 
 
@@ -38,7 +40,8 @@ class RunSpec:
     model: str
     training_condition: str
     training_transform: str
-    training_profile: str
+    experiment_type: str
+    training_mode: str
     overrides: tuple[str, ...]
     trainer_overrides: tuple[str, ...]
     output_relpath: str
@@ -54,11 +57,10 @@ class RunSpec:
     def trainer_command(self) -> tuple[str, ...]:
         return (
             "python",
-            "train.py",
+            "-m",
+            "worm_species.training",
             "--config",
             "resolved_run_config.yaml",
-            "--profile",
-            self.training_profile,
             "--single-run",
         )
 
@@ -69,7 +71,9 @@ class RunSpec:
             "model": self.model,
             "training_condition": self.training_condition,
             "training_transform": self.training_transform,
-            "training_profile": self.training_profile,
+            "experiment_type": self.experiment_type,
+            "training_mode": self.training_mode,
+            "trainer_selection": "configuration",
             "overrides": list(self.overrides),
             "trainer_overrides": list(self.trainer_overrides),
             "output_relpath": self.output_relpath,
@@ -95,7 +99,7 @@ class SubmissionPlan:
     array_max_active: int
     models: tuple[str, ...]
     conditions: tuple[str, ...]
-    training_profile: str
+    training_modes: tuple[str, ...]
     run_specs: tuple[RunSpec, ...]
     dependencies: tuple[Dependency, ...]
     canonical_trainer_command: tuple[str, ...]
@@ -104,6 +108,11 @@ class SubmissionPlan:
     @property
     def expected_internal_training_runs_per_task(self) -> int:
         return 1
+
+    @property
+    def training_profile(self) -> str:
+        """Temporary API compatibility for the pending Makefile migration."""
+        return "configured"
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -115,7 +124,8 @@ class SubmissionPlan:
             "array_max_active": self.array_max_active,
             "models": list(self.models),
             "conditions": list(self.conditions),
-            "training_profile": self.training_profile,
+            "training_modes": list(self.training_modes),
+            "trainer_selection": "configuration",
             "expected_internal_training_runs_per_task": 1,
             "canonical_trainer_command": list(self.canonical_trainer_command),
             "resolved_config_sha256": self.resolved_config_sha256,
@@ -213,67 +223,24 @@ def _dual_cue_specs(config: dict[str, Any]) -> list[tuple[str, list[str], str, s
     return specs
 
 
-def _validate_canonical_training_semantics(
-    config: dict[str, Any], profile_name: str
-) -> None:
-    profile = get_profile(profile_name)
-    condition = config.get("input_condition", {}) or {}
-    transformed = bool(condition.get("enabled", False)) and str(
-        condition.get("transform", "original")
-    ) != "original"
-    stress = bool(
-        (config.get("test_cue_suppression", {}) or {}).get("enabled", False)
-    )
-    if profile.loader_mode == "standard":
-        default_type = "standard"
-    elif profile.loader_mode == "colour":
-        default_type = "matched_condition"
-    elif stress:
-        default_type = "rgb_stress_test"
-    elif condition.get("enabled", False):
-        default_type = "matched_condition"
-    else:
-        default_type = "standard"
-    experiment_type = str(
-        (config.get("experiment", {}) or {}).get("type") or default_type
-    )
-    allowed = {
-        "standard",
-        "matched_condition",
-        "rgb_stress_test",
-        "matched_and_rgb_stress",
-    }
-    if experiment_type not in allowed:
-        raise SlurmConfigError(f"Unknown per-run experiment.type: {experiment_type!r}")
-    if experiment_type in {"rgb_stress_test", "matched_and_rgb_stress"}:
-        if profile.name != "cue_suppression" or not stress:
-            raise SlurmConfigError(
-                f"experiment.type={experiment_type} requires cue_suppression "
-                "profile and stress testing"
-            )
-    if stress and transformed:
+def _validate_canonical_training_semantics(config: dict[str, Any]) -> str:
+    if "profile" in (config.get("training", {}) or {}):
         raise SlurmConfigError(
-            "Fixed-RGB stress evaluation cannot be attached to transformed-condition training"
+            "training.profile is not supported by canonical SLURM runs; "
+            "set the explicit trainer feature switches instead"
         )
-    if profile.loader_mode == "standard" and experiment_type != "standard":
-        raise SlurmConfigError(
-            f"profile {profile.name} requires experiment.type=standard"
-        )
-    if profile.loader_mode == "colour" and experiment_type != "matched_condition":
-        raise SlurmConfigError(
-            "colour_ablation profile requires experiment.type=matched_condition"
-        )
-    if profile.loader_mode == "condition" and experiment_type == "standard" and (
-        bool(condition.get("enabled", False)) or stress
-    ):
-        raise SlurmConfigError(
-            "cue_suppression standard mode cannot enable a training condition or stress testing"
-        )
+    profile = resolve_configured_profile(config)
+    experiment_type = infer_experiment_type(config)
+    try:
+        validate_training_semantics(config, profile, experiment_type)
+    except ValueError as exc:
+        raise SlurmConfigError(str(exc)) from exc
+    return experiment_type
 
 
 def _resolve_one_run(
-    config: dict[str, Any], overrides: list[str], profile: str
-) -> tuple[dict[str, Any], tuple[str, ...]]:
+    config: dict[str, Any], overrides: list[str]
+) -> tuple[dict[str, Any], tuple[str, ...], str]:
     scientific = copy.deepcopy(config)
     scientific.pop("slurm", None)
     resolved = apply_overrides(scientific, [*overrides, *_EXTERNAL_DISABLE_OVERRIDES])
@@ -294,8 +261,8 @@ def _resolve_one_run(
         check_paths=False,
         check_model_registry=False,
     )
-    _validate_canonical_training_semantics(resolved, profile)
-    return resolved, per_run_controls
+    experiment_type = _validate_canonical_training_semantics(resolved)
+    return resolved, per_run_controls, experiment_type
 
 
 def _dependency_plan(slurm: dict[str, Any]) -> tuple[Dependency, ...]:
@@ -340,7 +307,6 @@ def plan_submission(config: dict[str, Any]) -> SubmissionPlan:
     validate_slurm_config(config)
     planning = config.get("slurm", {}).get("planning", {}) or {}
     experiment_type = str(planning.get("experiment_type", "standard"))
-    training_profile = str(planning.get("training_profile", ""))
     expansion = str(
         (config.get("slurm", {}).get("planning", {}) or {}).get(
             "external_expansion", "sweep"
@@ -361,8 +327,8 @@ def plan_submission(config: dict[str, Any]) -> SubmissionPlan:
 
     specs: list[RunSpec] = []
     for index, (run_id, overrides, model, condition) in enumerate(raw_specs):
-        resolved, trainer_overrides = _resolve_one_run(
-            config, overrides, training_profile
+        resolved, trainer_overrides, run_experiment_type = _resolve_one_run(
+            config, overrides
         )
         transform = str(
             (resolved.get("input_condition", {}) or {}).get(
@@ -376,7 +342,10 @@ def plan_submission(config: dict[str, Any]) -> SubmissionPlan:
                 model=model,
                 training_condition=condition,
                 training_transform=transform,
-                training_profile=training_profile,
+                experiment_type=run_experiment_type,
+                training_mode=str(
+                    (resolved.get("training", {}) or {}).get("mode", "multitask")
+                ),
                 overrides=tuple(overrides),
                 trainer_overrides=trainer_overrides,
                 output_relpath=run_id,
@@ -400,13 +369,13 @@ def plan_submission(config: dict[str, Any]) -> SubmissionPlan:
     _validate_result_paths(results_root, specs, config)
     models = tuple(dict.fromkeys(spec.model for spec in specs))
     conditions = tuple(dict.fromkeys(spec.training_condition for spec in specs))
-    profiles = tuple(dict.fromkeys(spec.training_profile for spec in specs))
-    if len(profiles) != 1:
+    training_modes = tuple(dict.fromkeys(spec.training_mode for spec in specs))
+    if len(training_modes) != 1:
         raise SlurmConfigError(
-            f"A submission plan must use one training profile, got {profiles}"
+            f"A submission plan must use one training mode, got {training_modes}"
         )
     plan = SubmissionPlan(
-        schema_version=1,
+        schema_version=2,
         experiment_type=experiment_type,
         cluster_profile=str(slurm.get("cluster_profile", "unspecified")),
         results_root=results_root,
@@ -414,12 +383,16 @@ def plan_submission(config: dict[str, Any]) -> SubmissionPlan:
         array_max_active=int(slurm.get("array", {}).get("max_active", 1)),
         models=models,
         conditions=conditions,
-        training_profile=profiles[0],
+        training_modes=training_modes,
         run_specs=tuple(specs),
         dependencies=_dependency_plan(slurm),
         canonical_trainer_command=(
-            "python", "train.py", "--config", "resolved_run_config.yaml",
-            "--profile", profiles[0], "--single-run",
+            "python",
+            "-m",
+            "worm_species.training",
+            "--config",
+            "resolved_run_config.yaml",
+            "--single-run",
         ),
         resolved_config_sha256=_config_hash(config),
     )

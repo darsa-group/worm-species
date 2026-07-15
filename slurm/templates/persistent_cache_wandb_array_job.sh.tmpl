@@ -58,6 +58,7 @@ if [[ "$COPY_CACHE_TO_TMP" != "0" ]]; then
 fi
 if [[ -n "$CONDA_SH" ]]; then source "$CONDA_SH"; conda activate "$CONDA_ENV"; fi
 cd "$PROJECT_ROOT"
+export PYTHONPATH="$PROJECT_ROOT/src${PYTHONPATH:+:$PYTHONPATH}"
 status=0
 @@TRAIN_COMMAND@@ --config "$RESOLVED_CONFIG" --single-run --override \
     data.root_dir="$DATA_ROOT" data.metadata_csv="$METADATA_CSV" \

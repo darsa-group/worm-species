@@ -38,7 +38,6 @@ _SLURM_KEYS: dict[str, object] = {
     "planning": {
         "experiment_type": None,
         "external_expansion": None,
-        "training_profile": None,
     },
     "setup": {
         "enabled": None,
@@ -311,6 +310,14 @@ def validate_slurm_config(config: dict[str, Any]) -> None:
     slurm = config.get("slurm")
     if not isinstance(slurm, dict):
         raise SlurmConfigError("slurm must be a mapping")
+    planning = slurm.get("planning", {})
+    if isinstance(planning, dict) and "training_profile" in planning:
+        raise SlurmConfigError(
+            "slurm.planning.training_profile is no longer supported; select "
+            "trainer behaviour with training.use_masked_labels, "
+            "multi_task.hierarchy_loss.enabled, wandb.enabled, "
+            "input_condition, test_cue_suppression, and experiment.type"
+        )
     _reject_unknown(slurm, _SLURM_KEYS, "slurm")
     _require_bool(slurm, "enabled", "slurm")
     for key in ("nodes", "ntasks", "cpus_per_task"):
@@ -323,15 +330,12 @@ def validate_slurm_config(config: dict[str, Any]) -> None:
 
     array = slurm.get("array", {})
     _require_positive_int(array, "max_active", "slurm.array")
-    expansion = slurm.get("planning", {}).get("external_expansion", "sweep")
+    expansion = planning.get("external_expansion", "sweep")
     if expansion not in {"sweep", "colour_ablation", "dual_cue"}:
         raise SlurmConfigError(
             f"Unsupported slurm.planning.external_expansion: {expansion!r}"
         )
-    profile = slurm.get("planning", {}).get("training_profile")
-    if not isinstance(profile, str) or not profile:
-        raise SlurmConfigError("slurm.planning.training_profile is required")
-    experiment_type = slurm.get("planning", {}).get("experiment_type")
+    experiment_type = planning.get("experiment_type")
     if not isinstance(experiment_type, str) or not experiment_type:
         raise SlurmConfigError("slurm.planning.experiment_type is required")
     for name in ("setup", "collection", "cleanup"):
@@ -391,7 +395,8 @@ def validate_slurm_config(config: dict[str, Any]) -> None:
     if mode == "node_local":
         if not nodes:
             raise SlurmConfigError(
-                "slurm.scratch.nodes is required for node-local scratch; explicitly set GPU_NODES/profile nodes"
+                "slurm.scratch.nodes is required for node-local scratch; "
+                "explicitly configure the cluster nodes"
             )
         if not bool(slurm.get("setup", {}).get("enabled", False)):
             raise SlurmConfigError("node-local scratch requires slurm.setup.enabled=true")
