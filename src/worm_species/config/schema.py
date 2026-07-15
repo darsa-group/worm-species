@@ -119,19 +119,6 @@ CONFIG_FIELDS: tuple[ConfigField, ...] = (
     _field("training.use_amp", bool, default=True, consumers=("training",)),
     _field("training.class_weight", bool, default=True, consumers=("losses",)),
     _field(
-        "training.profile",
-        str,
-        choices=(
-            "masked",
-            "masked_hloss",
-            "masked_hloss_wandb",
-            "colour_ablation",
-            "cue_suppression",
-        ),
-        consumers=("legacy trainer compatibility",),
-        status="legacy",
-    ),
-    _field(
         "training.mode",
         str,
         default="multitask",

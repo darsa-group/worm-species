@@ -137,6 +137,20 @@ def validate_training_semantics(
     stress_enabled = bool(
         (config.get("test_cue_suppression", {}) or {}).get("enabled", False)
     )
+    colour_expansion = bool(
+        (config.get("colour_ablation", {}) or {}).get("enabled", False)
+    )
+
+    if colour_expansion and condition_enabled:
+        raise ValueError(
+            "colour_ablation.enabled cannot be combined with input_condition; "
+            "resolve exactly one training condition per process"
+        )
+    if colour_expansion and stress_enabled:
+        raise ValueError(
+            "colour_ablation.enabled cannot be combined with fixed-RGB stress "
+            "evaluation"
+        )
 
     if stress_enabled and transformed:
         raise ValueError(

@@ -479,6 +479,12 @@ def _validate_canonical_training_switches(
     """Validate config-driven training without changing legacy profiles."""
     legacy_profile = _get(config, "training.profile")
     if legacy_profile is not _ABSENT:
+        issues.append(
+            ValidationIssue(
+                "training.profile",
+                "is legacy-only; use explicit canonical trainer switches",
+            )
+        )
         return
     try:
         from ..training.modes import infer_experiment_type

@@ -13,7 +13,7 @@ import yaml
 
 from ..config.overrides import apply_overrides
 from ..config.sweeps import get_colour_sweep_parameters_from_config
-from ..config.validation import validate_config
+from ..config.validation import ConfigValidationError, validate_config
 from ..experiments.conditions import (
     condition_overrides,
     format_override,
@@ -250,12 +250,15 @@ def _resolve_one_run(
             "External run specification left matched_condition_training.enabled=true"
         )
     per_run_controls = _EXTERNAL_DISABLE_OVERRIDES
-    validate_config(
-        resolved,
-        workflow="training",
-        check_paths=False,
-        check_model_registry=False,
-    )
+    try:
+        validate_config(
+            resolved,
+            workflow="training",
+            check_paths=False,
+            check_model_registry=False,
+        )
+    except ConfigValidationError as exc:
+        raise SlurmConfigError(str(exc)) from exc
     experiment_type = _validate_canonical_training_semantics(resolved)
     return resolved, per_run_controls, experiment_type
 

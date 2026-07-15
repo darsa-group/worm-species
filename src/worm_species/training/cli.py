@@ -10,7 +10,6 @@ from pathlib import Path
 from ..config.loading import load_config
 from ..config.overrides import apply_overrides
 from ..config.sweeps import generate_sweep_configs
-from .modes import PROFILES
 from .modes import get_profile
 from .modes import infer_experiment_type
 from .modes import resolve_configured_profile
@@ -44,7 +43,6 @@ def _legacy_parser() -> argparse.ArgumentParser:
 
 def _canonical_parser() -> argparse.ArgumentParser:
     parser = _legacy_parser()
-    parser.add_argument("--profile", choices=sorted(PROFILES))
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--print-resolved-config", action="store_true")
     parser.add_argument("--single-run", action="store_true")
@@ -59,7 +57,14 @@ def resolve_plan(
 ):
     source = load_config(config_path)
     overridden = apply_overrides(source, overrides)
-    chosen = explicit_profile or overridden.get("training", {}).get("profile")
+    configured_profile = overridden.get("training", {}).get("profile")
+    if explicit_profile is None and configured_profile is not None:
+        raise ValueError(
+            "training.profile is legacy-only; select canonical behavior with "
+            "the explicit training, hierarchy-loss, W&B, condition, and "
+            "experiment switches"
+        )
+    chosen = explicit_profile
     compatibility_profile = get_profile(str(chosen)) if chosen else None
     profile = compatibility_profile or resolve_configured_profile(overridden)
     expanded = generate_sweep_configs(

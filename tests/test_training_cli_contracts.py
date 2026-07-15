@@ -5,6 +5,8 @@ import copy
 import contextlib
 import io
 import json
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -63,6 +65,27 @@ def minimal_config(output_dir: Path) -> dict:
 
 
 class CanonicalTrainingCliContracts(unittest.TestCase):
+    def test_canonical_help_has_no_profile_selector(self) -> None:
+        result = subprocess.run(
+            [sys.executable, "train.py", "--help"],
+            cwd=Path(__file__).resolve().parents[1],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        self.assertNotIn("--profile", result.stdout)
+        self.assertIn("--dry-run", result.stdout)
+
+    def test_training_profile_config_is_rejected_by_preferred_cli(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            root = Path(temporary_dir)
+            config = minimal_config(root / "outputs")
+            config["training"] = {"profile": "masked"}
+            config_path = root / "config.yaml"
+            config_path.write_text(yaml.safe_dump(config), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "legacy-only"):
+                resolve_plan(str(config_path), [], [], None)
+
     def test_preferred_cli_resolves_features_without_a_named_profile(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_dir:
             root = Path(temporary_dir)
