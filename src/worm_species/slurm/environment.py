@@ -453,6 +453,33 @@ def resolve_submission_environment(
                     f"{name} is ignored by the canonical launcher; use its CLI/config equivalent"
                 )
 
+    scratch = _get_nested(resolved, "slurm.scratch")
+    if (
+        isinstance(scratch, dict)
+        and scratch.get("mode") == "node_local"
+        and bool(scratch.get("unique_per_submission", False))
+    ):
+        if not context.submission_stamp or context.process_id is None:
+            raise EnvironmentResolutionError(
+                "node-local scratch resolution requires a submission timestamp and PID"
+            )
+        submission_id = f"{context.submission_stamp}_{context.process_id}"
+        raw_root = scratch.get("root")
+        if not isinstance(raw_root, str) or not raw_root:
+            raise EnvironmentResolutionError(
+                "node-local scratch requires a non-empty root prefix"
+            )
+        if "{submission_id}" in raw_root:
+            resolved_root = raw_root.replace("{submission_id}", submission_id)
+        elif submission_id in raw_root:
+            resolved_root = raw_root
+        else:
+            resolved_root = f"{raw_root.rstrip('_-')}_{submission_id}"
+        scratch["root"] = resolved_root
+        scratch["submission_id"] = submission_id
+        provenance["slurm.scratch.root"] = "generated:submission_id"
+        provenance["slurm.scratch.submission_id"] = "generated:timestamp+pid"
+
     for target in _PATH_TARGETS:
         value = _get_nested(resolved, target)
         if isinstance(value, str):

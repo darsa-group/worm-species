@@ -55,6 +55,7 @@ _SLURM_KEYS: dict[str, object] = {
     },
     "collection": {
         "enabled": None,
+        "kind": None,
         "partition": None,
         "cpus_per_task": None,
         "memory": None,
@@ -71,6 +72,8 @@ _SLURM_KEYS: dict[str, object] = {
     "scratch": {
         "mode": None,
         "root": None,
+        "unique_per_submission": None,
+        "submission_id": None,
         "nodes": None,
         "copy_project": None,
         "copy_data": None,
@@ -149,6 +152,8 @@ def load_submission_config(
     import_legacy_environment: bool = False,
     environment: Mapping[str, str] | None = None,
     cwd: str | Path | None = None,
+    submission_stamp: str | None = None,
+    process_id: int | None = None,
 ) -> dict[str, Any]:
     """Resolve base, cluster defaults, experiment overlay, and CLI overrides.
 
@@ -193,8 +198,12 @@ def load_submission_config(
     context = ResolutionContext(
         cwd=Path.cwd() if cwd is None else Path(cwd),
         environ=dict(os.environ if environment is None else environment),
-        submission_stamp=datetime.now().strftime("%Y%m%d_%H%M%S"),
-        process_id=os.getpid(),
+        submission_stamp=(
+            datetime.now().strftime("%Y%m%d_%H%M%S")
+            if submission_stamp is None
+            else submission_stamp
+        ),
+        process_id=os.getpid() if process_id is None else process_id,
     )
     try:
         resolved = resolve_submission_environment(
@@ -343,6 +352,18 @@ def validate_slurm_config(config: dict[str, Any]) -> None:
         if name in {"setup", "cleanup"}:
             _require_bool(stage, "per_node", f"slurm.{name}")
         _validate_resource(stage, f"slurm.{name}")
+    collector_kind = slurm.get("collection", {}).get("kind", "auto")
+    if collector_kind not in {
+        None,
+        "auto",
+        "standard",
+        "dual-cue",
+        "colour-ablation",
+    }:
+        raise SlurmConfigError(
+            "slurm.collection.kind must be auto, standard, dual-cue, or "
+            "colour-ablation"
+        )
 
     scratch = slurm.get("scratch", {})
     mode = scratch.get("mode", "none")
@@ -350,6 +371,7 @@ def validate_slurm_config(config: dict[str, Any]) -> None:
         raise SlurmConfigError(f"Unsupported slurm.scratch.mode: {mode!r}")
     for key in ("copy_project", "copy_data", "reuse_ready_cache", "cleanup_after_run"):
         _require_bool(scratch, key, "slurm.scratch")
+    _require_bool(scratch, "unique_per_submission", "slurm.scratch")
     nodes = scratch.get("nodes", [])
     if not isinstance(nodes, list) or any(not isinstance(node, str) or not node for node in nodes):
         raise SlurmConfigError("slurm.scratch.nodes must be a list of non-empty node names")
@@ -392,6 +414,20 @@ def validate_slurm_config(config: dict[str, Any]) -> None:
             if not isinstance(value, str) or not value.strip():
                 raise SlurmConfigError(f"slurm.{key} is required when SLURM is enabled")
     if mode == "node_local":
+        if not bool(scratch.get("unique_per_submission", False)):
+            raise SlurmConfigError(
+                "node-local scratch requires slurm.scratch.unique_per_submission=true"
+            )
+        submission_id = scratch.get("submission_id")
+        scratch_root = scratch.get("root")
+        if not isinstance(submission_id, str) or not submission_id:
+            raise SlurmConfigError(
+                "node-local scratch requires a resolved slurm.scratch.submission_id"
+            )
+        if not isinstance(scratch_root, str) or submission_id not in scratch_root:
+            raise SlurmConfigError(
+                "node-local scratch root must contain its resolved submission ID"
+            )
         if not nodes:
             raise SlurmConfigError(
                 "slurm.scratch.nodes is required for node-local scratch; "

@@ -20,7 +20,11 @@ slurm:
     time_limit: "00:30:00"
   scratch:
     mode: node_local
-    root: /scratch/${USER}/worm_species
+    # The resolver appends one timestamp+PID submission ID. Static node-local
+    # roots are rejected before rendering or cleanup.
+    root: /scratch/${USER}/worm_node_local_sweep
+    unique_per_submission: true
+    submission_id: null
     # Deliberately empty: node-local workflows must explicitly identify the
     # GPU nodes whose independent /scratch filesystems are prepared/cleaned.
     nodes: []

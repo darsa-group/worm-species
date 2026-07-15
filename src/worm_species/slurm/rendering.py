@@ -27,6 +27,7 @@ _TEMPLATES = frozenset(
         "persistent_cache_array_job.sh.tmpl",
         "persistent_cache_wandb_array_job.sh.tmpl",
         "node_local_setup_job.sh.tmpl",
+        "node_local_array_job.sh.tmpl",
         "node_local_training_array_job.sh.tmpl",
         "node_local_colour_array_job.sh.tmpl",
         "node_local_cue_array_job.sh.tmpl",
@@ -133,14 +134,39 @@ def _select_array_template(config: dict[str, Any]) -> str:
     mode = str(slurm.get("scratch", {}).get("mode", "none"))
     expansion = str(slurm.get("planning", {}).get("external_expansion", "sweep"))
     if mode == "node_local":
-        if expansion == "dual_cue":
-            return "node_local_cue_array_job.sh.tmpl"
-        if expansion == "colour_ablation":
-            return "node_local_colour_array_job.sh.tmpl"
-        return "node_local_training_array_job.sh.tmpl"
+        return "node_local_array_job.sh.tmpl"
     if expansion == "dual_cue":
         return "job_local_cue_array_job.sh.tmpl"
     return "persistent_cache_array_job.sh.tmpl"
+
+
+def _array_output_name(template_name: str, config: dict[str, Any]) -> str:
+    """Preserve generated filenames while sharing one node-local body."""
+    if template_name != "node_local_array_job.sh.tmpl":
+        return template_name.removesuffix(".tmpl")
+    expansion = str(
+        config.get("slurm", {}).get("planning", {}).get(
+            "external_expansion", "sweep"
+        )
+    )
+    if expansion == "dual_cue":
+        return "node_local_cue_array_job.sh"
+    if expansion == "colour_ablation":
+        return "node_local_colour_array_job.sh"
+    return "node_local_training_array_job.sh"
+
+
+def _collector_kind(config: dict[str, Any]) -> str:
+    slurm = config.get("slurm", {}) or {}
+    configured = (slurm.get("collection", {}) or {}).get("kind")
+    if configured not in {None, "auto"}:
+        return str(configured)
+    expansion = str((slurm.get("planning", {}) or {}).get("external_expansion", "sweep"))
+    if expansion == "dual_cue":
+        return "dual-cue"
+    if expansion == "colour_ablation":
+        return "colour-ablation"
+    return "standard"
 
 
 def _array_context(
@@ -445,6 +471,11 @@ def _execution_metadata(
             }
             for job in jobs
         ],
+        "collector": {
+            "schema_version": 1,
+            "enabled": bool(slurm.get("collection", {}).get("enabled", False)),
+            "kind": _collector_kind(config),
+        },
     }
 
 
@@ -539,7 +570,23 @@ def _render_bundle(
         root.resolve(),
         node_local=node_local,
     )
-    array_name = array_template.removesuffix(".tmpl")
+    if node_local:
+        monitoring = slurm.get("monitoring", {}) or {}
+        array_context.update(
+            {
+                "MONITORING_ENABLED": (
+                    "true" if bool(monitoring.get("enabled", False)) else "false"
+                ),
+                "MONITORING_INTERVAL": shell_quote(
+                    monitoring.get("interval_seconds", 5)
+                ),
+                "SETUP_READY_MARKER": shell_quote(
+                    f"{str(scratch.get('root')).rstrip('/')}/"
+                    f"{scratch.get('ready_marker', 'READY')}"
+                ),
+            }
+        )
+    array_name = _array_output_name(array_template, config)
     _write(
         generated / array_name,
         render_template(array_template, array_context),
@@ -571,6 +618,7 @@ def _render_bundle(
             "SCRATCH_OUTPUTS": shell_quote(f"{str(scratch.get('root')).rstrip('/')}/outputs"),
             "SCRATCH_PROJECT": shell_quote(f"{str(scratch.get('root')).rstrip('/')}/project"),
             "SCRATCH_ROOT": shell_quote(scratch.get("root", "/tmp/worm_species")),
+            "SUBMISSION_ID": shell_quote(scratch.get("submission_id", "")),
         }
         setup_name = "node_local_setup_job.sh"
         _write(
@@ -586,17 +634,22 @@ def _render_bundle(
             generated / cleanup_name,
             render_template(
                 "node_local_cleanup_job.sh.tmpl",
-                {"SCRATCH_ROOT": shell_quote(scratch.get("root", "/tmp/worm_species"))},
+                {
+                    "SCRATCH_ROOT": shell_quote(
+                        scratch.get("root", "/tmp/worm_species")
+                    ),
+                    "SUBMISSION_ID": shell_quote(
+                        scratch.get("submission_id", "")
+                    ),
+                },
             ),
             0o755,
         )
         script_names["cleanup"] = str(Path("generated_slurm") / cleanup_name)
 
     if bool(slurm.get("collection", {}).get("enabled", False)):
-        expansion = str(
-            slurm.get("planning", {}).get("external_expansion", "sweep")
-        )
-        if expansion == "dual_cue":
+        collector_kind = _collector_kind(config)
+        if collector_kind == "dual-cue":
             collector_command = shell_join(
                 [
                     "python",
@@ -625,7 +678,7 @@ def _render_bundle(
         }
         collect_name = "result_collector_job.sh"
         collector_template = "result_collector_job.sh.tmpl"
-        if expansion == "colour_ablation":
+        if collector_kind == "colour-ablation":
             collector_template = "colour_collector_job.sh.tmpl"
         else:
             collect_context["COLLECT_COMMAND"] = collector_command

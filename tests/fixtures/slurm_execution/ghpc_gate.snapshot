@@ -1,0 +1,37 @@
+{
+  "array": {
+    "cache_lock": true,
+    "cache_parent": true,
+    "image_ready_marker": true,
+    "monitoring": true,
+    "one_trainer": true,
+    "run_overrides": true,
+    "run_status": true,
+    "setup_ready_marker": true,
+    "split_root": true
+  },
+  "cleanup": {
+    "afterany": true,
+    "contains_submission_guard": true,
+    "per_node": 2
+  },
+  "collector": {
+    "enabled": false,
+    "kind": "standard",
+    "schema_version": 1
+  },
+  "setup": {
+    "data_filters": true,
+    "nodes": [
+      "gpu01",
+      "gpu02"
+    ],
+    "project_filters": true,
+    "ready_marker": true
+  },
+  "submission": {
+    "array_depends_afterok": true,
+    "scratch_contains_id": true,
+    "submission_id": "20260102_030405_4321"
+  }
+}
