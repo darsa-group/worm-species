@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# Standalone persistent-cache builder retained for direct sbatch workflows.
+#SBATCH --account=@@ACCOUNT@@
+#SBATCH --job-name=worm_build_cache
+#SBATCH --cpus-per-task=@@CPUS_PER_TASK@@
+#SBATCH --mem=@@MEMORY@@
+#SBATCH --time=@@TIME_LIMIT@@
+#SBATCH --output=worm_build_cache_%j.out
+#SBATCH --error=worm_build_cache_%j.err
+set -euo pipefail
+
+@@CACHE_COMMAND@@

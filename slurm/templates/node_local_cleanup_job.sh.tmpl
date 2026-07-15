@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRATCH_ROOT=@@SCRATCH_ROOT@@
+case "$SCRATCH_ROOT" in
+    /scratch/*/worm_species*|/tmp/*/worm_species*) ;;
+    *)
+        echo "Refusing unsafe scratch cleanup: $SCRATCH_ROOT" >&2
+        exit 2
+        ;;
+esac
+rm -rf -- "$SCRATCH_ROOT"

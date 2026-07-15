@@ -1,0 +1,185 @@
+"""Focused CPU-only contracts for SLURM rendering and mocked submission."""
+
+from __future__ import annotations
+
+import contextlib
+import io
+import json
+import subprocess
+import tempfile
+import unittest
+from pathlib import Path
+from unittest.mock import patch
+
+from src.worm_species.slurm.cli import build_parser
+from src.worm_species.slurm.cli import execute
+from src.worm_species.slurm.config import load_submission_config
+from src.worm_species.slurm.planning import plan_submission
+from src.worm_species.slurm.rendering import RenderError
+from src.worm_species.slurm.rendering import verify_artifact_bundle
+from src.worm_species.slurm.rendering import write_artifact_bundle
+from src.worm_species.slurm.submission import RecordingSbatchClient
+from src.worm_species.slurm.submission import parse_job_id
+from src.worm_species.slurm.submission import submit_manifest
+
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+class SlurmExecutionContracts(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.temporary = tempfile.TemporaryDirectory()
+        cls.temp_root = Path(cls.temporary.name)
+        cls.local_root = cls._render(
+            "configs/experiments/standard.yaml",
+            "configs/clusters/local.yaml",
+            "local",
+        )
+        cls.genome_root = cls._render(
+            "configs/experiments/dual_cue.yaml",
+            "configs/clusters/genome.yaml",
+            "genome",
+        )
+        cls.ghpc_root = cls._render(
+            "configs/experiments/colour_ablation.yaml",
+            "configs/clusters/ghpc.yaml",
+            "ghpc",
+            overrides=["slurm.scratch.nodes=[gpu01,gpu02]"],
+        )
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.temporary.cleanup()
+
+    @classmethod
+    def _render(
+        cls,
+        experiment: str,
+        cluster: str,
+        name: str,
+        overrides: list[str] | None = None,
+    ) -> Path:
+        config = load_submission_config(
+            ROOT / experiment,
+            ROOT / cluster,
+            overrides=overrides or [],
+        )
+        plan = plan_submission(config)
+        path = cls.temp_root / name
+        write_artifact_bundle(plan, config, path)
+        return path
+
+    def test_required_artifacts_and_224_run_plan(self):
+        required = {
+            "artifact_checksums.json",
+            "condition_manifest.json",
+            "dry_run.json",
+            "launch_plan.json",
+            "launcher_settings.txt",
+            "resolved_config.yaml",
+            "resolved_submission_config.yaml",
+            "submission_manifest.json",
+            "submission_plan.json",
+            "sweep_plan.tsv",
+        }
+        self.assertTrue(required.issubset({path.name for path in self.genome_root.iterdir()}))
+        manifest = json.loads(
+            (self.genome_root / "submission_manifest.json").read_text()
+        )
+        self.assertEqual(manifest["array_size"], 224)
+        self.assertEqual(manifest["metadata"]["counts"]["runs"], 224)
+        self.assertIn("commit", manifest["metadata"]["git"])
+        self.assertIn("warning", manifest["metadata"]["git"])
+
+    def test_rendered_shell_and_operational_invariants(self):
+        for root in (self.local_root, self.genome_root, self.ghpc_root):
+            for script in (root / "generated_slurm").glob("*.sh"):
+                subprocess.run(["bash", "-n", str(script)], check=True)
+
+        setup = (self.ghpc_root / "generated_slurm/node_local_setup_job.sh").read_text()
+        colour = (
+            self.ghpc_root / "generated_slurm/node_local_colour_array_job.sh"
+        ).read_text()
+        collector = (
+            self.ghpc_root / "generated_slurm/result_collector_job.sh"
+        ).read_text()
+        genome = (
+            self.genome_root / "generated_slurm/job_local_cue_array_job.sh"
+        ).read_text()
+        self.assertIn("--include=global_metadata.csv", setup)
+        self.assertIn("--include=*_seg.jpg", setup)
+        self.assertIn("IMAGE_CACHE.lock", colour)
+        self.assertIn("IMAGE_CACHE_READY", colour)
+        self.assertIn("WANDB_PROJECT", colour)
+        self.assertIn("CACHE_READY", genome)
+        self.assertIn("status=90", genome)
+        self.assertIn("colour_ablation_results.csv", collector)
+        self.assertIn("failed_runs.csv", collector)
+
+    def test_exact_dependency_dags_and_non_secret_wandb_exports(self):
+        ghpc = json.loads((self.ghpc_root / "submission_manifest.json").read_text())
+        jobs = {job["name"]: job for job in ghpc["jobs"]}
+        self.assertEqual(
+            jobs["train_array"]["dependencies"],
+            [
+                {"job": "setup:gpu01", "kind": "afterok"},
+                {"job": "setup:gpu02", "kind": "afterok"},
+            ],
+        )
+        self.assertEqual(
+            jobs["collect"]["dependencies"],
+            [{"job": "train_array", "kind": "afterany"}],
+        )
+        self.assertEqual(
+            jobs["cleanup:gpu01"]["dependencies"],
+            [{"job": "train_array", "kind": "afterany"}],
+        )
+        self.assertIn("WANDB_PROJECT", jobs["train_array"]["exports"])
+        self.assertNotIn("WANDB_API_KEY", jobs["train_array"]["exports"])
+
+    def test_default_launch_is_dry_and_never_constructs_scheduler(self):
+        artifact_dir = self.temp_root / "cli-dry"
+        args = build_parser().parse_args(
+            [
+                "launch",
+                "--config",
+                str(ROOT / "configs/experiments/standard.yaml"),
+                "--cluster-config",
+                str(ROOT / "configs/clusters/local.yaml"),
+                "--artifacts-dir",
+                str(artifact_dir),
+            ]
+        )
+        with patch(
+            "src.worm_species.slurm.submission.SubprocessSbatchClient",
+            side_effect=AssertionError("scheduler client constructed during dry-run"),
+        ):
+            with contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(execute(args), 0)
+        state = json.loads((artifact_dir / "dry_run.json").read_text())
+        self.assertFalse(state["submitted"])
+        self.assertEqual(state["scheduler_calls"], 0)
+
+    def test_checksum_tamper_is_rejected(self):
+        script = next((self.local_root / "generated_slurm").glob("*.sh"))
+        original = script.read_text()
+        script.write_text(original + "\n# tampered\n")
+        with self.assertRaises(RenderError):
+            verify_artifact_bundle(self.local_root / "submission_manifest.json")
+        script.write_text(original)
+
+    def test_mocked_submission_dependency_argv_and_job_id_parsing(self):
+        client = RecordingSbatchClient(["11", "12", "13;cluster", "14", "15", "16"])
+        submitted = submit_manifest(
+            self.ghpc_root / "submission_manifest.json",
+            client=client,
+        )
+        self.assertEqual(submitted["train_array"], "13")
+        self.assertIn("--dependency=afterok:11:12", client.calls[2])
+        self.assertIn("--dependency=afterany:13", client.calls[3])
+        self.assertEqual(parse_job_id("987;genome\n"), "987")
+
+
+if __name__ == "__main__":
+    unittest.main()
