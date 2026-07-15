@@ -2,9 +2,24 @@ from __future__ import annotations
 
 import copy
 import itertools
+from dataclasses import dataclass
 from typing import Any
 
+from .normalization import normalize_conditions
 from .overrides import parse_scalar, set_nested
+
+
+@dataclass
+class SweepItem:
+    """One externally resolvable training fit from the canonical sweep."""
+
+    index: int
+    assignments: tuple[tuple[str, Any], ...]
+    condition: dict[str, Any] | None = None
+
+    @property
+    def parameter_values(self) -> dict[str, Any]:
+        return copy.deepcopy(dict(self.assignments))
 
 
 def parse_sweep_item(item: str) -> tuple[str, list[Any]]:
@@ -30,6 +45,16 @@ def get_sweep_parameters_from_config(config: dict[str, Any]) -> dict[str, list[A
     if not isinstance(parameters, dict):
         raise ValueError("sweep.parameters must be a dictionary.")
     return parameters
+
+
+def get_sweep_conditions_from_config(
+    config: dict[str, Any],
+) -> list[dict[str, Any]]:
+    """Return complete canonical conditions without creating a product within them."""
+    sweep_config = config.get("sweep", {})
+    if not sweep_config.get("enabled", False) or "conditions" not in sweep_config:
+        return []
+    return normalize_conditions(sweep_config["conditions"])
 
 
 def generate_colour_retention_values(config: dict[str, Any]) -> list[float]:
@@ -92,6 +117,73 @@ def get_sweep_parameters_from_cli(items: list[str]) -> dict[str, list[Any]]:
     return parameters
 
 
+def expand_sweep_items(
+    base_config: dict[str, Any],
+    cli_sweep_items: list[str] | None = None,
+    *,
+    include_colour_ablation: bool = False,
+) -> list[SweepItem]:
+    """Expand one canonical training layer in deterministic configured order.
+
+    Ordinary dotted parameters form a Cartesian product. Complete condition
+    objects are an additional single dimension and remain atomic. Sections
+    outside ``sweep`` -- notably ``evaluation`` -- never add training fits.
+    """
+    cli_sweep_items = cli_sweep_items or []
+    if cli_sweep_items:
+        parameters = get_sweep_parameters_from_cli(cli_sweep_items)
+    elif include_colour_ablation:
+        parameters = get_colour_sweep_parameters_from_config(base_config)
+    else:
+        parameters = get_sweep_parameters_from_config(base_config)
+
+    conditions = get_sweep_conditions_from_config(base_config)
+    keys = list(parameters)
+    parameter_products = (
+        itertools.product(*(parameters[key] for key in keys))
+        if keys
+        else [()]
+    )
+    condition_values: list[dict[str, Any] | None] = conditions or [None]
+    items: list[SweepItem] = []
+    for combination in parameter_products:
+        assignments = tuple(
+            (key, copy.deepcopy(value))
+            for key, value in zip(keys, combination)
+        )
+        for condition in condition_values:
+            items.append(
+                SweepItem(
+                    index=len(items),
+                    assignments=assignments,
+                    condition=copy.deepcopy(condition),
+                )
+            )
+    return items
+
+
+def apply_sweep_item(
+    base_config: dict[str, Any],
+    item: SweepItem,
+    *,
+    disable_sweep: bool = False,
+) -> dict[str, Any]:
+    """Apply one sweep item to a deep copy of ``base_config``."""
+    config = copy.deepcopy(base_config)
+    for key, value in item.assignments:
+        set_nested(config, key, copy.deepcopy(value))
+    if item.condition is not None:
+        input_condition = copy.deepcopy(item.condition)
+        input_condition["enabled"] = True
+        config["input_condition"] = input_condition
+    if disable_sweep:
+        sweep = config.setdefault("sweep", {})
+        if not isinstance(sweep, dict):
+            raise TypeError("sweep must be a dictionary")
+        sweep["enabled"] = False
+    return config
+
+
 def generate_sweep_configs(
     base_config: dict[str, Any],
     cli_sweep_items: list[str] | None = None,
@@ -99,23 +191,15 @@ def generate_sweep_configs(
     include_colour_ablation: bool = False,
 ) -> list[dict[str, Any]]:
     """Expand exactly one sweep layer into independent deep-copied configs."""
-    cli_sweep_items = cli_sweep_items or []
-    if len(cli_sweep_items) > 0:
-        parameters = get_sweep_parameters_from_cli(cli_sweep_items)
-    elif include_colour_ablation:
-        parameters = get_colour_sweep_parameters_from_config(base_config)
-    else:
-        parameters = get_sweep_parameters_from_config(base_config)
-
-    if len(parameters) == 0:
+    items = expand_sweep_items(
+        base_config,
+        cli_sweep_items,
+        include_colour_ablation=include_colour_ablation,
+    )
+    if (
+        len(items) == 1
+        and not items[0].assignments
+        and items[0].condition is None
+    ):
         return [base_config]
-
-    keys = list(parameters)
-    values = [parameters[key] for key in keys]
-    configs: list[dict[str, Any]] = []
-    for combination in itertools.product(*values):
-        config = copy.deepcopy(base_config)
-        for key, value in zip(keys, combination):
-            set_nested(config, key, value)
-        configs.append(config)
-    return configs
+    return [apply_sweep_item(base_config, item) for item in items]
