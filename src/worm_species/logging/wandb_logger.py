@@ -584,11 +584,7 @@ def create_wandb_logger(
         if isinstance(wandb_cfg, Mapping)
         else None
     ) or os.getenv("WANDB_ENTITY") or None
-    configured_name = (
-        wandb_cfg.get("name")
-        if isinstance(wandb_cfg, Mapping)
-        else None
-    ) or os.getenv("WANDB_NAME") or str(run_name)
+    configured_name = str(wandb_cfg.get("name")) + "_" + str(run_name)
     group = (
         wandb_cfg.get("group")
         if isinstance(wandb_cfg, Mapping)

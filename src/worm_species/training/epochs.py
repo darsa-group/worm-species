@@ -165,8 +165,10 @@ def run_hierarchy_epoch(
         if complete_mask.any():
             complete_exact_total += int(complete_mask.sum().item())
             complete_exact_correct += int((complete_correct & complete_mask).sum().item())
-
-    metrics = {"loss": float(np.mean(losses)) if losses else float("nan")}
+    metrics = {}
+    for task in tasks:
+        metrics[f"{task}_loss"] = float(task_losses[task][-1]) if task_losses[task] else float("nan")
+    metrics["loss"] = float(np.mean(losses)) if losses else float("nan")
     if use_hierarchy_loss:
         metrics["hierarchy_loss"] = (
             float(np.mean(hierarchy_losses)) if hierarchy_losses else float("nan")

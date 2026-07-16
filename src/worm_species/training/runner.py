@@ -53,6 +53,132 @@ def make_experiment_run_name(cfg: dict, profile: TrainingProfile) -> str:
     return resolved_run_name(cfg, profile)
 
 
+def run_test_evaluation(
+    *,
+    checkpoint_name: str,
+    checkpoint_path: Path,
+    write_legacy_outputs: bool,
+    run_name: str,
+    out_dir: Path,
+    model: torch.nn.Module,
+    bundle,
+    criteria,
+    device: torch.device,
+    use_amp: bool,
+    weights: dict[str, float],
+    normalize: bool,
+    hierarchy_cfg: dict,
+    matrix: torch.Tensor | None,
+    profile: TrainingProfile,
+    wandb_logger,
+    input_condition: dict,
+) -> tuple[dict, dict[str, list[int]], dict[str, list[int]]]:
+    """Evaluate one checkpoint on the test split and save its outputs."""
+    checkpoint = load_checkpoint(checkpoint_path, map_location=device)
+    model.load_state_dict(checkpoint["model_state"])
+
+    test_metrics, true, pred = run_hierarchy_epoch(
+        model,
+        bundle.test_loader,
+        criteria,
+        None,
+        device,
+        False,
+        None,
+        use_amp,
+        weights,
+        normalize,
+        hierarchy_cfg,
+        matrix,
+        profile.masked_labels,
+    )
+
+    wandb_condition = (
+       f"original_{checkpoint_name}"
+    )
+
+    for task in bundle.target_cols:
+        labels = list(range(len(bundle.index_to_label_by_task[task])))
+        names = [bundle.index_to_label_by_task[task][index] for index in labels]
+        y_true = np.asarray(true[task], dtype=int)
+        y_pred = np.asarray(pred[task], dtype=int)
+
+        report_path = (
+            out_dir / f"classification_report_{checkpoint_name}_{task}.csv"
+        )
+        matrix_path = out_dir / f"confusion_matrix_{checkpoint_name}_{task}.csv"
+
+        if not len(y_true):
+            empty_report = pd.DataFrame(
+                [{"note": "No labelled test examples for this task."}]
+            )
+            empty_report.to_csv(report_path, index=False)
+            pd.DataFrame().to_csv(matrix_path)
+
+            if write_legacy_outputs:
+                empty_report.to_csv(
+                    out_dir / f"classification_report_{task}.csv",
+                    index=False,
+                )
+                pd.DataFrame().to_csv(out_dir / f"confusion_matrix_{task}.csv")
+            continue
+
+        report = classification_report(
+            y_true,
+            y_pred,
+            labels=labels,
+            target_names=names,
+            output_dict=True,
+            zero_division=0,
+        )
+        matrix_frame = confusion_matrix(y_true, y_pred, labels=labels)
+        report_frame = pd.DataFrame(report).transpose()
+        confusion_frame = pd.DataFrame(
+            matrix_frame,
+            index=names,
+            columns=names,
+        )
+
+        report_frame.to_csv(report_path)
+        confusion_frame.to_csv(matrix_path)
+
+        if write_legacy_outputs:
+            report_frame.to_csv(out_dir / f"classification_report_{task}.csv")
+            confusion_frame.to_csv(out_dir / f"confusion_matrix_{task}.csv")
+
+        wandb_logger.log_classification_report(
+            condition=wandb_condition,
+            task=task,
+            report=report,
+            metrics=test_metrics,
+            train_condition=input_condition,
+        )
+        wandb_logger.log_confusion_matrix(
+            condition=wandb_condition,
+            task=task,
+            y_true=y_true,
+            y_pred=y_pred,
+            class_names=names,
+            title=f"Confusion Matrix ({checkpoint_name}, {task})",
+        )
+
+    metrics_path = out_dir / f"test_metrics_{checkpoint_name}.json"
+    save_json(test_metrics, metrics_path)
+    if write_legacy_outputs:
+        save_json(test_metrics, out_dir / "test_metrics.json")
+
+    wandb_logger.log_test_condition(
+        wandb_condition,
+        test_metrics,
+        train_condition=input_condition,
+    )
+    print(
+        f"[{run_name}] {checkpoint_name.capitalize()} checkpoint test "
+        f"mean macro-F1: {test_metrics.get('mean_macro_f1', float('nan')):.4f}"
+    )
+    return test_metrics, true, pred
+
+
 def run_one(cfg: dict, profile: TrainingProfile) -> dict:
     """Run exactly one resolved configuration; never generate another config."""
     set_seed(cfg["seed"])
@@ -321,81 +447,69 @@ def run_one(cfg: dict, profile: TrainingProfile) -> dict:
             break
 
     pd.DataFrame(history).to_csv(out_dir / "history.csv", index=False)
-    checkpoint = load_checkpoint(
-        out_dir / "best_model.pt",
-        map_location=device,
+    payload = build_checkpoint_payload(
+        profile=profile,
+        model_state=model.state_dict(),
+        cfg=cfg,
+        label_to_index_by_task=bundle.label_to_index_by_task,
+        index_to_label_by_task=bundle.index_to_label_by_task,
+        best_val_score=best,
+        selection_metric=selection,
+        best_epoch=best_epoch,
+        colour_retention=colour_retention,
+        colour_percent=colour_percent,
+        training_condition=input_condition,
     )
-    model.load_state_dict(checkpoint["model_state"])
-    test_metrics, true, pred = run_hierarchy_epoch(
-        model,
-        bundle.test_loader,
-        criteria,
-        None,
-        device,
-        False,
-        None,
-        use_amp,
-        weights,
-        normalize,
-        hierarchy_cfg,
-        matrix,
-        profile.masked_labels,
+    save_checkpoint(payload, out_dir / "last_model.pt")
+    wandb_logger.update_best(
+        best_epoch=best_epoch,
+        best_val_score=best,
+        selection_metric=selection,
+    )
+    print(
+        f"[{run_name}] Last model saved"
+    )
+    # Evaluate the final checkpoint first, then the best checkpoint. This leaves
+    # ``model`` loaded with the best weights for stress and condition evaluation.
+    last_test_metrics, _, _ = run_test_evaluation(
+        checkpoint_name="last",
+        checkpoint_path=out_dir / "last_model.pt",
+        write_legacy_outputs=False,
+        run_name=run_name,
+        out_dir=out_dir,
+        model=model,
+        bundle=bundle,
+        criteria=criteria,
+        device=device,
+        use_amp=use_amp,
+        weights=weights,
+        normalize=normalize,
+        hierarchy_cfg=hierarchy_cfg,
+        matrix=matrix,
+        profile=profile,
+        wandb_logger=wandb_logger,
+        input_condition=input_condition,
+    )
+    test_metrics, true, pred = run_test_evaluation(
+        checkpoint_name="best",
+        checkpoint_path=out_dir / "best_model.pt",
+        write_legacy_outputs=True,
+        run_name=run_name,
+        out_dir=out_dir,
+        model=model,
+        bundle=bundle,
+        criteria=criteria,
+        device=device,
+        use_amp=use_amp,
+        weights=weights,
+        normalize=normalize,
+        hierarchy_cfg=hierarchy_cfg,
+        matrix=matrix,
+        profile=profile,
+        wandb_logger=wandb_logger,
+        input_condition=input_condition,
     )
 
-    for task in bundle.target_cols:
-        labels = list(range(len(bundle.index_to_label_by_task[task])))
-        names = [bundle.index_to_label_by_task[task][index] for index in labels]
-        y_true = np.array(true[task], dtype=int)
-        y_pred = np.array(pred[task], dtype=int)
-        if not len(y_true):
-            pd.DataFrame(
-                [{"note": "No labelled test examples for this task."}]
-            ).to_csv(
-                out_dir / f"classification_report_{task}.csv",
-                index=False,
-            )
-            pd.DataFrame().to_csv(out_dir / f"confusion_matrix_{task}.csv")
-            continue
-
-        report = classification_report(
-            y_true,
-            y_pred,
-            labels=labels,
-            target_names=names,
-            output_dict=True,
-            zero_division=0,
-        )
-        matrix_frame = confusion_matrix(y_true, y_pred, labels=labels)
-        pd.DataFrame(report).transpose().to_csv(
-            out_dir / f"classification_report_{task}.csv"
-        )
-        pd.DataFrame(
-            matrix_frame,
-            index=names,
-            columns=names,
-        ).to_csv(out_dir / f"confusion_matrix_{task}.csv")
-        wandb_logger.log_classification_report(
-            condition="original",
-            task=task,
-            report=report,
-            metrics=test_metrics,
-            train_condition=input_condition,
-        )
-        wandb_logger.log_confusion_matrix(
-            condition="original",
-            task=task,
-            y_true=y_true,
-            y_pred=y_pred,
-            class_names=names,
-            title=f"Confusion Matrix ({task})",
-        )
-
-    save_json(test_metrics, out_dir / "test_metrics.json")
-    wandb_logger.log_test_condition(
-        "original",
-        test_metrics,
-        train_condition=input_condition,
-    )
     if profile.loader_mode == "colour":
         test_mean_macro_f1 = float(
             test_metrics.get("mean_macro_f1", float("nan"))
@@ -404,8 +518,8 @@ def run_one(cfg: dict, profile: TrainingProfile) -> dict:
             wandb_logger.alert(
                 title="Test macro-F1 reached 0.90",
                 text=(
-                    f"Run {run_name} achieved test/mean_macro_f1 = "
-                    f"{test_mean_macro_f1:.4f}"
+                    f"Run {run_name} achieved best-checkpoint "
+                    f"test/mean_macro_f1 = {test_mean_macro_f1:.4f}"
                 ),
             )
 
@@ -416,6 +530,27 @@ def run_one(cfg: dict, profile: TrainingProfile) -> dict:
             run_name=run_name,
             out_dir=out_dir,
             model=model,
+            checkpoint_name="best",
+            checkpoint_path=out_dir / "best_model.pt",
+            baseline_metrics=test_metrics,
+            test_loader_context=bundle.test_loader_context,
+            criteria=criteria,
+            target_cols=bundle.target_cols,
+            device=device,
+            use_amp=use_amp,
+            task_loss_weights=weights,
+            normalize_loss_by_active_tasks=normalize,
+            hierarchy_cfg=hierarchy_cfg,
+            child_to_parent_matrix=matrix,
+            wandb_logger=wandb_logger,
+        )
+        stress = evaluate_test_cue_suppression(
+            cfg=cfg,
+            run_name=run_name,
+            out_dir=out_dir,
+            model=model,
+            checkpoint_name="last",
+            checkpoint_path=out_dir / "last_model.pt",
             baseline_metrics=test_metrics,
             test_loader_context=bundle.test_loader_context,
             criteria=criteria,
@@ -474,6 +609,7 @@ def run_one(cfg: dict, profile: TrainingProfile) -> dict:
         "best_val_score": best,
         "selection_metric": selection,
         **{f"test_{key}": value for key, value in test_metrics.items()},
+        **{f"last_test_{key}": value for key, value in last_test_metrics.items()},
     }
     if profile.loader_mode == "colour":
         result = {
@@ -485,6 +621,10 @@ def run_one(cfg: dict, profile: TrainingProfile) -> dict:
             "best_val_score": best,
             "selection_metric": selection,
             **{f"test_{key}": value for key, value in test_metrics.items()},
+            **{
+                f"last_test_{key}": value
+                for key, value in last_test_metrics.items()
+            },
         }
     elif profile.loader_mode == "condition":
         result = {
@@ -527,6 +667,10 @@ def run_one(cfg: dict, profile: TrainingProfile) -> dict:
                 "task_metrics_path"
             ),
             **{f"test_{key}": value for key, value in test_metrics.items()},
+            **{
+                f"last_test_{key}": value
+                for key, value in last_test_metrics.items()
+            },
         }
 
     if profile.run_summary:
@@ -536,6 +680,8 @@ def run_one(cfg: dict, profile: TrainingProfile) -> dict:
         "best_epoch": best_epoch,
         "best_val_score": best,
         "selection_metric": selection,
+        f"best_test_{selection}": test_metrics.get(selection),
+        f"last_test_{selection}": last_test_metrics.get(selection),
     }
     if profile.loader_mode in {"colour", "condition"}:
         summary.update({
@@ -552,10 +698,13 @@ def run_one(cfg: dict, profile: TrainingProfile) -> dict:
     artifact_paths = [
         out_dir / "config.json",
         out_dir / "test_metrics.json",
+        out_dir / "test_metrics_best.json",
+        out_dir / "test_metrics_last.json",
         out_dir / "split_summary.json",
         out_dir / "label_to_index_by_task.json",
         out_dir / "run_summary.json",
         out_dir / "best_model.pt",
+        out_dir / "last_model.pt",
         *sorted(out_dir.glob("classification_report_*.csv")),
         *sorted(out_dir.glob("confusion_matrix_*.csv")),
     ]
@@ -569,6 +718,8 @@ def run_one(cfg: dict, profile: TrainingProfile) -> dict:
     )
     wandb_logger.finalise_run(status="completed", summary=summary)
 
-    print("\nTest metrics:")
+    print("\nBest-checkpoint test metrics:")
     print(test_metrics)
+    print("\nLast-checkpoint test metrics:")
+    print(last_test_metrics)
     return result

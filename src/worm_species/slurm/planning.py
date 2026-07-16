@@ -10,6 +10,8 @@ from typing import Any
 
 import yaml
 
+from datetime import datetime
+
 from ..config.overrides import apply_overrides
 from ..config.normalization import normalize_config
 from ..config.sweeps import expand_sweep_items
@@ -186,8 +188,8 @@ def generate_external_specs(
             )
         )
         condition_name = "original"
-        run_id = f"run_{index:03d}"
-
+        run_id = f"run_{index:03d}_{model}_{condition_name}_{datetime.now().strftime('%Y%m%d%H%M%S')}"
+            
         if item.condition is not None:
             condition = _legacy_condition(item.condition)
             condition_name = str(condition["condition"])

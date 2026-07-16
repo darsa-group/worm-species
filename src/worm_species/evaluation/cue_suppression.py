@@ -13,7 +13,7 @@ import pandas as pd
 import torch
 from torch import nn
 from torch.utils.data import DataLoader
-
+from ..training.checkpoints import load_checkpoint
 from ..data.datasets import MultiTaskWormImageDataset
 from ..data.transforms import build_split_transform
 from ..results.writing import save_json
@@ -323,6 +323,8 @@ def evaluate_test_cue_suppression(
     run_name: str,
     out_dir: Path,
     model: nn.Module,
+    checkpoint_name: str,
+    checkpoint_path: Path,
     baseline_metrics: dict,
     test_loader_context: dict,
     criteria: dict[str, nn.Module],
@@ -340,13 +342,19 @@ def evaluate_test_cue_suppression(
     if not conditions:
         return {
             "enabled": False,
+            "checkpoint": checkpoint_name,
             "n_conditions": 0,
         }
 
-    cue_dir = out_dir / "cue_suppression"
+    cue_dir = out_dir / f"{checkpoint_name}_cue_suppression"
     cue_dir.mkdir(parents=True, exist_ok=True)
+
     save_json(
-        cfg.get("test_cue_suppression", {}) or {},
+        {
+            "checkpoint": checkpoint_name,
+            "checkpoint_path": str(checkpoint_path),
+            "configuration": cfg.get("test_cue_suppression", {}) or {},
+        },
         cue_dir / "cue_suppression_config.json",
     )
 
@@ -371,30 +379,47 @@ def evaluate_test_cue_suppression(
     condition_metric_rows = []
     ratio_rows = []
 
-    def record_condition(condition: dict, metrics: dict, reused: bool) -> None:
+    def record_condition(
+        condition: dict,
+        metrics: dict,
+        reused: bool,
+    ) -> None:
+        parameters = json.dumps(
+            {
+                key: value
+                for key, value in condition.items()
+                if key not in {
+                    "condition",
+                    "feature",
+                    "transform",
+                    "strength",
+                }
+            },
+            sort_keys=True,
+        )
+
         condition_metric_rows.append({
             "run_name": run_name,
+            "checkpoint": checkpoint_name,
             "model": cfg.get("model", {}).get("name"),
             "condition": condition["condition"],
             "feature": condition["feature"],
             "transform": condition["transform"],
             "strength": condition.get("strength"),
-            "parameters": json.dumps(
-                {
-                    key: value
-                    for key, value in condition.items()
-                    if key not in {"condition", "feature", "transform", "strength"}
-                },
-                sort_keys=True,
-            ),
+            "parameters": parameters,
             "reused_identical_evaluation": bool(reused),
             **metrics,
         })
 
         for task in target_cols:
             metric_key = f"{task}_macro_f1"
-            transformed_score = float(metrics.get(metric_key, float("nan")))
-            original_score = float(baseline_metrics.get(metric_key, float("nan")))
+            transformed_score = float(
+                metrics.get(metric_key, float("nan"))
+            )
+            original_score = float(
+                baseline_metrics.get(metric_key, float("nan"))
+            )
+
             if (
                 math.isnan(transformed_score)
                 or math.isnan(original_score)
@@ -406,28 +431,36 @@ def evaluate_test_cue_suppression(
 
             ratio_rows.append({
                 "run_name": run_name,
+                "checkpoint": checkpoint_name,
                 "model": cfg.get("model", {}).get("name"),
                 "task": task,
                 "condition": condition["condition"],
                 "feature": condition["feature"],
                 "transform": condition["transform"],
                 "strength": condition.get("strength"),
-                "parameters": json.dumps(
-                    {
-                        key: value
-                        for key, value in condition.items()
-                        if key not in {"condition", "feature", "transform", "strength"}
-                    },
-                    sort_keys=True,
-                ),
+                "parameters": parameters,
                 "n": metrics.get(f"{task}_n"),
                 "macro_f1": transformed_score,
                 "original_macro_f1": original_score,
                 "ratio_to_original": ratio,
-                "relative_drop": 1.0 - ratio if not math.isnan(ratio) else float("nan"),
+                "relative_drop": (
+                    1.0 - ratio
+                    if not math.isnan(ratio)
+                    else float("nan")
+                ),
             })
 
-    record_condition(original_condition, baseline_metrics, reused=True)
+    record_condition(
+        original_condition,
+        baseline_metrics,
+        reused=True,
+    )
+
+    checkpoint = load_checkpoint(
+        checkpoint_path,
+        map_location=device,
+    )
+    model.load_state_dict(checkpoint["model_state"])
 
     for condition_index, condition in enumerate(conditions, start=1):
         signature = _test_condition_signature(
@@ -435,17 +468,21 @@ def evaluate_test_cue_suppression(
             original_colour_retention,
         )
         reused = signature in metric_cache
+
         if reused:
             metrics = metric_cache[signature]
             print(
-                f"Cue test {condition_index}/{len(conditions)}: "
+                f"[{checkpoint_name}] Cue test "
+                f"{condition_index}/{len(conditions)}: "
                 f"{condition['condition']} reuses an identical evaluation."
             )
         else:
             print(
-                f"Cue test {condition_index}/{len(conditions)}: "
+                f"[{checkpoint_name}] Cue test "
+                f"{condition_index}/{len(conditions)}: "
                 f"{condition['condition']}"
             )
+
             condition_loader = make_test_condition_loader(
                 test_loader_context,
                 condition,
@@ -460,24 +497,41 @@ def evaluate_test_cue_suppression(
                 scaler=None,
                 use_amp=use_amp,
                 task_loss_weights=task_loss_weights,
-                normalize_loss_by_active_tasks=normalize_loss_by_active_tasks,
+                normalize_loss_by_active_tasks=(
+                    normalize_loss_by_active_tasks
+                ),
                 hierarchy_cfg=hierarchy_cfg,
                 child_to_parent_matrix=child_to_parent_matrix,
             )
             metric_cache[signature] = metrics
 
-        record_condition(condition, metrics, reused=reused)
+        record_condition(
+            condition,
+            metrics,
+            reused=reused,
+        )
 
     condition_metrics_df = pd.DataFrame(condition_metric_rows)
     ratios_df = pd.DataFrame(ratio_rows)
+
     condition_metrics_path = cue_dir / "test_condition_metrics.csv"
     ratios_path = cue_dir / "macro_f1_ratios.csv"
+
     condition_metrics_df.to_csv(condition_metrics_path, index=False)
     ratios_df.to_csv(ratios_path, index=False)
 
     feature_summary = (
         ratios_df[ratios_df["condition"] != "original"]
-        .groupby(["model", "task", "feature", "transform"], dropna=False)
+        .groupby(
+            [
+                "checkpoint",
+                "model",
+                "task",
+                "feature",
+                "transform",
+            ],
+            dropna=False,
+        )
         .agg(
             mean_ratio_to_original=("ratio_to_original", "mean"),
             minimum_ratio_to_original=("ratio_to_original", "min"),
@@ -486,6 +540,7 @@ def evaluate_test_cue_suppression(
         )
         .reset_index()
     )
+
     feature_summary_path = cue_dir / "transform_summary.csv"
     feature_summary.to_csv(feature_summary_path, index=False)
 
@@ -495,13 +550,26 @@ def evaluate_test_cue_suppression(
             ratios_df,
             transform_summary=feature_summary,
         )
+
         identity_columns = {
-            "run_name", "model", "condition", "feature", "transform",
-            "strength", "parameters", "reused_identical_evaluation",
+            "run_name",
+            "checkpoint",
+            "model",
+            "condition",
+            "feature",
+            "transform",
+            "strength",
+            "parameters",
+            "reused_identical_evaluation",
         }
+
         for row in condition_metric_rows:
+            condition_identifier = (
+                f"{checkpoint_name}/{row['condition']}"
+            )
+
             wandb_logger.log_test_condition(
-                str(row["condition"]),
+                condition_identifier,
                 {
                     key: value
                     for key, value in row.items()
@@ -511,9 +579,14 @@ def evaluate_test_cue_suppression(
                 update_summary=False,
             )
 
-    print(f"Saved cue-suppression metrics to {cue_dir}")
+    print(
+        f"Saved {checkpoint_name} cue-suppression metrics to {cue_dir}"
+    )
+
     return {
         "enabled": True,
+        "checkpoint": checkpoint_name,
+        "checkpoint_path": str(checkpoint_path),
         "n_conditions": int(len(condition_metric_rows)),
         "n_unique_evaluations": int(len(metric_cache)),
         "condition_metrics_path": str(condition_metrics_path),

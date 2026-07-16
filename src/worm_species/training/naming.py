@@ -19,12 +19,13 @@ def short_hash(obj: Any, length: int = 8) -> str:
 def make_run_name(cfg: dict[str, Any]) -> str:
     """Build the byte-compatible historical run-directory name."""
     parts = [
-        cfg["model"]["name"],
-        cfg["data"]["image_col"],
-        cfg["data"]["target_col"],
+         'lr',
+        cfg['training']['lr'],
+        'hloss',
+        cfg['multi_task']['hierarchy_loss']['enabled'],
         short_hash(cfg),
     ]
-    return "__".join(str(part) for part in parts)
+    return "_".join(str(part) for part in parts)
 
 
 __all__ = ["make_run_name", "short_hash"]

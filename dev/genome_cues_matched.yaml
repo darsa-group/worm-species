@@ -12,13 +12,13 @@ training:
   use_amp: true
   class_weight: true
   num_workers: 6
-  val_interval: 5
+  val_interval: 10
 
 early_stopping:
   enabled: true
   monitor: macro_f1
   mode: max
-  patience: 6
+  patience: 3
   min_delta: 0.0001
 
 multi_task:
@@ -74,15 +74,39 @@ sweep:
     early_stopping.enabled:
       - true
       - false
-    multi_task.loss_weights.genus:
-      - 0.5
-      - 1.0
-    multi_task.loss_weights.species:
-      - 0.5
-      - 1.0
-    multi_task.loss_weights.age:
-      - 0.5
-      - 1.0
+    weignt_decay:
+      - 0.0001
+      - 0.0005
+    multi_task.loss_weights:
+      - genus: 1.0
+        species: 0.5
+        age: 2.0
+
+      - genus: 0.5
+        species: 1.0
+        age: 2.0
+
+      - genus: 1.0
+        species: 2.0
+        age: 0.5
+
+      - genus: 2.0
+        species: 1.0
+        age: 0.5
+
+      - genus: 1.0
+        species: 1.0
+        age: 1.0
+
+    # multi_task.loss_weights.genus:
+    #   - 0.5
+    #   - 1.0
+    # multi_task.loss_weights.species:
+    #   - 0.5
+    #   - 1.0
+    # multi_task.loss_weights.age:
+    #   - 0.5
+    #   - 1.0
 
   conditions:
     - {name: original, feature: baseline, transform: original, strength: 0.0, parameters: {}}
@@ -94,7 +118,6 @@ sweep:
       parameter: retention
       range: {start: 1.0, stop: 0.0, step: -0.1}
 
-    - {name: grayscale, feature: colour, transform: grayscale, strength: 1.0, parameters: {}}
 
     - name: channel_shuffle_201
       feature: colour

@@ -2,26 +2,16 @@ from __future__ import annotations
 
 from copy import deepcopy
 from typing import Any
-
+import yaml
 
 def parse_scalar(value: str) -> Any:
     """Parse the scalar syntax accepted by the legacy dotted-key CLI."""
     value = value.strip()
 
-    if value.lower() in {"true", "false"}:
-        return value.lower() == "true"
-    if value.lower() in {"none", "null"}:
-        return None
-
     try:
-        return int(value)
-    except ValueError:
-        pass
-
-    try:
-        return float(value)
-    except ValueError:
-        return value
+        return yaml.safe_load(value)
+    except yaml.YAMLError as exc:
+        raise ValueError(f"Invalid override value: {value!r}") from exc
 
 
 def set_nested(config: dict[str, Any], key: str, value: Any) -> None:

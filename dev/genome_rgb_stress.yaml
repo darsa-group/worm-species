@@ -3,9 +3,21 @@
 # evaluates each checkpoint on 24 conditions; it does not fit one model per
 # test condition.
 extends: genome_cues_matched.yaml
+multi_task:
+  hierarchy_loss:
+    enabled: true
+    parent_task: genus
+    child_task: species
+    weight: 0.5
 
 sweep:
-  # YAML lists replace inherited lists, so original is the sole train condition.
+  parameters:
+    multi_task.hierarchy_loss.weight:
+      - 0.0
+      - 0.1
+      - 0.5
+      - 1.0
+
   conditions:
     - name: original
       feature: baseline

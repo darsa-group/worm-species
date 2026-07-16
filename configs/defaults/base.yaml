@@ -142,7 +142,7 @@ training:
   use_amp: true
   class_weight: true
   num_workers: 6
-  val_interval: 5
+  val_interval: 10
 
 output:
   out_dir: "outputs"

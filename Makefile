@@ -3,14 +3,14 @@
 PYTHON ?= python
 EXPERIMENT ?= standard
 CONFIG ?= configs/experiments/$(EXPERIMENT).yaml
-CLUSTER ?= configs/clusters/local.yaml
+CLUSTER ?= configs/clusters/genome.yaml
 TRAIN_CONFIG ?= config.yaml
-RESULTS_ROOT ?= outputs_slurm
+RESULTS_ROOT ?= output_allrun
 SLURM_RESULTS_ROOT ?= $(RESULTS_ROOT)
 SINGLE_TASK_RESULTS_ROOT ?= single_task/outputs
 MAX_ACTIVE ?=
 MODEL ?=
-ARTIFACTS_DIR ?= slurm/generated/plan-$(shell date -u +%Y%m%dT%H%M%S%N)
+ARTIFACTS_DIR ?= logs/generated/plan-$(shell date -u +%Y%m%dT%H%M%S%N)
 DASHBOARD_INDEX ?= .cache/worm-species-dashboard/index.sqlite3
 DASHBOARD_DERIVED ?= .cache/worm-species-dashboard/derived
 WIZARD_OUTPUT ?= configs/experiments/interactive.yaml
@@ -31,7 +31,7 @@ TRAIN_OVERRIDE_VALUES = sweep.enabled=false \
 TRAIN_OVERRIDE_ARGS = $(if $(strip $(TRAIN_OVERRIDE_VALUES)),--override $(TRAIN_OVERRIDE_VALUES),)
 
 .PHONY: help configure validate inspect dry-run train submit status collect dashboard-prepare dashboard \
-	test test-unit test-contracts test-integration clean-generated
+	test test-unit test-contracts test-integration clean-generated run-dev
 
 help: ## Show the supported repository commands.
 	@echo "Worm Species commands"
@@ -51,6 +51,7 @@ help: ## Show the supported repository commands.
 	@echo "  make test-contracts     Run compatibility and behaviour contracts."
 	@echo "  make test-integration   Run lightweight integration tests."
 	@echo "  make clean-generated    Remove only generated plans/local indexes."
+	@echo "  make run-dev Clean the output folder and run all configs in dev folder"
 	@echo
 	@echo "Variables: CONFIG CLUSTER TRAIN_CONFIG RESULTS_ROOT MAX_ACTIVE MODEL"
 	@echo "           EXPERIMENT (standard, hierarchy, dual_cue, colour_ablation,"
@@ -103,6 +104,14 @@ dashboard: ## Launch the read-only Streamlit result browser.
 		--source "slurm=$(SLURM_RESULTS_ROOT)" \
 		--source "single_task=$(SINGLE_TASK_RESULTS_ROOT)" \
 		--cache "$(DASHBOARD_INDEX)" --derived-cache "$(DASHBOARD_DERIVED)"
+
+run-dev:
+	@rm -rf $(RESULTS_ROOT)
+	@rm -rf logs/generated/plan*
+	@for config in dev/*.yaml; do \
+		echo "Running $$config"; \
+		$(MAKE) submit CONFIG="$$config"; \
+	done
 
 test: ## Run every standard-library test without external data or GPUs.
 	PYTHONPATH=.:src $(PYTHON) -m unittest discover -s tests -p 'test_*.py'
