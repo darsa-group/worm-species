@@ -37,10 +37,14 @@ def _canonical_hash(config: dict) -> str:
 
 
 class SimplifiedConfigurationHierarchyContracts(unittest.TestCase):
-    def test_quick_start_is_short_and_exposes_only_common_choices(self) -> None:
+    def test_quick_start_is_safe_and_documents_optional_choices(self) -> None:
         lines = ROOT_CONFIG.read_text(encoding="utf-8").splitlines()
         self.assertGreaterEqual(len(lines), 55)
-        self.assertLessEqual(len(lines), 70)
+        self.assertLessEqual(len(lines), 230)
+        text = "\n".join(lines)
+        self.assertIn("OPTIONAL CHILD-CONFIG EXAMPLES", text)
+        self.assertIn("saturation_{percent:03d}pct", text)
+        self.assertIn("model.name: [convnext_base, vit_b_16]", text)
         raw = yaml.safe_load("\n".join(lines))
         self.assertEqual(raw["extends"], "configs/defaults/base.yaml")
         self.assertEqual(

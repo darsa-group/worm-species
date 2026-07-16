@@ -66,3 +66,137 @@ evaluation:
 
 # Training expansion is parameter product x complete condition objects.
 sweep: {enabled: false, parameters: {}}
+
+# -----------------------------------------------------------------------------
+# OPTIONAL CHILD-CONFIG EXAMPLES (comments only; they do not change this run)
+# Copy only the sections you need into a YAML file under configs/experiments/.
+# See devconfig.md for a validated Genome example and config.md for every key.
+# -----------------------------------------------------------------------------
+
+# Dataset, label, crop, and predefined-split options:
+# data:
+#   image_col: rel_path_seg
+#   mask_col: rel_path_segmask
+#   group_col: barcode
+#   crop_to_foreground: false
+#   crop_pad: 0.15
+#   min_individuals_per_class: 3
+#   min_individuals_per_class_by_task: {genus: 3, species: 3, age: 3}
+#   target_cols: {genus: genus, species: species_label, age: life_stage}
+# split:
+#   use_predefined_splits: true
+#   predefined_split_dir: split_csv
+#   save_splits: false
+#   test_size: 0.20
+#   val_size: 0.15
+
+# Model and optimiser choices:
+# model: {name: convnext_base, pretrained: true, freeze_backbone: false}
+# training:
+#   epochs: 200
+#   batch_size: 256
+#   lr: 0.0005
+#   weight_decay: 0.0001
+#   use_amp: true
+#   class_weight: true
+#   num_workers: 6
+#   val_interval: 5
+
+# Early stopping can be enabled, disabled, or swept externally:
+# early_stopping:
+#   enabled: true
+#   monitor: macro_f1
+#   mode: max
+#   patience: 6
+#   min_delta: 0.0001
+
+# Task weights and optional genus/species hierarchy consistency:
+# multi_task:
+#   loss_weights: {genus: 1.0, species: 0.5, age: 2.0}
+#   normalize_loss_by_active_tasks: true
+#   selection_metric: mean_macro_f1
+#   hierarchy_loss:
+#     enabled: true
+#     parent_task: genus
+#     child_task: species
+#     weight: 0.5
+
+# W&B is independent of training behavior. Offline avoids network access.
+# wandb:
+#   enabled: true
+#   project: worm-species-genome-cues
+#   entity: null
+#   group: genome-cues
+#   name: null
+#   mode: online  # online, offline, disabled, dryrun, run, shared, or null
+#   job_type: train
+#   tags: [multitask, genome, cues]
+#   save_code: true
+#   log_model: false
+
+# Generic parameter sweep. Every list participates in the Cartesian product.
+# Keep correlated task-weight recipes in separate child configs unless the full
+# Cartesian product is intentional.
+# sweep:
+#   enabled: true
+#   parameters:
+#     model.name: [convnext_base, vit_b_16]
+#     training.lr: [0.0005, 0.0001]
+#     early_stopping.patience: [4, 8, 12]
+#     multi_task.loss_weights.genus: [0.5, 1.0]
+#     multi_task.loss_weights.species: [0.5, 1.0]
+#     multi_task.loss_weights.age: [1.0, 2.0]
+
+# Complete training conditions. Use these beneath sweep.conditions; never split
+# transform names and their parameters into unrelated Cartesian lists.
+#   conditions:
+#     - {name: original, feature: baseline, transform: original, strength: 0.0, parameters: {}}
+#     - name_template: saturation_{percent:03d}pct
+#       feature: colour
+#       transform: saturation
+#       parameter: retention
+#       range: {start: 1.0, stop: 0.0, step: -0.01}  # 100% through 0%, inclusive
+#     - {name: grayscale, feature: colour, transform: grayscale, strength: 1.0, parameters: {}}
+#     - {name: channel_shuffle_201, feature: colour, transform: channel_shuffle, strength: 1.0, parameters: {order: [2, 0, 1]}}
+#     - {name: bilateral_d5_c25_s25, feature: texture, transform: bilateral_filter, strength: 25.0, parameters: {diameter: 5, sigma_colour: 25.0, sigma_space: 25.0}}
+#     - {name: bilateral_d7_c50_s50, feature: texture, transform: bilateral_filter, strength: 50.0, parameters: {diameter: 7, sigma_colour: 50.0, sigma_space: 50.0}}
+#     - {name: bilateral_d9_c100_s100, feature: texture, transform: bilateral_filter, strength: 100.0, parameters: {diameter: 9, sigma_colour: 100.0, sigma_space: 100.0}}
+#     - {name: gaussian_sigma_0.5, feature: texture, transform: gaussian_blur, strength: 0.5, parameters: {sigma: 0.5}}
+#     - {name: gaussian_sigma_1, feature: texture, transform: gaussian_blur, strength: 1.0, parameters: {sigma: 1.0}}
+#     - {name: gaussian_sigma_2, feature: texture, transform: gaussian_blur, strength: 2.0, parameters: {sigma: 2.0}}
+#     - {name: gaussian_sigma_4, feature: texture, transform: gaussian_blur, strength: 4.0, parameters: {sigma: 4.0}}
+#     - {name: patch_shuffle_grid_2, feature: shape, transform: patch_shuffle, strength: 2, parameters: {grid_size: 2, seed: 2026}}
+#     - {name: patch_shuffle_grid_4, feature: shape, transform: patch_shuffle, strength: 4, parameters: {grid_size: 4, seed: 2026}}
+#     - {name: patch_shuffle_grid_8, feature: shape, transform: patch_shuffle, strength: 8, parameters: {grid_size: 8, seed: 2026}}
+
+# One resolved condition passed to one trainer process (normally planner-owned):
+# input_condition:
+#   enabled: true
+#   name: gaussian_sigma_2
+#   feature: texture
+#   transform: gaussian_blur
+#   strength: 2.0
+#   parameters: {sigma: 2.0}
+
+# Post-training evaluation does not create additional model fits:
+# evaluation:
+#   test_conditions:
+#     enabled: true
+#     evaluate_original_training: true
+#     conditions: [grayscale, gaussian_sigma_2, patch_shuffle_grid_4]
+#   condition_matrix:
+#     enabled: true
+#     conditions: [original, grayscale, gaussian_sigma_2, patch_shuffle_grid_4]
+#     write_reports: true
+
+# Output and cache options:
+# output: {out_dir: outputs}
+# cache:
+#   enabled: true
+#   dir: cache/images
+#   format: png
+#   rebuild: false
+#   num_workers: 6
+
+# Genome resources and paths belong in configs/clusters/genome.yaml. Select it
+# with: make dry-run CONFIG=<experiment.yaml> CLUSTER=configs/clusters/genome.yaml

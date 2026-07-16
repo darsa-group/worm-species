@@ -42,6 +42,9 @@ beneath `configs/clusters/`.
 See [configs/README.md](configs/README.md) for the file map and
 [config.md](config.md) for every important key,
 constraint, transform, and worked example.
+For a ready-to-adapt Genome sweep covering ConvNeXt, ViT, learning rates,
+task-loss weights, hierarchy loss, colour retention, and other cues, see
+[devconfig.md](devconfig.md).
 
 ## One trainer, explicit switches
 
