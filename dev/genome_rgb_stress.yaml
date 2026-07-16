@@ -1,7 +1,8 @@
-# Original-RGB training followed by the transformed-test catalogue inherited
-# from devconfig.yaml. This creates 64 original-RGB fits, then evaluates each
-# checkpoint on 114 conditions; it does not fit one model per test condition.
-extends: devconfig.yaml
+# Original-RGB Genome training followed by the transformed-test catalogue inherited
+# from genome_cues_matched.yaml. This creates 64 original-RGB fits, then
+# evaluates each checkpoint on 24 conditions; it does not fit one model per
+# test condition.
+extends: genome_cues_matched.yaml
 
 sweep:
   # YAML lists replace inherited lists, so original is the sole train condition.
@@ -16,7 +17,7 @@ evaluation:
   test_conditions:
     enabled: true
     evaluate_original_training: true
-    # The complete 114-condition catalogue is inherited from devconfig.yaml.
+    # The complete 24-condition catalogue is inherited from the matched config.
 
   condition_matrix:
     enabled: false

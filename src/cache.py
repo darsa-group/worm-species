@@ -1,9 +1,11 @@
 from __future__ import annotations
 
-import os
 import hashlib
-from pathlib import Path
+import os
+import tempfile
 from concurrent.futures import ProcessPoolExecutor, as_completed
+from pathlib import Path
+from typing import Any
 
 import pandas as pd
 from PIL import Image
@@ -27,7 +29,7 @@ def _file_stamp(path: Path) -> str:
 
 def _make_cache_key(
     image_path: Path,
-    cfg: dict,
+    cfg: dict[str, Any],
 ) -> str:
     data_cfg = cfg["data"]
 
@@ -36,11 +38,13 @@ def _make_cache_key(
         str(data_cfg.get("image_col")),
         str(data_cfg.get("image_size")),
     ])
-    # print(f"Cache key text: {text}")
+    # Preserve existing cache keys; this digest is an identifier, not a security hash.
     return hashlib.md5(text.encode()).hexdigest()
 
 
-def _cache_one_image(args):
+def _cache_one_image(
+    args: tuple[int, dict[str, Any], dict[str, Any]],
+) -> tuple[int, str | None, str, str | None]:
     idx, row_dict, cfg = args
 
     data_cfg = cfg["data"]
@@ -84,7 +88,8 @@ def _cache_one_image(args):
         return idx, str(out_path), "exists", None
 
     try:
-        img = Image.open(image_path).convert("RGB")
+        with Image.open(image_path) as source:
+            img = source.convert("RGB")
 
         if crop_to_foreground:
             bbox = None
@@ -102,22 +107,29 @@ def _cache_one_image(args):
 
         img = img.resize((image_size, image_size), Image.Resampling.BILINEAR)
 
-        tmp_path = out_path.with_suffix(out_path.suffix)
-
-        if suffix == ".jpg":
-            img.save(tmp_path, quality=100)
-        else:
-            img.save(tmp_path)
-
-        os.replace(tmp_path, out_path)
+        file_descriptor, temporary_name = tempfile.mkstemp(
+            dir=out_path.parent,
+            prefix=f".{out_path.stem}.",
+            suffix=out_path.suffix,
+        )
+        os.close(file_descriptor)
+        tmp_path = Path(temporary_name)
+        try:
+            if suffix == ".jpg":
+                img.save(tmp_path, quality=100)
+            else:
+                img.save(tmp_path)
+            os.replace(tmp_path, out_path)
+        finally:
+            tmp_path.unlink(missing_ok=True)
 
         return idx, str(out_path), "created", None
 
-    except Exception as e:
-        return idx, None, "error", repr(e)
+    except Exception as exc:
+        return idx, None, "error", repr(exc)
 
 
-def build_image_cache(cfg: dict, df: pd.DataFrame) -> pd.DataFrame:
+def build_image_cache(cfg: dict[str, Any], df: pd.DataFrame) -> pd.DataFrame:
     """
     Build deterministic image cache for faster training.
 
@@ -142,6 +154,8 @@ def build_image_cache(cfg: dict, df: pd.DataFrame) -> pd.DataFrame:
             cfg.get("training", {}).get("num_workers", 4),
         )
     )
+    if num_workers < 1:
+        raise ValueError("cache.num_workers must be at least 1")
 
     tasks = [
         (idx, row.to_dict(), cfg)
@@ -152,8 +166,8 @@ def build_image_cache(cfg: dict, df: pd.DataFrame) -> pd.DataFrame:
     statuses = [None] * len(df)
     errors = [None] * len(df)
 
-    with ProcessPoolExecutor(max_workers=num_workers) as ex:
-        futures = [ex.submit(_cache_one_image, task) for task in tasks]
+    with ProcessPoolExecutor(max_workers=num_workers) as executor:
+        futures = [executor.submit(_cache_one_image, task) for task in tasks]
 
         for fut in tqdm(as_completed(futures), total=len(futures), desc="Building image cache"):
             idx, cache_path, status, error = fut.result()

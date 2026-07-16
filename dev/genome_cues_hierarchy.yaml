@@ -1,7 +1,7 @@
-# Hierarchy-loss variant of the matched-condition development experiment.
+# Hierarchy-loss variant of the matched-condition Genome experiment.
 # 192 parameter combinations x 114 conditions = 21,888 model fits.
 # Hierarchy is always enabled; only its meaningful weight is swept.
-extends: devconfig.yaml
+extends: genome_cues_matched.yaml
 
 multi_task:
   hierarchy_loss:

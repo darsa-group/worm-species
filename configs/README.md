@@ -19,6 +19,9 @@ configs/defaults/base.yaml
             +-- configs/experiments/colour_ablation.yaml
             |        +-- ghpc_colour_ablation.yaml
             +-- configs/experiments/patch_shuffle_matrix.yaml
+            +-- dev/genome_cues_matched.yaml
+            |        +-- genome_cues_hierarchy.yaml
+            |        +-- genome_rgb_stress.yaml
             +-- configs/experiments/persistent_hierarchy.yaml
                          |
                          +-- persistent_hierarchy_wandb.yaml
@@ -79,6 +82,9 @@ examples.
 | Four-model 2×2/4×4 patch matrix | `configs/experiments/patch_shuffle_matrix.yaml` | 12 trainings, 36 evaluation cells |
 | Colour retention 100% through 0% | `configs/experiments/colour_ablation.yaml` | 202 |
 | GHPC colour W&B settings | `configs/experiments/ghpc_colour_ablation.yaml` | 202 |
+| Genome matched cues with optimizer/loss choices | `dev/genome_cues_matched.yaml` | 7,296 |
+| Same matched study with hierarchy weights | `dev/genome_cues_hierarchy.yaml` | 21,888 |
+| Original-RGB training plus transformed evaluation | `dev/genome_rgb_stress.yaml` | 64 trainings, 1,536 evaluation cells |
 | Genome persistent-cache hierarchy sweep | `configs/experiments/persistent_hierarchy.yaml` | 2 |
 | Same persistent sweep with W&B | `configs/experiments/persistent_hierarchy_wandb.yaml` | 2 |
 

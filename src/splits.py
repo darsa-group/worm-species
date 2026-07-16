@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import pandas as pd
 from sklearn.model_selection import StratifiedShuffleSplit
-import os
+
 
 def make_individual_level_splits(
     df: pd.DataFrame,
@@ -11,7 +13,7 @@ def make_individual_level_splits(
     test_size: float,
     val_size: float,
     seed: int,
-    root_dir: str | None = None
+    root_dir: str | Path | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """
     Splits by individual/group, not by image row.
@@ -19,8 +21,18 @@ def make_individual_level_splits(
     This prevents images of the same worm from appearing in both train and test sets.
     Assumes each individual belongs to one target class.
     """
-    
-    cwd = root_dir if root_dir is not None else os.getcwd()
+
+    if not 0 < test_size < 1:
+        raise ValueError("test_size must be between 0 and 1")
+    if not 0 < val_size < 1:
+        raise ValueError("val_size must be between 0 and 1")
+    if test_size + val_size >= 1:
+        raise ValueError("test_size + val_size must be less than 1")
+
+    missing_columns = {target_col, group_col}.difference(df.columns)
+    if missing_columns:
+        raise KeyError(f"Missing split columns: {sorted(missing_columns)}")
+
     group_df = (
         df[[group_col, target_col]]
         .drop_duplicates()
@@ -78,12 +90,13 @@ def make_individual_level_splits(
     train_df = df[df[group_col].isin(train_groups)].reset_index(drop=True)
     val_df = df[df[group_col].isin(val_groups)].reset_index(drop=True)
     test_df = df[df[group_col].isin(test_groups)].reset_index(drop=True)
-    
-    if root_dir is not None:
-        train_df.to_csv(os.path.join(cwd, 'split_csv', "train_split.csv"), index=False)
-        val_df.to_csv(os.path.join(cwd, 'split_csv', "val_split.csv"), index=False)
-        test_df.to_csv(os.path.join(cwd, 'split_csv', "test_split.csv"), index=False)
-        print(f"Saved train/val/test splits to {cwd}")
 
+    if root_dir is not None:
+        split_dir = Path(root_dir) / "split_csv"
+        split_dir.mkdir(parents=True, exist_ok=True)
+        train_df.to_csv(split_dir / "train_split.csv", index=False)
+        val_df.to_csv(split_dir / "val_split.csv", index=False)
+        test_df.to_csv(split_dir / "test_split.csv", index=False)
+        print(f"Saved train/val/test splits to {split_dir}")
 
     return train_df, val_df, test_df

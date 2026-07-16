@@ -29,8 +29,13 @@ class MakefileContracts(unittest.TestCase):
         help_result = self._make("help")
         self.assertEqual(help_result.returncode, 0, help_result.stdout)
         self.assertIn("make dashboard-prepare", help_result.stdout)
+        self.assertIn("make configure", help_result.stdout)
         self.assertIn("EXPERIMENT", help_result.stdout)
         self.assertNotIn("PROFILE", help_result.stdout)
+
+        configure = self._make("-n", "configure")
+        self.assertEqual(configure.returncode, 0, configure.stdout)
+        self.assertIn("-m worm_species.config.tui", configure.stdout)
 
         validate = self._make(
             "validate",

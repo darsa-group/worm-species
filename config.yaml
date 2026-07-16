@@ -70,7 +70,7 @@ sweep: {enabled: false, parameters: {}}
 # -----------------------------------------------------------------------------
 # OPTIONAL CHILD-CONFIG EXAMPLES (comments only; they do not change this run)
 # Copy only the sections you need into a YAML file under configs/experiments/.
-# See devconfig.md for a validated Genome example and config.md for every key.
+# See docs/configuration/genome_experiments.md for Genome examples and config.md for every key.
 # -----------------------------------------------------------------------------
 
 # Dataset, label, crop, and predefined-split options:

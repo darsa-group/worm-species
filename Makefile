@@ -13,6 +13,7 @@ MODEL ?=
 ARTIFACTS_DIR ?= slurm/generated/plan-$(shell date -u +%Y%m%dT%H%M%S%N)
 DASHBOARD_INDEX ?= .cache/worm-species-dashboard/index.sqlite3
 DASHBOARD_DERIVED ?= .cache/worm-species-dashboard/derived
+WIZARD_OUTPUT ?= configs/experiments/interactive.yaml
 
 SLURM = PYTHONPATH=src $(PYTHON) -m worm_species.slurm
 CLUSTER_ARG = $(if $(strip $(CLUSTER)),--cluster-config "$(CLUSTER)",)
@@ -29,12 +30,13 @@ TRAIN_OVERRIDE_VALUES = sweep.enabled=false \
 	$(if $(filter-out file undefined,$(origin RESULTS_ROOT)),output.out_dir=$(RESULTS_ROOT),)
 TRAIN_OVERRIDE_ARGS = $(if $(strip $(TRAIN_OVERRIDE_VALUES)),--override $(TRAIN_OVERRIDE_VALUES),)
 
-.PHONY: help validate inspect dry-run train submit status collect dashboard-prepare dashboard \
+.PHONY: help configure validate inspect dry-run train submit status collect dashboard-prepare dashboard \
 	test test-unit test-contracts test-integration clean-generated
 
 help: ## Show the supported repository commands.
 	@echo "Worm Species commands"
 	@echo
+	@echo "  make configure          Open the interactive experiment builder."
 	@echo "  make validate           Validate the experiment and cluster plan."
 	@echo "  make inspect            Print resolved configuration and run counts."
 	@echo "  make dry-run            Render a plan without scheduler submission."
@@ -54,12 +56,15 @@ help: ## Show the supported repository commands.
 	@echo "           EXPERIMENT (standard, hierarchy, dual_cue, colour_ablation,"
 	@echo "                       patch_shuffle_matrix, persistent_hierarchy)"
 	@echo "           SLURM_RESULTS_ROOT SINGLE_TASK_RESULTS_ROOT ARTIFACTS_DIR"
-	@echo "           DASHBOARD_INDEX DASHBOARD_DERIVED PYTHON"
+	@echo "           DASHBOARD_INDEX DASHBOARD_DERIVED WIZARD_OUTPUT PYTHON"
 	@echo
 	@echo "Examples:"
 	@echo "  make dry-run EXPERIMENT=patch_shuffle_matrix"
 	@echo "  make submit EXPERIMENT=dual_cue CLUSTER=configs/clusters/genome.yaml"
 	@echo "  make train MODEL=convnext_base"
+
+configure: ## Open the arrow-key terminal experiment builder.
+	PYTHONPATH=src $(PYTHON) -m worm_species.config.tui --output "$(WIZARD_OUTPUT)"
 
 validate: ## Validate configuration and prove the plan is internally consistent.
 	@$(SLURM) validate --config "$(CONFIG)" $(CLUSTER_ARG) $(PLAN_OVERRIDE_ARGS)
