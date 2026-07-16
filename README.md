@@ -44,7 +44,8 @@ See [configs/README.md](configs/README.md) for the file map and
 constraint, transform, and worked example.
 For a ready-to-adapt Genome sweep covering ConvNeXt, ViT, learning rates,
 task-loss weights, hierarchy loss, colour retention, and other cues, see
-[devconfig.md](devconfig.md).
+[devconfig.md](devconfig.md). The corresponding ready-to-validate experiment
+file is [devconfig.yaml](devconfig.yaml).
 
 ## One trainer, explicit switches
 

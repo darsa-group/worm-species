@@ -4,6 +4,11 @@ This guide shows how to define a Genome experiment for ConvNeXt Base and ViT,
 multiple learning rates, early stopping, task-loss weights, optional hierarchy
 loss, full 0–100% colour retention, and the other supported image cues.
 
+The ready-to-run root experiment is [`devconfig.yaml`](devconfig.yaml). It is
+the validated full configuration described below. Use small child files for
+alternative loss-weight, hierarchy, or early-stopping choices so those choices
+remain explicit and do not accidentally create a much larger Cartesian sweep.
+
 The examples use the canonical configuration model:
 
 ```text

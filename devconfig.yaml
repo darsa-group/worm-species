@@ -1,0 +1,137 @@
+# Genome development experiment: 2 models x 2 learning rates x 114 conditions.
+# Expected total: 456 independent model fits. Validate and dry-run before submit.
+extends: config.yaml
+
+training:
+  mode: multitask
+  use_masked_labels: true
+  epochs: 200
+  batch_size: 256
+  lr: 0.0005
+  weight_decay: 0.0001
+  use_amp: true
+  class_weight: true
+  num_workers: 6
+  val_interval: 5
+
+early_stopping:
+  enabled: true
+  monitor: macro_f1
+  mode: max
+  patience: 6
+  min_delta: 0.0001
+
+multi_task:
+  # Alternative recipes:
+  # equal:        {genus: 1.0, species: 1.0, age: 1.0}
+  # age-weighted: {genus: 1.0, species: 0.5, age: 3.0}
+  loss_weights: {genus: 1.0, species: 0.5, age: 2.0}
+  normalize_loss_by_active_tasks: true
+  selection_metric: mean_macro_f1
+  hierarchy_loss:
+    # Set true to add genus/species hierarchy consistency without changing the
+    # number of generated runs. Use a child config to compare both settings.
+    enabled: false
+    parent_task: genus
+    child_task: species
+    weight: 0.5
+
+preprocessing:
+  image_size: 224
+  normalisation:
+    enabled: true
+    mean: [0.485, 0.456, 0.406]
+    std: [0.229, 0.224, 0.225]
+
+# Augmentation is train-only. The experimental condition assigned by the
+# planner is applied consistently to train, validation, and test.
+augmentation:
+  enabled: true
+  horizontal_flip: {enabled: true, probability: 0.5}
+  vertical_flip: {enabled: true, probability: 0.5}
+  rotation: {enabled: true, degrees: 270}
+
+model:
+  pretrained: true
+  freeze_backbone: false
+
+wandb:
+  enabled: true
+  project: worm-species-genome-cues
+  mode: online
+  group: genome-cues-full
+  job_type: train
+
+sweep:
+  enabled: true
+  parameters:
+    model.name:
+      - convnext_base
+      - vit_b_16
+    training.lr:
+      - 0.0005
+      - 0.0001
+
+  conditions:
+    - {name: original, feature: baseline, transform: original, strength: 0.0, parameters: {}}
+
+    # Endpoint-inclusive colour-retention sweep: 100%, 99%, ..., 1%, 0%.
+    - name_template: saturation_{percent:03d}pct
+      feature: colour
+      transform: saturation
+      parameter: retention
+      range: {start: 1.0, stop: 0.0, step: -0.01}
+
+    - {name: grayscale, feature: colour, transform: grayscale, strength: 1.0, parameters: {}}
+
+    - name: channel_shuffle_201
+      feature: colour
+      transform: channel_shuffle
+      strength: 1.0
+      parameters: {order: [2, 0, 1]}
+
+    - name: bilateral_d5_c25_s25
+      feature: texture
+      transform: bilateral_filter
+      strength: 25.0
+      parameters: {diameter: 5, sigma_colour: 25.0, sigma_space: 25.0}
+    - name: bilateral_d7_c50_s50
+      feature: texture
+      transform: bilateral_filter
+      strength: 50.0
+      parameters: {diameter: 7, sigma_colour: 50.0, sigma_space: 50.0}
+    - name: bilateral_d9_c100_s100
+      feature: texture
+      transform: bilateral_filter
+      strength: 100.0
+      parameters: {diameter: 9, sigma_colour: 100.0, sigma_space: 100.0}
+
+    - {name: gaussian_sigma_0.5, feature: texture, transform: gaussian_blur, strength: 0.5, parameters: {sigma: 0.5}}
+    - {name: gaussian_sigma_1, feature: texture, transform: gaussian_blur, strength: 1.0, parameters: {sigma: 1.0}}
+    - {name: gaussian_sigma_2, feature: texture, transform: gaussian_blur, strength: 2.0, parameters: {sigma: 2.0}}
+    - {name: gaussian_sigma_4, feature: texture, transform: gaussian_blur, strength: 4.0, parameters: {sigma: 4.0}}
+
+    - {name: patch_shuffle_grid_2, feature: shape, transform: patch_shuffle, strength: 2, parameters: {grid_size: 2, seed: 2026}}
+    - {name: patch_shuffle_grid_4, feature: shape, transform: patch_shuffle, strength: 4, parameters: {grid_size: 4, seed: 2026}}
+    - {name: patch_shuffle_grid_8, feature: shape, transform: patch_shuffle, strength: 8, parameters: {grid_size: 8, seed: 2026}}
+
+# These blocks evaluate existing checkpoints and never create extra fits.
+# Leave disabled for a pure matched-condition experiment.
+evaluation:
+  test_conditions:
+    enabled: false
+    evaluate_original_training: false
+    conditions: []
+  condition_matrix:
+    enabled: false
+    conditions: []
+    write_reports: true
+
+output:
+  out_dir: outputs
+
+# Machine resources and paths are merged from configs/clusters/genome.yaml.
+slurm:
+  planning:
+    experiment_type: genome_cues_full
+    external_expansion: sweep
