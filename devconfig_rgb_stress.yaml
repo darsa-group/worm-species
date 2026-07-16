@@ -1,0 +1,32 @@
+# Original-RGB training followed by the transformed-test catalogue inherited
+# from devconfig.yaml. This creates 64 original-RGB fits, then evaluates each
+# checkpoint on 114 conditions; it does not fit one model per test condition.
+extends: devconfig.yaml
+
+sweep:
+  # YAML lists replace inherited lists, so original is the sole train condition.
+  conditions:
+    - name: original
+      feature: baseline
+      transform: original
+      strength: 0.0
+      parameters: {}
+
+evaluation:
+  test_conditions:
+    enabled: true
+    evaluate_original_training: true
+    # The complete 114-condition catalogue is inherited from devconfig.yaml.
+
+  condition_matrix:
+    enabled: false
+    conditions: []
+    write_reports: true
+
+wandb:
+  group: genome-rgb-stress
+
+slurm:
+  planning:
+    experiment_type: genome_rgb_stress
+    external_expansion: sweep

@@ -1,5 +1,5 @@
-# Genome development experiment: 2 models x 2 learning rates x 114 conditions.
-# Expected total: 456 independent model fits. Validate and dry-run before submit.
+# Matched-condition Genome experiment.
+# 64 parameter combinations x 114 conditions = 7,296 model fits.
 extends: config.yaml
 
 training:
@@ -71,8 +71,71 @@ sweep:
     training.lr:
       - 0.0005
       - 0.0001
+    early_stopping.enabled:
+      - true
+      - false
+    multi_task.loss_weights.genus:
+      - 0.5
+      - 1.0
+    multi_task.loss_weights.species:
+      - 0.5
+      - 1.0
+    multi_task.loss_weights.age:
+      - 0.5
+      - 1.0
 
   conditions:
+    - {name: original, feature: baseline, transform: original, strength: 0.0, parameters: {}}
+
+    # Endpoint-inclusive colour-retention sweep: 100%, 99%, ..., 1%, 0%.
+    - name_template: saturation_{percent:03d}pct
+      feature: colour
+      transform: saturation
+      parameter: retention
+      range: {start: 1.0, stop: 0.0, step: -0.1}
+
+    - {name: grayscale, feature: colour, transform: grayscale, strength: 1.0, parameters: {}}
+
+    - name: channel_shuffle_201
+      feature: colour
+      transform: channel_shuffle
+      strength: 1.0
+      parameters: {order: [2, 0, 1]}
+
+    - name: bilateral_d5_c25_s25
+      feature: texture
+      transform: bilateral_filter
+      strength: 25.0
+      parameters: {diameter: 5, sigma_colour: 25.0, sigma_space: 25.0}
+    - name: bilateral_d7_c50_s50
+      feature: texture
+      transform: bilateral_filter
+      strength: 50.0
+      parameters: {diameter: 7, sigma_colour: 50.0, sigma_space: 50.0}
+    - name: bilateral_d9_c100_s100
+      feature: texture
+      transform: bilateral_filter
+      strength: 100.0
+      parameters: {diameter: 9, sigma_colour: 100.0, sigma_space: 100.0}
+
+    - {name: gaussian_sigma_0.5, feature: texture, transform: gaussian_blur, strength: 0.5, parameters: {sigma: 0.5}}
+    - {name: gaussian_sigma_1, feature: texture, transform: gaussian_blur, strength: 1.0, parameters: {sigma: 1.0}}
+    - {name: gaussian_sigma_2, feature: texture, transform: gaussian_blur, strength: 2.0, parameters: {sigma: 2.0}}
+    - {name: gaussian_sigma_4, feature: texture, transform: gaussian_blur, strength: 4.0, parameters: {sigma: 4.0}}
+
+    - {name: patch_shuffle_grid_2, feature: shape, transform: patch_shuffle, strength: 2, parameters: {grid_size: 2, seed: 2026}}
+    - {name: patch_shuffle_grid_4, feature: shape, transform: patch_shuffle, strength: 4, parameters: {grid_size: 4, seed: 2026}}
+    - {name: patch_shuffle_grid_8, feature: shape, transform: patch_shuffle, strength: 8, parameters: {grid_size: 8, seed: 2026}}
+
+# These blocks evaluate existing checkpoints and never create extra fits.
+# Leave disabled for a pure matched-condition experiment.
+evaluation:
+  test_conditions:
+    # Disabled here because every sweep condition is already trained and tested
+    # as a matched condition. devconfig_rgb_stress.yaml reuses this catalogue.
+    enabled: false
+    evaluate_original_training: false
+    conditions:
     - {name: original, feature: baseline, transform: original, strength: 0.0, parameters: {}}
 
     # Endpoint-inclusive colour-retention sweep: 100%, 99%, ..., 1%, 0%.
@@ -115,20 +178,13 @@ sweep:
     - {name: patch_shuffle_grid_4, feature: shape, transform: patch_shuffle, strength: 4, parameters: {grid_size: 4, seed: 2026}}
     - {name: patch_shuffle_grid_8, feature: shape, transform: patch_shuffle, strength: 8, parameters: {grid_size: 8, seed: 2026}}
 
-# These blocks evaluate existing checkpoints and never create extra fits.
-# Leave disabled for a pure matched-condition experiment.
-evaluation:
-  test_conditions:
-    enabled: false
-    evaluate_original_training: false
-    conditions: []
   condition_matrix:
     enabled: false
     conditions: []
     write_reports: true
 
 output:
-  out_dir: outputs
+  out_dir: output_allrun
 
 # Machine resources and paths are merged from configs/clusters/genome.yaml.
 slurm:
