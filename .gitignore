@@ -12,6 +12,7 @@
 *logs/*/*.log
 */*split_csv*/*.csv
 *csv
+*docs/refactor*
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]

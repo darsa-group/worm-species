@@ -1,1 +1,0 @@
-scripts/transfer/tranfser_from_genome.sh
