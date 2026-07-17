@@ -31,7 +31,7 @@ TRAIN_OVERRIDE_VALUES = sweep.enabled=false \
 TRAIN_OVERRIDE_ARGS = $(if $(strip $(TRAIN_OVERRIDE_VALUES)),--override $(TRAIN_OVERRIDE_VALUES),)
 
 .PHONY: help configure validate inspect dry-run train submit status collect dashboard-prepare dashboard \
-	test test-unit test-contracts test-integration clean-generated run-dev
+	test test-hloss test-unit test-contracts test-integration clean-generated run-dev
 
 help: ## Show the supported repository commands.
 	@echo "Worm Species commands"
@@ -47,6 +47,7 @@ help: ## Show the supported repository commands.
 	@echo "  make dashboard-prepare  Prepare cached metrics and confusion matrices."
 	@echo "  make dashboard          Launch the read-only local dashboard."
 	@echo "  make test               Run the complete CPU-only unittest suite."
+	@echo "  make test-hloss         Run hierarchy-loss unit tests."
 	@echo "  make test-unit          Run focused unit tests."
 	@echo "  make test-contracts     Run compatibility and behaviour contracts."
 	@echo "  make test-integration   Run lightweight integration tests."
@@ -115,6 +116,9 @@ run-dev:
 
 test: ## Run every standard-library test without external data or GPUs.
 	PYTHONPATH=.:src $(PYTHON) -m unittest discover -s tests -p 'test_*.py'
+
+test-hloss: ## Run hierarchy-loss unit tests.
+	PYTHONPATH=.:src $(PYTHON) -m unittest tests.test_training_losses
 
 test-unit: ## Run focused configuration and planning units.
 	PYTHONPATH=.:src $(PYTHON) -m unittest discover -s tests -p 'test_config_validation.py'
