@@ -441,9 +441,7 @@ class WandbLogger:
                 logged.append(artifact_name)
 
             wandb_cfg = self.cfg.get("wandb", {}) or {}
-            log_model = isinstance(wandb_cfg, Mapping) and bool(
-                wandb_cfg.get("log_model", False)
-            )
+            log_model = False
             if log_model and model_paths:
                 artifact_name = f"{self.run_name}-best-model"
                 artifact = self.backend.Artifact(

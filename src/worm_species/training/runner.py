@@ -704,7 +704,6 @@ def run_one(cfg: dict, profile: TrainingProfile) -> dict:
         out_dir / "label_to_index_by_task.json",
         out_dir / "run_summary.json",
         out_dir / "best_model.pt",
-        out_dir / "last_model.pt",
         *sorted(out_dir.glob("classification_report_*.csv")),
         *sorted(out_dir.glob("confusion_matrix_*.csv")),
     ]
