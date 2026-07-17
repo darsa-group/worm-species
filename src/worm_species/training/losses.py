@@ -132,32 +132,63 @@ def hierarchy_consistency_loss(
     valid_mask: torch.Tensor,
     eps: float = 1e-8,
 ) -> torch.Tensor | None:
-    """Penalise parent/child disagreement on jointly labelled samples."""
-    if not valid_mask.any():
+    """Penalise parent/child disagreement on jointly labelled samples.
+
+    The hierarchy calculation is performed in float32 because probability-space
+    aggregation and logarithms are numerically unstable under float16 autocast.
+    """
+    if not torch.any(valid_mask):
         return None
 
-    parent_logits = parent_logits[valid_mask]
-    child_logits = child_logits[valid_mask]
+    device_type = parent_logits.device.type
 
-    parent_probs = F.softmax(parent_logits, dim=1)
-    child_probs = F.softmax(child_logits, dim=1)
+    # Explicitly exclude this calculation from AMP.
+    with torch.autocast(device_type=device_type, enabled=False):
+        parent_logits = parent_logits[valid_mask].float()
+        child_logits = child_logits[valid_mask].float()
 
-    child_to_parent_matrix = child_to_parent_matrix.to(
-        device=child_probs.device,
-        dtype=child_probs.dtype,
-    )
+        child_to_parent_matrix = child_to_parent_matrix.to(
+            device=child_logits.device,
+            dtype=torch.float32,
+        )
 
-    implied_parent_probs = child_probs @ child_to_parent_matrix
+        # log_softmax avoids calculating softmax followed by log for the
+        # directly predicted parent distribution.
+        parent_log_probs = F.log_softmax(parent_logits, dim=1)
+        parent_probs = parent_log_probs.exp()
 
-    parent_loss = F.kl_div(
-        (parent_probs + eps).log(),
-        implied_parent_probs.detach(),
-        reduction="batchmean",
-    )
-    child_loss = F.kl_div(
-        (implied_parent_probs + eps).log(),
-        parent_probs.detach(),
-        reduction="batchmean",
-    )
+        # Probability-space aggregation is required for the child-derived
+        # parent distribution.
+        child_probs = F.softmax(child_logits, dim=1)
+        implied_parent_probs = child_probs @ child_to_parent_matrix
 
-    return 0.5 * (parent_loss + child_loss)
+        # Aggregation may still produce exact zeros, even in float32.
+        implied_parent_probs = implied_parent_probs.clamp_min(eps)
+
+        # Clamping slightly changes the row sums, so restore a valid
+        # probability distribution.
+        implied_parent_probs = implied_parent_probs / implied_parent_probs.sum(
+            dim=1,
+            keepdim=True,
+        )
+        implied_parent_log_probs = implied_parent_probs.log()
+
+        # KL(implied parent || predicted parent):
+        # gradients update the parent head only.
+        parent_loss = F.kl_div(
+            parent_log_probs,
+            implied_parent_log_probs.detach(),
+            reduction="batchmean",
+            log_target=True,
+        )
+
+        # KL(predicted parent || implied parent):
+        # gradients update the child head only.
+        child_loss = F.kl_div(
+            implied_parent_log_probs,
+            parent_log_probs.detach(),
+            reduction="batchmean",
+            log_target=True,
+        )
+
+        return 0.5 * (parent_loss + child_loss)
