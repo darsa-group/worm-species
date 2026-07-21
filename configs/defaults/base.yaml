@@ -120,7 +120,7 @@ split:
   save_splits: false
 
 model:
-  name: "efficientnet_b0"   # resnet18, resnet50, efficientnet_b0, vit_b_16, swin_t
+  name: "efficientnet_b0"   # resnet18, efficientnet_b0, vit_b_16, dinov3_vits16
   pretrained: true
   freeze_backbone: false
 

@@ -143,6 +143,7 @@ resize
   -> train-only horizontal flip
   -> train-only vertical flip
   -> train-only random rotation
+  -> optional train-only random Gaussian blur
   -> tensor conversion
   -> the one assigned input condition
   -> normalisation
@@ -150,10 +151,12 @@ resize
 
 Validation and test omit augmentation. They retain resize, the selected
 evaluation condition, and normalization. Setting `augmentation.enabled: false`
-disables all three random operations; each child operation can also be disabled
-independently. Flip probabilities must be in `[0,1]`, rotation degrees must be
-non-negative, and a fixed seed preserves the existing deterministic behavior.
-Changing an operation or its order is a scientific change, not a layout choice.
+disables all random operations; each child operation can also be disabled
+independently. Flip and Gaussian-blur probabilities must be in `[0,1]`, rotation
+degrees must be non-negative, and Gaussian blur requires a positive odd kernel
+size plus an ascending two-value sigma range. A fixed seed preserves the
+existing deterministic behavior. Changing an operation or its order is a
+scientific change, not a layout choice.
 
 ## Model, tasks, and loss
 
@@ -177,10 +180,16 @@ multi_task:
     weight: 0.5
 ```
 
-`model.name` must be a supported callable model constructor. Current experiment
-files exercise `resnet18`, `resnet50`, `efficientnet_b0`, `convnext_base`, and
-`vit_b_16`. `model.pretrained` controls pretrained weights; it is independent of
-`model.freeze_backbone`, which controls parameter updates after construction.
+`model.name` must be a supported torchvision constructor or DINOv3 model name.
+Current experiment files exercise `resnet18`, `resnet50`, `efficientnet_b0`,
+`convnext_base`, and `vit_b_16`. DINOv3 accepts Meta-style names including
+`dinov3_vits16`, `dinov3_vitb16`, `dinov3_vitl16`, and
+`dinov3_convnext_tiny` (plus the corresponding small/base/large variants).
+The aliases use LVD-1689M weights; `dinov3_vitl16_sat493m` and
+`dinov3_vit7b16_sat493m` select satellite-pretrained weights. Canonical timm
+DINOv3 names are accepted as well. `model.pretrained` controls pretrained
+weights; it is independent of `model.freeze_backbone`, which controls parameter
+updates after construction. DINOv3 requires `timm>=1.0.20`.
 
 Every selected task requires a finite, non-negative loss weight and at least one
 task must have positive weight. Hierarchy consistency requires distinct selected
@@ -565,6 +574,8 @@ This registry names the complete public configuration surface. Keys containing
 | `augmentation.horizontal_flip.enabled`, `.probability` | Train-only horizontal flip and probability in `[0,1]`. |
 | `augmentation.vertical_flip.enabled`, `.probability` | Train-only vertical flip and probability in `[0,1]`. |
 | `augmentation.rotation.enabled`, `.degrees` | Train-only random rotation switch and non-negative bound. |
+| `augmentation.gaussian_blur.enabled`, `.probability` | Train-only random Gaussian-blur switch and probability in `[0,1]`. |
+| `augmentation.gaussian_blur.kernel_size`, `.sigma` | Positive odd kernel and ascending positive sigma range. |
 | `data.colour_retention` | Number in `[0, 1]`. |
 | `data.crop_to_foreground`, `data.crop_pad` | Foreground crop switch and non-negative pad fraction. |
 | `data.strip_final_number_from_group` | Boolean barcode grouping rule. |
@@ -585,7 +596,7 @@ This registry names the complete public configuration surface. Keys containing
 
 | Key | Value |
 | --- | --- |
-| `model.name` | Supported torchvision architecture name. |
+| `model.name` | Supported torchvision architecture or DINOv3/timm name. |
 | `model.pretrained`, `model.freeze_backbone` | Independent boolean weight and fine-tuning switches. |
 | `training.mode` | Currently `multitask`. |
 | `training.use_masked_labels` | Boolean missing-label masking switch. |

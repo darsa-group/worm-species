@@ -174,6 +174,18 @@ class CanonicalValidationContracts(unittest.TestCase):
                 "augmentation.rotation.degrees",
             ),
             (
+                {"augmentation": {"gaussian_blur": {"probability": 1.1}}},
+                "augmentation.gaussian_blur.probability",
+            ),
+            (
+                {"augmentation": {"gaussian_blur": {"kernel_size": 4}}},
+                "augmentation.gaussian_blur.kernel_size",
+            ),
+            (
+                {"augmentation": {"gaussian_blur": {"sigma": [2.0, 0.1]}}},
+                "augmentation.gaussian_blur.sigma",
+            ),
+            (
                 {"preprocessing": {"normalisation": {"mean": [0.1], "std": [1, 2]}}},
                 "equal lengths",
             ),

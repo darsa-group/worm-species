@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Download all pretrained torchvision model weights required by config.yaml.
+Download all pretrained torchvision or DINOv3 model weights required by config.yaml.
 
 Default cache target:
     /usr/home/qgg/mehrot/.cache/torch/hub/checkpoints
@@ -97,7 +97,25 @@ def collect_pretrained_model_names(configs: list[dict[str, Any]]) -> list[str]:
     return sorted(names)
 
 
-def download_torchvision_model(name: str) -> None:
+def download_pretrained_model(name: str) -> None:
+    from worm_species.models.factory import resolve_dinov3_model_name
+
+    dinov3_name = resolve_dinov3_model_name(name)
+    if dinov3_name is not None:
+        try:
+            import timm
+        except ImportError as exc:
+            raise RuntimeError(
+                "DINOv3 models require timm>=1.0.20. Recreate the conda "
+                "environment or install 'timm>=1.0.20'."
+            ) from exc
+
+        print(f"\n[DOWNLOAD/CHECK] {name}")
+        print(f"  timm model: {dinov3_name}")
+        _ = timm.create_model(dinov3_name, pretrained=True, num_classes=0)
+        print(f"[OK] {name}")
+        return
+
     import torchvision.models as models
 
     registry = {
@@ -130,7 +148,7 @@ def download_torchvision_model(name: str) -> None:
     }
 
     if name not in registry:
-        print(f"[SKIP] No torchvision download rule for model.name={name!r}")
+        print(f"[SKIP] No download rule for model.name={name!r}")
         print("       Add it to the registry in this script if needed.")
         return
 
@@ -190,7 +208,7 @@ def main() -> None:
         print(f"  - {name}")
 
     for name in model_names:
-        download_torchvision_model(name)
+        download_pretrained_model(name)
 
     print("\nDone.")
     print("Cached checkpoint files:")

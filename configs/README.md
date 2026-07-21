@@ -19,6 +19,7 @@ configs/defaults/base.yaml
             +-- configs/experiments/colour_ablation.yaml
             |        +-- ghpc_colour_ablation.yaml
             +-- configs/experiments/patch_shuffle_matrix.yaml
+            +-- configs/experiments/dinov3_rgb_stress.yaml
             +-- dev/genome_cues_matched.yaml
             |        +-- genome_cues_hierarchy.yaml
             |        +-- genome_rgb_stress.yaml
@@ -80,6 +81,7 @@ examples.
 | Full matched cue and RGB-stress study | `configs/experiments/dual_cue.yaml` | 224 |
 | GHPC dual-cue historical W&B settings | `configs/experiments/ghpc_dual_cue.yaml` | 224 |
 | Four-model 2×2/4×4 patch matrix | `configs/experiments/patch_shuffle_matrix.yaml` | 12 trainings, 36 evaluation cells |
+| DINOv3 ViT/ConvNeXt hierarchy and RGB stress | `configs/experiments/dinov3_rgb_stress.yaml` | 12 trainings, 288 evaluation cells |
 | Colour retention 100% through 0% | `configs/experiments/colour_ablation.yaml` | 202 |
 | GHPC colour W&B settings | `configs/experiments/ghpc_colour_ablation.yaml` | 202 |
 | Genome matched cues with optimizer/loss choices | `dev/genome_cues_matched.yaml` | 7,296 |

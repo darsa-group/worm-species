@@ -155,6 +155,40 @@ class CanonicalTransformTests(unittest.TestCase):
         )
         self.assertEqual(transform.transforms[1].degrees, [-0.0, 0.0])
 
+    def test_gaussian_blur_augmentation_is_random_and_train_only(self) -> None:
+        augmentation = {
+            "horizontal_flip": {"enabled": False},
+            "vertical_flip": {"enabled": False},
+            "rotation": {"enabled": False},
+            "gaussian_blur": {
+                "enabled": True,
+                "probability": 0.5,
+                "kernel_size": 5,
+                "sigma": [0.1, 2.0],
+            },
+        }
+        training = build_split_transform(
+            split="train",
+            preprocessing={"image_size": 16},
+            augmentation=augmentation,
+        )
+        validation = build_split_transform(
+            split="validation",
+            preprocessing={"image_size": 16},
+            augmentation=augmentation,
+        )
+
+        self.assertEqual(
+            operation_names(training),
+            ["Resize", "RandomApply", "ToTensor", "ColourRetention", "Normalize"],
+        )
+        random_apply = training.transforms[1]
+        self.assertEqual(random_apply.p, 0.5)
+        self.assertIsInstance(random_apply.transforms[0], transforms.GaussianBlur)
+        self.assertEqual(random_apply.transforms[0].kernel_size, (5, 5))
+        self.assertEqual(random_apply.transforms[0].sigma, (0.1, 2.0))
+        self.assertNotIn("RandomApply", operation_names(validation))
+
     def test_condition_is_after_tensor_conversion_and_before_normalisation(self) -> None:
         transform = build_split_transform(
             split="validation",

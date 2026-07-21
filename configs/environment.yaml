@@ -10,6 +10,7 @@ dependencies:
   - pandas
   - matplotlib
   - tqdm
+  - timm>=1.0.20
   - ipywidgets
   - pyyaml
   - umap-learn

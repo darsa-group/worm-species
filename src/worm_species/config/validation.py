@@ -715,9 +715,13 @@ def _validate_model_name(
             "model.name", f"could not inspect torchvision model registry: {exc}"
         ))
         return
+    from ..models.factory import is_dinov3_model_name
+
     for path, name in names:
-        if not callable(getattr(models, name, None)):
-            issues.append(ValidationIssue(path, f"unknown torchvision model {name!r}"))
+        if not is_dinov3_model_name(name) and not callable(getattr(models, name, None)):
+            issues.append(ValidationIssue(
+                path, f"unknown torchvision or DINOv3 model {name!r}"
+            ))
 
 
 def _validate_canonical_training_switches(
@@ -819,6 +823,52 @@ def _validate_preprocessing_and_augmentation(
             rotation.get("degrees", 270),
             minimum=0,
         )
+
+    gaussian = augmentation.get("gaussian_blur", {}) or {}
+    if not isinstance(gaussian, dict):
+        issues.append(ValidationIssue(
+            "augmentation.gaussian_blur", "must be a mapping"
+        ))
+    else:
+        _number(
+            issues,
+            "augmentation.gaussian_blur.probability",
+            gaussian.get("probability", 0.5),
+            minimum=0,
+            maximum=1,
+        )
+        kernel_size = gaussian.get("kernel_size", 5)
+        if isinstance(kernel_size, bool) or not isinstance(kernel_size, int):
+            issues.append(ValidationIssue(
+                "augmentation.gaussian_blur.kernel_size", "must be an integer"
+            ))
+        elif kernel_size <= 0 or kernel_size % 2 == 0:
+            issues.append(ValidationIssue(
+                "augmentation.gaussian_blur.kernel_size",
+                "must be a positive odd integer",
+            ))
+        sigma = gaussian.get("sigma", [0.1, 2.0])
+        if not isinstance(sigma, list) or len(sigma) != 2:
+            issues.append(ValidationIssue(
+                "augmentation.gaussian_blur.sigma",
+                "must contain exactly two values",
+            ))
+        else:
+            valid_sigma = True
+            for index, value in enumerate(sigma):
+                if not _number(
+                    issues,
+                    f"augmentation.gaussian_blur.sigma[{index}]",
+                    value,
+                    minimum=0,
+                    exclusive_minimum=True,
+                ):
+                    valid_sigma = False
+            if valid_sigma and float(sigma[0]) > float(sigma[1]):
+                issues.append(ValidationIssue(
+                    "augmentation.gaussian_blur.sigma",
+                    "minimum must not exceed maximum",
+                ))
 
 
 def _condition_identifier(value: Any) -> str | None:

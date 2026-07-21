@@ -66,6 +66,30 @@ def _augmentation_operations(augmentation: Mapping | None) -> list:
         operations.append(
             transforms.RandomRotation(degrees=float(rotation["degrees"]))
         )
+
+    gaussian = _enabled_operation(
+        config,
+        "gaussian_blur",
+        {
+            "enabled": False,
+            "probability": 0.5,
+            "kernel_size": 5,
+            "sigma": [0.1, 2.0],
+        },
+    )
+    if gaussian is not None:
+        sigma = tuple(float(value) for value in gaussian["sigma"])
+        operations.append(
+            transforms.RandomApply(
+                [
+                    transforms.GaussianBlur(
+                        kernel_size=int(gaussian["kernel_size"]),
+                        sigma=sigma,
+                    )
+                ],
+                p=float(gaussian["probability"]),
+            )
+        )
     return operations
 
 
