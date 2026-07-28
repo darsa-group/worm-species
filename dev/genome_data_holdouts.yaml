@@ -1,0 +1,73 @@
+# Stage 3: obvious biological holdout questions.
+# 5 backbones x 4 holdouts = 20 model fits.
+extends: genome_ablation_baseline.yaml
+
+multi_task:
+  loss_weights: {genus: 1.0, species: 0.5, age: 2.0}
+  hierarchy_loss:
+    enabled: false
+    weight: 0.0
+
+wandb:
+  group: paper-data-holdouts
+  tags: [paper, data-holdout]
+
+sweep:
+  parameters:
+    # Cohort ablations remain single-seed despite inheriting the baseline.
+    seed: [42]
+    model.name:
+      - resnet50
+      - convnext_base
+      - vit_b_16
+      - dinov3_vitb16
+      - dinov3_convnext_base
+    multi_task.loss_weights:
+      - {genus: 1.0, species: 0.5, age: 2.0}
+    data_holdout:
+      - enabled: true
+        name: juvenile_aporrectodea_longa
+        question: Can the model recognise juvenile age and Aporrectodea_longa when that exact combination was never seen during development?
+        remove_from: [train, validation]
+        where: {species: Aporrectodea_longa, age: Juvenile}
+        evaluation_where: {species: Aporrectodea_longa, age: Juvenile}
+        primary_tasks: [age, species]
+
+      - enabled: true
+        name: juvenile_allolobophora_chlorotica
+        question: Can the model recognise juvenile age and Allolobophora_chlorotica when that exact combination was never seen during development?
+        remove_from: [train, validation]
+        where: {species: Allolobophora_chlorotica, age: Juvenile}
+        evaluation_where: {species: Allolobophora_chlorotica, age: Juvenile}
+        primary_tasks: [age, species]
+
+      - enabled: true
+        name: juvenile_genus_aporrectodea
+        question: Can the model recognise juvenile age and genus Aporrectodea when all juvenile Aporrectodea were hidden during development?
+        remove_from: [train, validation]
+        where: {genus: Aporrectodea, age: Juvenile}
+        evaluation_where: {genus: Aporrectodea, age: Juvenile}
+        primary_tasks: [age, genus]
+
+      - enabled: true
+        name: unseen_species_aporrectodea_longa_for_genus
+        question: Can the model recognise genus Aporrectodea for the completely unseen species Aporrectodea_longa?
+        remove_from: [train, validation]
+        where: {species: Aporrectodea_longa}
+        evaluation_where: {species: Aporrectodea_longa, genus: Aporrectodea}
+        primary_tasks: [genus]
+  conditions:
+    - {name: original, feature: baseline, transform: original, strength: 0.0, parameters: {}}
+
+evaluation:
+  test_conditions: {enabled: false, conditions: [], evaluate_original_training: false}
+  condition_matrix: {enabled: false, conditions: [], write_reports: false}
+
+output:
+  out_dir: paper_result/runs/data_holdouts
+
+slurm:
+  planning:
+    experiment_type: genome_data_holdouts
+    external_expansion: sweep
+    clear_run_names: true

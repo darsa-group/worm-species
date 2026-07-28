@@ -90,6 +90,75 @@ class TensorGaussianBlur:
         )
 
 
+class GaussianBlurPercent:
+    """Blur an image by an obvious 0-100 severity percentage."""
+
+    def __init__(self, percent: float, max_sigma: float = 16.0):
+        self.percent = float(percent)
+        self.max_sigma = float(max_sigma)
+        if not 0.0 <= self.percent <= 100.0:
+            raise ValueError(
+                f"Gaussian blur percent must be in [0, 100], got {self.percent}."
+            )
+        if self.max_sigma <= 0:
+            raise ValueError(
+                f"Gaussian blur max_sigma must be > 0, got {self.max_sigma}."
+            )
+        self.sigma = self.max_sigma * self.percent / 100.0
+
+    def __call__(self, image: torch.Tensor) -> torch.Tensor:
+        if self.percent == 0.0:
+            return image
+        kernel_size = max(3, 2 * int(math.ceil(3.0 * self.sigma)) + 1)
+        return transform_functional.gaussian_blur(
+            image,
+            kernel_size=[kernel_size, kernel_size],
+            sigma=[self.sigma, self.sigma],
+        )
+
+    def __repr__(self) -> str:
+        return (
+            f"{self.__class__.__name__}(percent={self.percent:.1f}, "
+            f"max_sigma={self.max_sigma:.3f}, sigma={self.sigma:.3f})"
+        )
+
+
+class ResolutionLoss:
+    """Discard 0-100% spatial resolution, then restore the original shape."""
+
+    def __init__(self, percent: float):
+        self.percent = float(percent)
+        if not 0.0 <= self.percent <= 100.0:
+            raise ValueError(
+                f"Resolution-loss percent must be in [0, 100], got {self.percent}."
+            )
+
+    def __call__(self, image: torch.Tensor) -> torch.Tensor:
+        if image.ndim != 3:
+            raise ValueError(f"Expected [C, H, W], got {tuple(image.shape)}.")
+        if self.percent == 0.0:
+            return image
+        height, width = image.shape[-2:]
+        retained_fraction = 1.0 - self.percent / 100.0
+        reduced_height = max(1, int(round(height * retained_fraction)))
+        reduced_width = max(1, int(round(width * retained_fraction)))
+        reduced = transform_functional.resize(
+            image,
+            [reduced_height, reduced_width],
+            interpolation=transforms.InterpolationMode.BILINEAR,
+            antialias=True,
+        )
+        return transform_functional.resize(
+            reduced,
+            [height, width],
+            interpolation=transforms.InterpolationMode.BILINEAR,
+            antialias=True,
+        )
+
+    def __repr__(self) -> str:
+        return f"{self.__class__.__name__}(percent={self.percent:.1f})"
+
+
 class TensorBilateralFilter:
     """Edge-preserving bilateral smoothing using OpenCV."""
 
@@ -198,6 +267,8 @@ def _condition_parameters(condition: dict) -> dict:
         "sigma",
         "grid_size",
         "seed",
+        "percent",
+        "max_sigma",
     ):
         if key in condition:
             parameters[key] = condition[key]
@@ -227,6 +298,13 @@ def build_condition_operations(
         operations.append(ChannelShuffle(parameters.get("order", [2, 0, 1])))
     elif transform_name == "gaussian_blur":
         operations.append(TensorGaussianBlur(float(parameters["sigma"])))
+    elif transform_name == "gaussian_blur_percent":
+        operations.append(GaussianBlurPercent(
+            percent=float(parameters["percent"]),
+            max_sigma=float(parameters.get("max_sigma", 16.0)),
+        ))
+    elif transform_name == "resolution_loss":
+        operations.append(ResolutionLoss(float(parameters["percent"])))
     elif transform_name == "bilateral_filter":
         operations.append(TensorBilateralFilter(
             diameter=int(parameters["diameter"]),

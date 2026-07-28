@@ -89,11 +89,73 @@ examples.
 | Original-RGB training plus transformed evaluation | `dev/genome_rgb_stress.yaml` | 64 trainings, 1,536 evaluation cells |
 | Genome persistent-cache hierarchy sweep | `configs/experiments/persistent_hierarchy.yaml` | 2 |
 | Same persistent sweep with W&B | `configs/experiments/persistent_hierarchy_wandb.yaml` | 2 |
+| Complete Genome paper-ablation pipeline | `dev/genome_ablation_pipeline.yaml` | 190 trainings + final report |
 
 Use `local.yaml` for rendering and CPU-only planning, `genome.yaml` for the
 Genome dual-cue workflow, `genome_persistent.yaml` for Genome persistent-cache
 sweeps, and `ghpc.yaml` for GHPC node-local scratch. GHPC requires an explicit
 GPU-node list before rendering or submission.
+
+## One-command paper ablation
+
+The paper pipeline is split into three readable experiment files:
+
+- `dev/genome_ablation_baseline.yaml`: original images, five backbones, and
+  three complete genus/species/age loss-weight recipes across seeds 2024,
+  2025, and 2026 (45 fits and seed-level confidence intervals);
+- `dev/genome_visual_ablation.yaml`: 0% colour, 2x2/4x4/8x8/16x16 patch
+  shuffling, Gaussian blur at 10-100%, and resolution loss at 10-100% for all
+  five backbones (125 fits). The original baseline supplies severity 0 in the
+  final graphs;
+- `dev/genome_data_holdouts.yaml`: four plainly worded juvenile,
+  species, and genus holdout questions for all five backbones (20 fits).
+
+Every file keeps hierarchy loss disabled. W&B uses the single
+`worm-species-paper` project, one group per stage, compact scalar logging, no
+model uploads, and no confusion-matrix or large-table logging.
+
+Render the complete dependency chain without submitting:
+
+```bash
+make ablation-pipeline
+```
+
+Submit baseline, visual ablations, holdouts, and the final graph job:
+
+```bash
+make ablation-pipeline PIPELINE_MODE=submit
+```
+
+All run outputs, SLURM logs, generated plans, CSV tables, summary JSON, and PNG
+figures are stored below `paper_result/`. Genome limits every array to eight
+active tasks. A node-level file lock makes one task transfer the ready image
+cache into `/tmp`; other tasks scheduled on the same node reuse it.
+
+The report chooses the best baseline configuration by mean validation score
+across its three seeds. Single-seed visual and cohort ablations are then shown
+against that reference. Visual evaluation compares matched-condition
+performance with original-image performance; it does not run a full
+condition-by-condition Cartesian test matrix.
+
+The final report also writes a `manuscript_artifacts` readiness checklist into
+`paper_result/summary/paper_results_manifest.json`. It covers the dataset
+composition, model/training configuration, experimental-ablation and holdout
+tables; the workflow, representative-image and transformation-example panels;
+the baseline confidence-interval plot; the visual-ablation overview; the
+matched-versus-original comparison; and the structured-holdout figure.
+
+After training has finished, tables and figures can be regenerated any number
+of times without submitting jobs or loading checkpoints:
+
+```bash
+python scripts/build_paper_results.py
+```
+
+Edit `dev/paper_report_style.yaml` to change the plot palette, baseline
+reference colour, workflow colours, heatmap colormap, font size, or DPI, then
+run the same Python command again. Existing files in `paper_result/tables`,
+`paper_result/figures`, and `paper_result/summary` are replaced from the
+completed run records.
 
 ## Preferred commands
 

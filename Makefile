@@ -14,6 +14,8 @@ ARTIFACTS_DIR ?= logs/generated/plan-$(shell date -u +%Y%m%dT%H%M%S%N)
 DASHBOARD_INDEX ?= .cache/worm-species-dashboard/index.sqlite3
 DASHBOARD_DERIVED ?= .cache/worm-species-dashboard/derived
 WIZARD_OUTPUT ?= configs/experiments/interactive.yaml
+PIPELINE_CONFIG ?= dev/genome_ablation_pipeline.yaml
+PIPELINE_MODE ?= dry-run
 
 SLURM = PYTHONPATH=src $(PYTHON) -m worm_species.slurm
 CLUSTER_ARG = $(if $(strip $(CLUSTER)),--cluster-config "$(CLUSTER)",)
@@ -30,7 +32,7 @@ TRAIN_OVERRIDE_VALUES = sweep.enabled=false \
 	$(if $(filter-out file undefined,$(origin RESULTS_ROOT)),output.out_dir=$(RESULTS_ROOT),)
 TRAIN_OVERRIDE_ARGS = $(if $(strip $(TRAIN_OVERRIDE_VALUES)),--override $(TRAIN_OVERRIDE_VALUES),)
 
-.PHONY: help configure validate inspect dry-run train submit status collect dashboard-prepare dashboard \
+.PHONY: help configure validate inspect dry-run train submit ablation-pipeline status collect dashboard-prepare dashboard \
 	test test-hloss test-unit test-contracts test-integration clean-generated run-dev
 
 help: ## Show the supported repository commands.
@@ -42,6 +44,7 @@ help: ## Show the supported repository commands.
 	@echo "  make dry-run            Render a plan without scheduler submission."
 	@echo "  make train              Run one canonical local training command."
 	@echo "  make submit             Explicitly render and submit to SLURM."
+	@echo "  make ablation-pipeline  Run the complete paper pipeline (dry-run by default)."
 	@echo "  make status             Summarise filesystem and scheduler status."
 	@echo "  make collect            Re-run canonical result aggregation."
 	@echo "  make dashboard-prepare  Prepare cached metrics and confusion matrices."
@@ -55,6 +58,7 @@ help: ## Show the supported repository commands.
 	@echo "  make run-dev Clean the output folder and run all configs in dev folder"
 	@echo
 	@echo "Variables: CONFIG CLUSTER TRAIN_CONFIG RESULTS_ROOT MAX_ACTIVE MODEL"
+	@echo "           PIPELINE_CONFIG PIPELINE_MODE=(dry-run|submit)"
 	@echo "           EXPERIMENT (standard, hierarchy, dual_cue, colour_ablation,"
 	@echo "                       patch_shuffle_matrix, persistent_hierarchy)"
 	@echo "           SLURM_RESULTS_ROOT SINGLE_TASK_RESULTS_ROOT ARTIFACTS_DIR"
@@ -85,6 +89,10 @@ train: ## Run one local process through the canonical trainer.
 submit: ## Explicitly render and submit the validated plan to SLURM.
 	$(SLURM) launch --submit --config "$(CONFIG)" $(CLUSTER_ARG) \
 		$(PLAN_OVERRIDE_ARGS) --artifacts-dir "$(ARTIFACTS_DIR)"
+
+ablation-pipeline: ## Render or submit baseline, visual, holdout, and report stages.
+	PYTHONPATH=src $(PYTHON) scripts/run_ablation_pipeline.py \
+		--pipeline "$(PIPELINE_CONFIG)" --mode "$(PIPELINE_MODE)"
 
 status: ## Summarise jobs and filesystem-derived run state.
 	PYTHONPATH=src $(PYTHON) -m worm_species.slurm status \

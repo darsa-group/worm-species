@@ -27,6 +27,7 @@ _TEMPLATES = frozenset(
         "persistent_cache_array_job.sh.tmpl",
         "node_local_setup_job.sh.tmpl",
         "node_local_array_job.sh.tmpl",
+        "node_shared_cache_array_job.sh.tmpl",
         "job_local_cue_array_job.sh.tmpl",
         "node_local_cleanup_job.sh.tmpl",
         "result_collector_job.sh.tmpl",
@@ -130,6 +131,8 @@ def _select_array_template(config: dict[str, Any]) -> str:
     expansion = str(slurm.get("planning", {}).get("external_expansion", "sweep"))
     if mode == "node_local":
         return "node_local_array_job.sh.tmpl"
+    if mode == "node_shared_cache":
+        return "node_shared_cache_array_job.sh.tmpl"
     if expansion == "dual_cue":
         return "job_local_cue_array_job.sh.tmpl"
     return "persistent_cache_array_job.sh.tmpl"

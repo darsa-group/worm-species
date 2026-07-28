@@ -10,7 +10,7 @@ slurm:
   time_limit: "01:30:00"
   gpus_per_task: 1
   array:
-    max_active: 6
+    max_active: 8
   setup:
     enabled: false
     per_node: false
@@ -32,14 +32,14 @@ slurm:
     memory: 2048
     time_limit: "00:30:00"
   scratch:
-    mode: job_local_cache
+    mode: node_shared_cache
     root: /tmp/${USER}/worm_species
     nodes: []
     copy_project: false
     copy_data: false
     data_include: []
     reuse_ready_cache: true
-    cleanup_after_run: true
+    cleanup_after_run: false
     copy_cache_to_tmp: 1
     tmp_reserve_gb: 5
     ready_marker: CACHE_READY

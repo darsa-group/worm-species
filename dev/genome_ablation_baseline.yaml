@@ -1,0 +1,78 @@
+# Stage 1: original-image baselines.
+# 5 backbones x 3 complete loss recipes x 3 seeds = 45 model fits.
+extends: ../config.yaml
+
+training:
+  epochs: 200
+  batch_size: 64
+  lr: 0.0005
+  weight_decay: 0.0001
+  use_amp: true
+  class_weight: true
+  num_workers: 6
+  val_interval: 5
+
+early_stopping:
+  enabled: true
+  patience: 6
+  min_delta: 0.0001
+
+multi_task:
+  loss_weights: {genus: 1.0, species: 1.0, age: 1.0}
+  normalize_loss_by_active_tasks: true
+  selection_metric: mean_macro_f1
+  hierarchy_loss:
+    enabled: false
+    parent_task: genus
+    child_task: species
+    weight: 0.0
+
+data_holdout:
+  enabled: false
+
+model:
+  pretrained: true
+  freeze_backbone: false
+
+wandb:
+  enabled: true
+  project: worm-species-paper
+  group: paper-baseline
+  name: null
+  mode: online
+  job_type: train
+  tags: [paper, baseline]
+  compact: true
+  save_code: false
+  log_model: false
+
+sweep:
+  enabled: true
+  parameters:
+    seed: [2024, 2025, 2026]
+    model.name:
+      - resnet50
+      - convnext_base
+      - vit_b_16
+      - dinov3_vitb16
+      - dinov3_convnext_base
+    # Each mapping is one complete recipe, not a Cartesian product.
+    multi_task.loss_weights:
+      - {genus: 1.0, species: 1.0, age: 1.0}
+      - {genus: 1.0, species: 0.5, age: 2.0}
+      - {genus: 1.0, species: 1.0, age: 3.0}
+  conditions:
+    - {name: original, feature: baseline, transform: original, strength: 0.0, parameters: {}}
+
+evaluation:
+  test_conditions: {enabled: false, conditions: [], evaluate_original_training: false}
+  condition_matrix: {enabled: false, conditions: [], write_reports: false}
+
+output:
+  out_dir: paper_result/runs/baseline
+
+slurm:
+  planning:
+    experiment_type: genome_ablation_baseline
+    external_expansion: sweep
+    clear_run_names: true

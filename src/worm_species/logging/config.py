@@ -183,6 +183,26 @@ def canonical_tracking_config(
             "training_condition/strength", condition["strength"]
         )
 
+    wandb_cfg = cfg.get("wandb", {}) or {}
+    if isinstance(wandb_cfg, Mapping) and bool(wandb_cfg.get("compact", False)):
+        allowed_prefixes = (
+            "training/",
+            "model/",
+            "multi_task/loss_weights/",
+            "multi_task/hierarchy_loss/enabled",
+            "preprocessing/image_size",
+            "training_condition/",
+            "data_holdout/name",
+            "data_holdout/question",
+            "data_holdout/where/",
+            "runtime/",
+            "experiment/type",
+        )
+        flattened = {
+            key: value
+            for key, value in flattened.items()
+            if key.startswith(allowed_prefixes)
+        }
     return flattened
 
 

@@ -13,6 +13,7 @@ from sklearn.metrics import confusion_matrix
 
 from ..evaluation.condition_matrix import evaluate_condition_matrix
 from ..evaluation.cue_suppression import evaluate_test_cue_suppression
+from ..evaluation.data_holdout import evaluate_data_holdout
 from ..logging import create_wandb_logger
 from ..models.multitask import build_multitask_model
 from ..results.writing import save_json
@@ -250,6 +251,19 @@ def run_one(cfg: dict, profile: TrainingProfile) -> dict:
         cfg,
         num_classes_by_task,
     ).to(device)
+    model_parameter_counts = {
+        "total_parameters": int(
+            sum(parameter.numel() for parameter in model.parameters())
+        ),
+        "trainable_parameters": int(
+            sum(
+                parameter.numel()
+                for parameter in model.parameters()
+                if parameter.requires_grad
+            )
+        ),
+    }
+    save_json(model_parameter_counts, out_dir / "model_parameters.json")
     print("Model built and moved to device.")
 
     criteria = build_criteria(
@@ -510,6 +524,21 @@ def run_one(cfg: dict, profile: TrainingProfile) -> dict:
         input_condition=input_condition,
     )
 
+    data_holdout = evaluate_data_holdout(
+        cfg=cfg,
+        out_dir=out_dir,
+        model=model,
+        bundle=bundle,
+        criteria=criteria,
+        device=device,
+        use_amp=use_amp,
+        task_loss_weights=weights,
+        normalize_loss_by_active_tasks=normalize,
+        hierarchy_cfg=hierarchy_cfg,
+        child_to_parent_matrix=matrix,
+        use_masked_labels=profile.masked_labels,
+    )
+
     if profile.loader_mode == "colour":
         test_mean_macro_f1 = float(
             test_metrics.get("mean_macro_f1", float("nan"))
@@ -672,6 +701,9 @@ def run_one(cfg: dict, profile: TrainingProfile) -> dict:
                 for key, value in last_test_metrics.items()
             },
         }
+    if data_holdout.get("enabled", False):
+        result["data_holdout"] = data_holdout
+    result.update(model_parameter_counts)
 
     if profile.run_summary:
         save_json(result, out_dir / "run_summary.json")
@@ -695,6 +727,12 @@ def run_one(cfg: dict, profile: TrainingProfile) -> dict:
             "train_transform": input_condition["transform"],
             "train_strength": input_condition.get("strength"),
         })
+    if data_holdout.get("enabled", False):
+        summary["data_holdout_name"] = data_holdout["name"]
+        for row in data_holdout["tasks"]:
+            summary[
+                f"data_holdout/{row['task']}/target_recall"
+            ] = row["target_recall"]
     artifact_paths = [
         out_dir / "config.json",
         out_dir / "test_metrics.json",
@@ -702,11 +740,15 @@ def run_one(cfg: dict, profile: TrainingProfile) -> dict:
         out_dir / "test_metrics_last.json",
         out_dir / "split_summary.json",
         out_dir / "label_to_index_by_task.json",
+        out_dir / "model_parameters.json",
         out_dir / "run_summary.json",
         out_dir / "best_model.pt",
         *sorted(out_dir.glob("classification_report_*.csv")),
         *sorted(out_dir.glob("confusion_matrix_*.csv")),
+        out_dir / "data_holdout_evaluation" / "summary.json",
+        out_dir / "data_holdout_evaluation" / "task_metrics.csv",
     ]
+    artifact_paths = [path for path in artifact_paths if path.exists()]
     wandb_logger.log_artifacts(
         artifact_paths,
         model_metadata={

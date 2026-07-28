@@ -320,10 +320,13 @@ def evaluate_condition_matrix(
     conditions = resolve_condition_matrix_conditions(cfg)
     training_name = str(training_condition["condition"])
     condition_names = [str(condition["condition"]) for condition in conditions]
-    if training_name not in condition_names:
+    if (
+        training_name not in condition_names
+        and not bool(matrix_cfg.get("allow_training_condition_absent", False))
+    ):
         raise ValueError(
-            "condition_matrix_evaluation.condition_names must include the "
-            f"resolved training condition {training_name!r}"
+            "The condition matrix must include the resolved training condition "
+            f"{training_name!r}, unless allow_training_condition_absent is true."
         )
 
     matrix_dir = Path(out_dir) / OUTPUT_DIRECTORY
@@ -397,7 +400,7 @@ def evaluate_condition_matrix(
         "expected_task_rows": len(conditions) * len(target_cols),
         "completed_task_rows": len(task_rows),
         "relation_counts": relation_counts,
-        "reused_matched_evaluation": True,
+        "reused_matched_evaluation": training_name in condition_names,
         "write_reports": bool(matrix_cfg.get("write_reports", True)),
         "condition_metrics": str(condition_path),
         "task_metrics": str(task_path),

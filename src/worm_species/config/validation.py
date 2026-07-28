@@ -17,7 +17,9 @@ KNOWN_TRANSFORMS = frozenset({
     "channel_shuffle",
     "bilateral_filter",
     "gaussian_blur",
+    "gaussian_blur_percent",
     "patch_shuffle",
+    "resolution_loss",
 })
 _ABSENT = object()
 
@@ -449,6 +451,30 @@ def _validate_condition_object(
             issues.append(ValidationIssue(sigma_path, "is required for gaussian_blur"))
         else:
             _number(issues, sigma_path, sigma, minimum=0, exclusive_minimum=True)
+    elif transform == "gaussian_blur_percent":
+        percent, percent_path = parameter("percent")
+        max_sigma, max_sigma_path = parameter("max_sigma", 16.0)
+        if percent is _ABSENT:
+            issues.append(ValidationIssue(
+                percent_path, "is required for gaussian_blur_percent"
+            ))
+        else:
+            _number(issues, percent_path, percent, minimum=0, maximum=100)
+        _number(
+            issues,
+            max_sigma_path,
+            max_sigma,
+            minimum=0,
+            exclusive_minimum=True,
+        )
+    elif transform == "resolution_loss":
+        percent, percent_path = parameter("percent")
+        if percent is _ABSENT:
+            issues.append(ValidationIssue(
+                percent_path, "is required for resolution_loss"
+            ))
+        else:
+            _number(issues, percent_path, percent, minimum=0, maximum=100)
     elif transform == "bilateral_filter":
         resolved: dict[str, tuple[Any, str]] = {}
         for key in ("diameter", "sigma_colour", "sigma_space"):
@@ -893,6 +919,15 @@ def _validate_evaluation(config: dict[str, Any], issues: list[ValidationIssue]) 
         if not isinstance(raw, dict):
             issues.append(ValidationIssue(path, "must be a mapping"))
             continue
+        if (
+            section == "condition_matrix"
+            and "allow_training_condition_absent" in raw
+            and not isinstance(raw["allow_training_condition_absent"], bool)
+        ):
+            issues.append(ValidationIssue(
+                f"{path}.allow_training_condition_absent",
+                "must be a boolean",
+            ))
         conditions = raw.get("conditions", [])
         if not isinstance(conditions, list):
             issues.append(ValidationIssue(f"{path}.conditions", "must be a list"))
@@ -935,6 +970,78 @@ def _validate_evaluation(config: dict[str, Any], issues: list[ValidationIssue]) 
             ))
 
 
+def _validate_data_holdout(
+    config: dict[str, Any], issues: list[ValidationIssue]
+) -> None:
+    raw = config.get("data_holdout", {}) or {}
+    if not isinstance(raw, dict) or not bool(raw.get("enabled", False)):
+        return
+    target_cols = config.get("data", {}).get("target_cols", {}) or {}
+    if not isinstance(target_cols, dict):
+        return
+    for key in ("name", "question"):
+        value = raw.get(key)
+        if not isinstance(value, str) or not value.strip():
+            issues.append(ValidationIssue(
+                f"data_holdout.{key}", "must be a non-empty string when enabled"
+            ))
+    remove_from = raw.get("remove_from", ["train", "validation"])
+    if (
+        not isinstance(remove_from, list)
+        or not remove_from
+        or any(item not in {"train", "validation"} for item in remove_from)
+        or len(remove_from) != len(set(remove_from))
+    ):
+        issues.append(ValidationIssue(
+            "data_holdout.remove_from",
+            "must be a unique non-empty list containing train and/or validation",
+        ))
+    for key in ("where", "evaluation_where"):
+        where = raw.get(key)
+        if key == "evaluation_where" and where is None:
+            continue
+        if not isinstance(where, dict) or not where:
+            issues.append(ValidationIssue(
+                f"data_holdout.{key}", "must be a non-empty task-to-label mapping"
+            ))
+            continue
+        for task, label in where.items():
+            if task not in target_cols:
+                issues.append(ValidationIssue(
+                    f"data_holdout.{key}.{task}",
+                    f"unknown task; expected one of {list(target_cols)!r}",
+                ))
+            if not isinstance(label, str) or not label.strip():
+                issues.append(ValidationIssue(
+                    f"data_holdout.{key}.{task}",
+                    "must be a non-empty label string",
+                ))
+    primary = raw.get("primary_tasks")
+    if (
+        not isinstance(primary, list)
+        or not primary
+        or len(primary) != len(set(primary))
+    ):
+        issues.append(ValidationIssue(
+            "data_holdout.primary_tasks",
+            "must be a unique non-empty list of task names",
+        ))
+    else:
+        evaluation_where = raw.get("evaluation_where") or raw.get("where") or {}
+        for index, task in enumerate(primary):
+            if task not in target_cols:
+                issues.append(ValidationIssue(
+                    f"data_holdout.primary_tasks[{index}]",
+                    f"unknown task; expected one of {list(target_cols)!r}",
+                ))
+            elif task not in evaluation_where:
+                issues.append(ValidationIssue(
+                    f"data_holdout.primary_tasks[{index}]",
+                    "must also have a target label in "
+                    "data_holdout.evaluation_where (or data_holdout.where)",
+                ))
+
+
 def validate_config(
     config: dict[str, Any],
     *,
@@ -953,7 +1060,7 @@ def validate_config(
         "model", "training", "output", "cache", "colour_ablation", "experiment",
         "test_cue_suppression", "condition_matrix_evaluation",
         "matched_condition_training", "sweep", "input_condition",
-        "preprocessing", "augmentation", "evaluation",
+        "preprocessing", "augmentation", "evaluation", "data_holdout",
     ):
         value = config.get(section, _ABSENT)
         if value is not _ABSENT and value is not None and not isinstance(value, dict):
@@ -1033,6 +1140,7 @@ def validate_config(
     _validate_transform_parameters(config, issues)
     _validate_sweeps(config, issues, resolved_workflow)
     _validate_evaluation(config, issues)
+    _validate_data_holdout(config, issues)
     _validate_condition_matrix(config, issues, resolved_workflow)
     _validate_canonical_training_switches(config, issues)
 

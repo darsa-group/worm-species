@@ -45,6 +45,7 @@ _SLURM_KEYS: dict[str, object] = {
     "planning": {
         "experiment_type": None,
         "external_expansion": None,
+        "clear_run_names": None,
     },
     "setup": {
         "enabled": None,
@@ -338,6 +339,7 @@ def validate_slurm_config(config: dict[str, Any]) -> None:
 
     array = slurm.get("array", {})
     _require_positive_int(array, "max_active", "slurm.array")
+    _require_bool(planning, "clear_run_names", "slurm.planning")
     expansion = planning.get("external_expansion", "sweep")
     if expansion not in {"sweep", "colour_ablation", "dual_cue"}:
         raise SlurmConfigError(
@@ -367,7 +369,13 @@ def validate_slurm_config(config: dict[str, Any]) -> None:
 
     scratch = slurm.get("scratch", {})
     mode = scratch.get("mode", "none")
-    if mode not in {"none", "node_local", "persistent_cache", "job_local_cache"}:
+    if mode not in {
+        "none",
+        "node_local",
+        "node_shared_cache",
+        "persistent_cache",
+        "job_local_cache",
+    }:
         raise SlurmConfigError(f"Unsupported slurm.scratch.mode: {mode!r}")
     for key in ("copy_project", "copy_data", "reuse_ready_cache", "cleanup_after_run"):
         _require_bool(scratch, key, "slurm.scratch")
@@ -437,7 +445,21 @@ def validate_slurm_config(config: dict[str, Any]) -> None:
             raise SlurmConfigError("node-local scratch requires slurm.setup.enabled=true")
         if not bool(slurm.get("cleanup", {}).get("enabled", False)):
             raise SlurmConfigError("node-local scratch requires slurm.cleanup.enabled=true")
-    if mode in {"persistent_cache", "job_local_cache"}:
+    if mode in {"persistent_cache", "job_local_cache", "node_shared_cache"}:
         cache_root = slurm.get("paths", {}).get("cache_root")
         if not isinstance(cache_root, str) or not cache_root:
             raise SlurmConfigError(f"slurm.paths.cache_root is required for {mode}")
+    if mode == "node_shared_cache":
+        scratch_root = scratch.get("root")
+        if not isinstance(scratch_root, str) or not scratch_root.startswith("/tmp/"):
+            raise SlurmConfigError(
+                "node_shared_cache requires slurm.scratch.root below /tmp"
+            )
+        if not bool(scratch.get("reuse_ready_cache", False)):
+            raise SlurmConfigError(
+                "node_shared_cache requires slurm.scratch.reuse_ready_cache=true"
+            )
+        if bool(scratch.get("cleanup_after_run", True)):
+            raise SlurmConfigError(
+                "node_shared_cache requires slurm.scratch.cleanup_after_run=false"
+            )

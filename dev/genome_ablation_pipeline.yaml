@@ -1,0 +1,21 @@
+# One-command, dependency-chained paper experiment.
+name: genome_ablation_paper
+cluster_config: ../configs/clusters/genome.yaml
+paper_result_dir: ../paper_result
+dependency: afterok
+
+stages:
+  - name: baseline
+    config: genome_ablation_baseline.yaml
+  - name: visual_ablation
+    config: genome_visual_ablation.yaml
+  - name: data_holdouts
+    config: genome_data_holdouts.yaml
+
+report:
+  enabled: true
+  script: ../scripts/build_paper_results.py
+  style: paper_report_style.yaml
+  cpus_per_task: 4
+  memory: 16G
+  time_limit: "01:00:00"

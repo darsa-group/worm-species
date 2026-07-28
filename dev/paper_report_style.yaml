@@ -1,0 +1,18 @@
+# Edit this file, then rerun scripts/build_paper_results.py.
+# No model training or scheduler submission is involved.
+dpi: 300
+font_size: 10
+axes_grid: false
+
+palette:
+  - "#4C78A8"
+  - "#F58518"
+  - "#54A24B"
+  - "#E45756"
+  - "#B279A2"
+
+best_baseline_colour: "#111111"
+workflow_data_colour: "#D9EDF7"
+workflow_model_colour: "#DFF0D8"
+workflow_experiment_colour: "#FCE8C3"
+heatmap_colormap: viridis

@@ -11,6 +11,7 @@ from src.cache import build_image_cache
 from src.splits import make_individual_level_splits
 
 from ..data.datasets import MultiTaskWormImageDataset
+from ..data.holdouts import apply_data_holdout
 from ..data.labels import build_label_maps
 from ..data.labels import get_target_cols
 from ..data.labels import read_csvs_from_dir
@@ -31,6 +32,8 @@ class LoaderBundle:
     train_df: object
     target_cols: dict
     test_loader_context: dict | None = None
+    data_holdout_loader: DataLoader | None = None
+    data_holdout_audit: dict | None = None
 
 
 def require_complete_task_labels(
@@ -85,6 +88,8 @@ def get_input_condition(cfg: dict) -> dict:
         "sigma",
         "grid_size",
         "seed",
+        "percent",
+        "max_sigma",
     }
     for key in parameter_keys:
         value = raw.get(key, nested_parameters.get(key))
@@ -113,6 +118,11 @@ def get_input_condition(cfg: dict) -> dict:
         )
     elif transform_name == "gaussian_blur":
         condition["sigma"] = float(condition["sigma"])
+    elif transform_name == "gaussian_blur_percent":
+        condition["percent"] = float(condition["percent"])
+        condition["max_sigma"] = float(condition.get("max_sigma", 16.0))
+    elif transform_name == "resolution_loss":
+        condition["percent"] = float(condition["percent"])
     elif transform_name == "patch_shuffle":
         condition.update(
             grid_size=int(condition["grid_size"]),
@@ -186,6 +196,18 @@ def make_profile_loaders(cfg: dict, profile: TrainingProfile) -> LoaderBundle:
         test_df = test_df[test_df["_cached_image_path"].notna()].reset_index(
             drop=True
         )
+
+    holdout = apply_data_holdout(
+        config=cfg,
+        train=train_df,
+        validation=val_df,
+        test=test_df,
+        target_cols=target_cols,
+        group_col=group_col,
+    )
+    train_df = holdout.train
+    val_df = holdout.validation
+    test_df = holdout.test
 
     if not profile.masked_labels:
         require_complete_task_labels(
@@ -283,6 +305,19 @@ def make_profile_loaders(cfg: dict, profile: TrainingProfile) -> LoaderBundle:
         shuffle=False,
         **eval_loader_kwargs,
     )
+    data_holdout_loader = None
+    if holdout.evaluation_cohort is not None:
+        holdout_ds = MultiTaskWormImageDataset(
+            holdout.evaluation_cohort,
+            transform=eval_tf,
+            **common_kwargs,
+        )
+        data_holdout_loader = DataLoader(
+            holdout_ds,
+            batch_size=batch_size,
+            shuffle=False,
+            **eval_loader_kwargs,
+        )
 
     split_summary = {}
     if profile.loader_mode in {"colour", "condition"}:
@@ -319,6 +354,8 @@ def make_profile_loaders(cfg: dict, profile: TrainingProfile) -> LoaderBundle:
             "test_individuals": test_df[group_col].nunique(),
         }
     )
+    if holdout.audit is not None:
+        split_summary["data_holdout"] = holdout.audit
 
     context = None
     if profile.loader_mode == "condition":
@@ -335,15 +372,17 @@ def make_profile_loaders(cfg: dict, profile: TrainingProfile) -> LoaderBundle:
         }
 
     return LoaderBundle(
-        train_loader,
-        val_loader,
-        test_loader,
-        label_to_index_by_task,
-        index_to_label_by_task,
-        split_summary,
-        train_df,
-        target_cols,
-        context,
+        train_loader=train_loader,
+        val_loader=val_loader,
+        test_loader=test_loader,
+        label_to_index_by_task=label_to_index_by_task,
+        index_to_label_by_task=index_to_label_by_task,
+        split_summary=split_summary,
+        train_df=train_df,
+        target_cols=target_cols,
+        test_loader_context=context,
+        data_holdout_loader=data_holdout_loader,
+        data_holdout_audit=holdout.audit,
     )
 
 

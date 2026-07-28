@@ -88,11 +88,20 @@ def _dependency_argument(
 ) -> str | None:
     grouped: dict[str, list[str]] = {}
     for dependency in dependencies:
-        name = dependency["job"]
         kind = dependency["kind"]
         if kind not in {"afterok", "afterany"}:
             raise SubmissionError(f"Unsupported dependency kind: {kind!r}")
-        if symbolic:
+        direct_job_id = dependency.get("job_id")
+        name = dependency.get("job")
+        if direct_job_id is not None:
+            job_id = str(direct_job_id)
+            if _JOB_ID.fullmatch(job_id) is None:
+                raise SubmissionError(
+                    f"Invalid external dependency job ID: {job_id!r}"
+                )
+        elif not isinstance(name, str) or not name:
+            raise SubmissionError("Dependency requires job or job_id")
+        elif symbolic:
             job_id = f"@{name}"
         else:
             try:
@@ -226,6 +235,7 @@ def submit_manifest(
     manifest_path: str | Path,
     *,
     client: SbatchClient | None = None,
+    train_dependencies: Sequence[Mapping[str, str]] = (),
 ) -> dict[str, str]:
     """Verify and submit a rendered graph, retaining partial-failure evidence."""
     try:
@@ -242,7 +252,13 @@ def submit_manifest(
     calls: list[dict[str, object]] = []
     for job in jobs:
         name = str(job["name"])
-        argv = build_sbatch_argv(job, root, submitted)
+        submitted_job = dict(job)
+        if submitted_job.get("role") == "train_array" and train_dependencies:
+            submitted_job["dependencies"] = [
+                *list(submitted_job.get("dependencies", [])),
+                *[dict(item) for item in train_dependencies],
+            ]
+        argv = build_sbatch_argv(submitted_job, root, submitted)
         result = scheduler.run(argv)
         call = {
             "job": name,

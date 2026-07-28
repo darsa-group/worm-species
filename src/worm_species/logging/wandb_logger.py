@@ -56,6 +56,11 @@ class WandbLogger:
         self._finished = False
         self._classification_rows: list[dict[str, Any]] = []
         self._test_conditions: set[str] = set()
+        wandb_cfg = self.cfg.get("wandb", {}) or {}
+        self.compact = bool(
+            isinstance(wandb_cfg, Mapping)
+            and wandb_cfg.get("compact", False)
+        )
 
     @property
     def enabled(self) -> bool:
@@ -197,6 +202,8 @@ class WandbLogger:
         return enabled, condition_set, task_set
 
     def should_log_confusion_matrix(self, condition: str, task: str) -> bool:
+        if self.compact:
+            return False
         enabled, conditions, tasks = self._confusion_settings()
         return (
             enabled
@@ -283,7 +290,7 @@ class WandbLogger:
             condition_relation=relation,
             metrics=metrics,
         )
-        if not rows or not self.enabled:
+        if not rows or not self.enabled or self.compact:
             return rows
         self._classification_rows.extend(rows)
         try:
@@ -303,7 +310,7 @@ class WandbLogger:
         return rows
 
     def log_test_metrics_table(self, rows: Any) -> bool:
-        if not self.enabled:
+        if not self.enabled or self.compact:
             return False
         try:
             table = self._table(rows)
@@ -347,6 +354,9 @@ class WandbLogger:
 
         if not self.enabled:
             return scalar_payload
+        if self.compact:
+            self._log(scalar_payload)
+            return scalar_payload
         try:
             robustness_table = self._table(records)
             payload: dict[str, Any] = {
@@ -364,7 +374,7 @@ class WandbLogger:
         return scalar_payload
 
     def log_comparison_table(self, rows: Any) -> bool:
-        if not self.enabled:
+        if not self.enabled or self.compact:
             return False
         try:
             records = canonical_table_records(rows)
@@ -400,7 +410,7 @@ class WandbLogger:
         metadata: Mapping[str, Any] | None = None,
         model_metadata: Mapping[str, Any] | None = None,
     ) -> list[str]:
-        if not self.enabled:
+        if not self.enabled or self.compact:
             return []
         if isinstance(paths, Mapping):
             named_paths = [
@@ -582,7 +592,16 @@ def create_wandb_logger(
         if isinstance(wandb_cfg, Mapping)
         else None
     ) or os.getenv("WANDB_ENTITY") or None
-    configured_name = str(wandb_cfg.get("name")) + "_" + str(run_name)
+    name_prefix = (
+        wandb_cfg.get("name")
+        if isinstance(wandb_cfg, Mapping)
+        else None
+    )
+    environment_name = os.getenv("WANDB_NAME")
+    configured_name = (
+        environment_name
+        or (f"{name_prefix}_{run_name}" if name_prefix else str(run_name))
+    )
     group = (
         wandb_cfg.get("group")
         if isinstance(wandb_cfg, Mapping)

@@ -19,6 +19,7 @@ from ..config.validation import ConfigValidationError, validate_config
 from ..experiments.conditions import (
     condition_overrides,
     format_override,
+    slug,
 )
 from ..training.modes import infer_experiment_type
 from ..training.modes import resolve_configured_profile
@@ -157,6 +158,7 @@ def generate_external_specs(
     items = expand_sweep_items(canonical)
     planning = (config.get("slurm", {}) or {}).get("planning", {}) or {}
     compatibility_kind = str(planning.get("external_expansion", "sweep"))
+    clear_run_names = bool(planning.get("clear_run_names", False))
     canonical_sweep = canonical.get("sweep", {}) or {}
     parameter_count = len(canonical_sweep.get("parameters", {}) or {})
     evaluation = canonical.get("evaluation", {}) or {}
@@ -188,7 +190,29 @@ def generate_external_specs(
             )
         )
         condition_name = "original"
-        run_id = f"run_{index:03d}_{model}_{condition_name}_{datetime.now().strftime('%Y%m%d%H%M%S')}"
+        loss_weights = assignments.get("multi_task.loss_weights")
+        loss_suffix = ""
+        if isinstance(loss_weights, dict):
+            loss_suffix = "_loss_" + "_".join(
+                f"{slug(task)}-{slug(value)}"
+                for task, value in loss_weights.items()
+            )
+        holdout_value = assignments.get("data_holdout")
+        holdout_suffix = ""
+        if isinstance(holdout_value, dict) and holdout_value.get("name"):
+            holdout_suffix = f"_holdout_{slug(holdout_value['name'])}"
+        seed_value = assignments.get("seed")
+        seed_suffix = (
+            f"_seed_{slug(seed_value)}" if seed_value is not None else ""
+        )
+        run_id = (
+            None
+            if clear_run_names
+            else (
+                f"run_{index:03d}_{model}_original_"
+                f"{datetime.now().strftime('%Y%m%d%H%M%S')}"
+            )
+        )
             
         if item.condition is not None:
             condition = _legacy_condition(item.condition)
@@ -216,6 +240,12 @@ def generate_external_specs(
                         + ("true" if cue_enabled else "false")
                     )
                     overrides.append("matched_condition_training.enabled=false")
+        if run_id is None:
+            run_id = (
+                f"run_{index:03d}_{slug(model)}_{slug(condition_name)}"
+                f"{loss_suffix}{holdout_suffix}{seed_suffix}_"
+                f"{datetime.now().strftime('%Y%m%d%H%M%S')}"
+            )
         specs.append((run_id, overrides, model, condition_name))
     return specs
 
