@@ -88,7 +88,9 @@ CONDITION_CACHE_OVERRIDES=()
 if [[ "$CONDITION_CACHE_ENABLED" == "true" ]]; then
     CONDITION_SOURCE=$(python -m worm_species.cache condition-path \
         --config "$RESOLVED_CONFIG" \
-        --condition-cache-dir "$CONDITION_CACHE_ROOT")
+        --condition-cache-dir "$CONDITION_CACHE_ROOT" \
+        --if-cacheable)
+    if [[ -n "$CONDITION_SOURCE" ]]; then
     [[ -d "$CONDITION_SOURCE" && -f "$CONDITION_SOURCE/CACHE_READY" ]] || {
         echo "Condition cache is not ready: $CONDITION_SOURCE" >&2
         exit 1
@@ -134,6 +136,9 @@ if [[ "$CONDITION_CACHE_ENABLED" == "true" ]]; then
     CONDITION_CACHE_OVERRIDES+=(
         "cache.condition_variants.root=$NODE_CONDITION_ROOT"
     )
+    else
+        echo "Condition is not precomputed; using the base image cache"
+    fi
 fi
 
 JOB_TMP="${TMPDIR:-/tmp/${SLURM_JOB_ID}}"

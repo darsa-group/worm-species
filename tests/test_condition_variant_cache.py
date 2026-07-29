@@ -20,10 +20,12 @@ from src.worm_species.cache.condition_variants import (
     build_condition_cache,
     cacheable_conditions,
     condition_cache_directory,
+    resolved_condition_cache_directory,
     verify_condition_cache,
 )
 from src.worm_species.cache.maintenance import build_persistent_cache
 from src.worm_species.config.loading import load_config
+from src.worm_species.config.normalization import normalize_config
 from src.worm_species.data.conditions import ResolutionLoss
 from src.worm_species.slurm.config import load_submission_config
 from src.worm_species.slurm.planning import plan_submission
@@ -65,6 +67,32 @@ class ConditionVariantCacheTests(unittest.TestCase):
             condition_cache_directory("/cache", resolved_condition),
         )
 
+    def test_legacy_condition_alias_is_canonicalized_when_name_absent(
+        self,
+    ) -> None:
+        normalized = normalize_config(
+            {
+                "input_condition": {
+                    "enabled": True,
+                    "condition": "patch_shuffle_2x2",
+                    "feature": "spatial_layout",
+                    "transform": "patch_shuffle",
+                    "strength": 2,
+                    "grid_size": 2,
+                    "seed": 2026,
+                }
+            }
+        )
+        self.assertNotIn("condition", normalized["input_condition"])
+        self.assertEqual(
+            normalized["input_condition"]["name"],
+            "patch_shuffle_2x2",
+        )
+        self.assertEqual(
+            get_input_condition(normalized)["condition"],
+            "patch_shuffle_2x2",
+        )
+
     def test_every_resolved_visual_training_path_matches_builder_path(
         self,
     ) -> None:
@@ -94,7 +122,12 @@ class ConditionVariantCacheTests(unittest.TestCase):
             }:
                 continue
             checked += 1
-            condition = get_input_condition(spec.resolved_config)
+            raw_condition = spec.resolved_config["input_condition"]
+            self.assertNotIn("condition", raw_condition)
+            self.assertEqual(raw_condition["name"], spec.training_condition)
+            condition = get_input_condition(
+                normalize_config(spec.resolved_config)
+            )
             self.assertIn(
                 condition_cache_directory("/cache", condition),
                 builder_paths,
@@ -102,6 +135,42 @@ class ConditionVariantCacheTests(unittest.TestCase):
             )
         self.assertEqual(checked, 105)
         self.assertEqual(len(builder_paths), 21)
+
+    def test_uncached_condition_path_can_be_skipped_by_node_staging(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            config_path = Path(temporary) / "saturation.yaml"
+            config_path.write_text(
+                yaml.safe_dump(
+                    {
+                        "cache": {
+                            "condition_variants": {
+                                "enabled": True,
+                                "protocol_version": 1,
+                            }
+                        },
+                        "input_condition": {
+                            "enabled": True,
+                            "name": "colour_000pct",
+                            "feature": "colour",
+                            "transform": "saturation",
+                            "strength": 1.0,
+                            "parameters": {"retention": 0.0},
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            self.assertIsNone(
+                resolved_condition_cache_directory(
+                    config_path,
+                    "/cache",
+                    require_cacheable=False,
+                )
+            )
+            with self.assertRaisesRegex(ValueError, "not cacheable"):
+                resolved_condition_cache_directory(config_path, "/cache")
 
     def test_cache_identity_is_condition_based_and_attaches_complete_tensors(self) -> None:
         condition = {

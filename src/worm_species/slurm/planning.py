@@ -268,9 +268,17 @@ def _validate_canonical_training_semantics(config: dict[str, Any]) -> str:
 def _resolve_one_run(
     config: dict[str, Any], overrides: list[str]
 ) -> tuple[dict[str, Any], tuple[str, ...], str]:
-    scientific = copy.deepcopy(config)
+    # Remove inherited legacy aliases before applying canonical per-condition
+    # overrides. Otherwise ``input_condition.condition: original`` can survive
+    # beside an overridden ``input_condition.name`` and later win at runtime.
+    scientific = normalize_config(copy.deepcopy(config))
     scientific.pop("slurm", None)
-    resolved = apply_overrides(scientific, [*overrides, *_EXTERNAL_DISABLE_OVERRIDES])
+    resolved = normalize_config(
+        apply_overrides(
+            scientific,
+            [*overrides, *_EXTERNAL_DISABLE_OVERRIDES],
+        )
+    )
     if bool((resolved.get("sweep", {}) or {}).get("enabled", False)):
         raise SlurmConfigError("External run specification left sweep.enabled=true")
     if bool((resolved.get("colour_ablation", {}) or {}).get("enabled", False)):

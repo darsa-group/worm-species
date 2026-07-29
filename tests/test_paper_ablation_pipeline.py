@@ -132,7 +132,9 @@ class GenomePaperPlanTests(unittest.TestCase):
                 )
                 if filename == "genome_visual_ablation.yaml":
                     resolution = [
-                        spec.resolved_config["input_condition"]["percent"]
+                        spec.resolved_config["input_condition"][
+                            "parameters"
+                        ]["percent"]
                         for spec in plan.run_specs
                         if spec.training_transform == "resolution_loss"
                     ]
@@ -234,6 +236,8 @@ class GenomePaperPlanTests(unittest.TestCase):
         self.assertIn('flock -x 200', template)
         self.assertIn('rsync -a "$CACHE_ROOT/" "$partial/"', template)
         self.assertIn("SOURCE_READY.signature", template)
+        self.assertIn("--if-cacheable", template)
+        self.assertIn('if [[ -n "$CONDITION_SOURCE" ]]', template)
 
 
 class PaperReportTests(unittest.TestCase):

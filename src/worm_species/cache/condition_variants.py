@@ -512,15 +512,26 @@ def verify_condition_cache(cache_dir: str | Path) -> ConditionCacheResult:
 def resolved_condition_cache_directory(
     config_path: str | Path,
     cache_root: str | Path,
-) -> Path:
+    *,
+    require_cacheable: bool = True,
+) -> Path | None:
     """Resolve the condition-cache directory for one external run config."""
     from ..training.loaders import get_input_condition
 
-    config = load_config(Path(config_path).expanduser().resolve())
+    config = normalize_config(
+        load_config(Path(config_path).expanduser().resolve())
+    )
     settings = condition_cache_settings(config)
     if not settings["enabled"]:
         raise ValueError("condition variants are not enabled")
     condition = get_input_condition(config)
+    if condition["transform"] not in DEFAULT_TRANSFORMS:
+        if require_cacheable:
+            raise ValueError(
+                "resolved condition is not cacheable: "
+                f"{condition['transform']}"
+            )
+        return None
     return condition_cache_directory(
         cache_root,
         condition,

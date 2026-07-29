@@ -31,6 +31,7 @@ from worm_species.cache.condition_variants import (
     condition_cache_directory,
     condition_cache_settings,
 )
+from worm_species.config.normalization import normalize_config
 from worm_species.training.loaders import get_input_condition
 
 
@@ -331,7 +332,9 @@ def run_pipeline(pipeline_path: Path, mode: str) -> dict:
             if spec.training_transform not in transforms:
                 continue
             checked_training_specs += 1
-            training_condition = get_input_condition(spec.resolved_config)
+            training_condition = get_input_condition(
+                normalize_config(spec.resolved_config)
+            )
             expected_directory = condition_cache_directory(
                 condition_cache_root,
                 training_condition,

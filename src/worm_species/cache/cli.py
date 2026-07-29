@@ -64,6 +64,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     condition_path.add_argument("--config", required=True)
     condition_path.add_argument("--condition-cache-dir", required=True)
+    condition_path.add_argument(
+        "--if-cacheable",
+        action="store_true",
+        help="print nothing and succeed for an uncached condition",
+    )
     return parser
 
 
@@ -98,11 +103,13 @@ def main(argv: list[str] | None = None) -> int:
         elif args.command == "verify-condition":
             result = verify_condition_cache(args.cache_dir)
         else:
-            print(
-                resolved_condition_cache_directory(
-                    args.config, args.condition_cache_dir
-                )
+            condition_directory = resolved_condition_cache_directory(
+                args.config,
+                args.condition_cache_dir,
+                require_cacheable=not args.if_cacheable,
             )
+            if condition_directory is not None:
+                print(condition_directory)
             return 0
     except (OSError, ValueError) as exc:
         print(f"configuration/path error: {exc}", file=sys.stderr)

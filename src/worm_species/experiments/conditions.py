@@ -229,7 +229,7 @@ def sweep_combinations(config: dict) -> list[dict[str, Any]]:
 def condition_overrides(condition: dict) -> list[str]:
     lines = [
         "input_condition.enabled=true",
-        f"input_condition.condition={format_override(condition['condition'])}",
+        f"input_condition.name={format_override(condition['condition'])}",
         f"input_condition.feature={format_override(condition['feature'])}",
         f"input_condition.transform={format_override(condition['transform'])}",
         f"input_condition.strength={format_override(condition.get('strength', 0.0))}",
