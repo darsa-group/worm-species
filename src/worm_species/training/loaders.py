@@ -10,6 +10,10 @@ from torch.utils.data import DataLoader
 from src.cache import build_image_cache
 from src.splits import make_individual_level_splits
 
+from ..cache.condition_variants import DEFAULT_TRANSFORMS
+from ..cache.condition_variants import TENSOR_COLUMN
+from ..cache.condition_variants import attach_condition_cache
+from ..cache.condition_variants import condition_cache_settings
 from ..data.datasets import MultiTaskWormImageDataset
 from ..data.holdouts import apply_data_holdout
 from ..data.labels import build_label_maps
@@ -208,6 +212,7 @@ def make_profile_loaders(cfg: dict, profile: TrainingProfile) -> LoaderBundle:
     train_df = holdout.train
     val_df = holdout.validation
     test_df = holdout.test
+    evaluation_cohort = holdout.evaluation_cohort
 
     if not profile.masked_labels:
         require_complete_task_labels(
@@ -242,6 +247,37 @@ def make_profile_loaders(cfg: dict, profile: TrainingProfile) -> LoaderBundle:
             "strength": 0.0,
         }
     )
+    condition_settings = condition_cache_settings(cfg)
+    condition_cache_active = (
+        profile.loader_mode == "condition"
+        and condition_settings["enabled"]
+        and input_condition["transform"] in DEFAULT_TRANSFORMS
+    )
+    if condition_cache_active:
+        condition_root = (
+            (cfg.get("cache", {}) or {})
+            .get("condition_variants", {})
+            .get("root")
+        )
+        if not isinstance(condition_root, str) or not condition_root:
+            raise ValueError(
+                "cache.condition_variants.root is required when condition "
+                "caching is enabled"
+            )
+        attach_kwargs = {
+            "cache_root": condition_root,
+            "condition": input_condition,
+            "protocol_version": int(
+                condition_settings["protocol_version"]
+            ),
+        }
+        train_df = attach_condition_cache(train_df, **attach_kwargs)
+        val_df = attach_condition_cache(val_df, **attach_kwargs)
+        test_df = attach_condition_cache(test_df, **attach_kwargs)
+        if evaluation_cohort is not None:
+            evaluation_cohort = attach_condition_cache(
+                evaluation_cohort, **attach_kwargs
+            )
 
     if profile.loader_mode == "colour":
         print(
@@ -253,6 +289,7 @@ def make_profile_loaders(cfg: dict, profile: TrainingProfile) -> LoaderBundle:
         augmentation=augmentation,
         condition=input_condition,
         original_colour_retention=colour_retention,
+        condition_precomputed=condition_cache_active,
     )
     eval_tf = build_split_transform(
         split="validation",
@@ -260,16 +297,44 @@ def make_profile_loaders(cfg: dict, profile: TrainingProfile) -> LoaderBundle:
         augmentation=augmentation,
         condition=input_condition,
         original_colour_retention=colour_retention,
+        condition_precomputed=condition_cache_active,
     )
 
-    common_kwargs = {
+    base_common_kwargs = {
         "root_dir": cfg["data"]["root_dir"],
-        "image_col": image_col_for_dataset,
+        "image_col": (
+            "_cached_image_path"
+            if cache_enabled
+            else cfg["data"]["image_col"]
+        ),
         "target_cols": target_cols,
         "label_to_index_by_task": label_to_index_by_task,
         "mask_col": cfg["data"].get("mask_col"),
-        "crop_to_foreground": crop_to_foreground_for_dataset,
+        "crop_to_foreground": (
+            False
+            if cache_enabled
+            else cfg["data"].get("crop_to_foreground", True)
+        ),
         "crop_pad": cfg["data"].get("crop_pad", 0.15),
+        "image_is_tensor": False,
+    }
+    common_kwargs = {
+        "root_dir": cfg["data"]["root_dir"],
+        "image_col": (
+            TENSOR_COLUMN
+            if condition_cache_active
+            else image_col_for_dataset
+        ),
+        "target_cols": target_cols,
+        "label_to_index_by_task": label_to_index_by_task,
+        "mask_col": cfg["data"].get("mask_col"),
+        "crop_to_foreground": (
+            False
+            if condition_cache_active
+            else crop_to_foreground_for_dataset
+        ),
+        "crop_pad": cfg["data"].get("crop_pad", 0.15),
+        "image_is_tensor": condition_cache_active,
     }
     train_ds = MultiTaskWormImageDataset(
         train_df, transform=train_tf, **common_kwargs
@@ -306,9 +371,9 @@ def make_profile_loaders(cfg: dict, profile: TrainingProfile) -> LoaderBundle:
         **eval_loader_kwargs,
     )
     data_holdout_loader = None
-    if holdout.evaluation_cohort is not None:
+    if evaluation_cohort is not None:
         holdout_ds = MultiTaskWormImageDataset(
-            holdout.evaluation_cohort,
+            evaluation_cohort,
             transform=eval_tf,
             **common_kwargs,
         )
@@ -361,7 +426,7 @@ def make_profile_loaders(cfg: dict, profile: TrainingProfile) -> LoaderBundle:
     if profile.loader_mode == "condition":
         context = {
             "test_df": test_df,
-            "dataset_kwargs": common_kwargs,
+            "dataset_kwargs": base_common_kwargs,
             "batch_size": batch_size,
             "loader_kwargs": eval_loader_kwargs,
             "image_size": image_size,
@@ -369,6 +434,7 @@ def make_profile_loaders(cfg: dict, profile: TrainingProfile) -> LoaderBundle:
             "augmentation": augmentation,
             "original_colour_retention": colour_retention,
             "training_condition": input_condition,
+            "condition_cache_active": condition_cache_active,
         }
 
     return LoaderBundle(

@@ -211,6 +211,29 @@ class CanonicalTransformTests(unittest.TestCase):
         self.assertIsInstance(transform.transforms[3], ChannelShuffle)
         self.assertEqual(transform.transforms[3].order, (1, 2, 0))
 
+    def test_precomputed_condition_keeps_only_live_train_augmentation(self) -> None:
+        transform = build_split_transform(
+            split="train",
+            preprocessing={"image_size": 16},
+            condition={
+                "transform": "patch_shuffle",
+                "parameters": {"grid_size": 4, "seed": 2026},
+            },
+            condition_precomputed=True,
+        )
+        self.assertEqual(
+            operation_names(transform),
+            [
+                "Resize",
+                "RandomHorizontalFlip",
+                "RandomVerticalFlip",
+                "RandomRotation",
+                "Normalize",
+            ],
+        )
+        tensor = torch.rand(3, 16, 16)
+        self.assertEqual(tuple(transform(tensor).shape), (3, 16, 16))
+
     def test_matched_condition_is_on_all_splits_but_only_train_is_random(self) -> None:
         condition = {
             "transform": "patch_shuffle",

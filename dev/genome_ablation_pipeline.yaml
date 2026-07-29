@@ -4,6 +4,24 @@ cluster_config: ../configs/clusters/genome.yaml
 paper_result_dir: ../paper_result
 dependency: afterok
 
+base_cache:
+  enabled: true
+  source_stage: baseline
+  directory_name: image_cache_paper_v1
+  cpus_per_task: 8
+  memory: 16G
+  time_limit: "04:00:00"
+
+condition_cache:
+  enabled: true
+  source_stage: visual_ablation
+  directory_name: image_condition_cache_paper_v1
+  transforms: [gaussian_blur_percent, patch_shuffle, resolution_loss]
+  cpus_per_task: 8
+  memory: 16G
+  time_limit: "04:00:00"
+  max_active: 8
+
 stages:
   - name: baseline
     config: genome_ablation_baseline.yaml

@@ -5,6 +5,8 @@ set -euo pipefail
 ARTIFACT_ROOT=@@ARTIFACT_ROOT@@
 CACHE_ROOT=@@CACHE_ROOT@@
 CACHE_READY_MARKER=@@CACHE_READY_MARKER@@
+CONDITION_CACHE_ENABLED=@@CONDITION_CACHE_ENABLED@@
+CONDITION_CACHE_ROOT=@@CONDITION_CACHE_ROOT@@
 CONDA_ENV=@@CONDA_ENV@@
 CONDA_SH=@@CONDA_SH@@
 COPY_CACHE_TO_TMP=@@COPY_CACHE_TO_TMP@@
@@ -29,6 +31,11 @@ RESOLVED_CONFIG="${RESOLVED_CONFIG_DIR}/${RUN_ID}.yaml"
     echo "Incomplete run artifacts for array index $SLURM_ARRAY_TASK_ID" >&2
     exit 1
 }
+
+if [[ -n "$CONDA_SH" ]]; then
+    source "$CONDA_SH"
+    conda activate "$CONDA_ENV"
+fi
 
 [[ -d "$CACHE_ROOT" && -f "$CACHE_READY_MARKER" ]] || {
     echo "Persistent source cache is not ready: $CACHE_ROOT" >&2
@@ -77,6 +84,58 @@ source_signature="$CACHE_ROOT|$(stat -c '%d:%i:%s:%Y' "$CACHE_READY_MARKER")"
     fi
 ) 200>"$CACHE_LOCK"
 
+CONDITION_CACHE_OVERRIDES=()
+if [[ "$CONDITION_CACHE_ENABLED" == "true" ]]; then
+    CONDITION_SOURCE=$(python -m worm_species.cache condition-path \
+        --config "$RESOLVED_CONFIG" \
+        --condition-cache-dir "$CONDITION_CACHE_ROOT")
+    [[ -d "$CONDITION_SOURCE" && -f "$CONDITION_SOURCE/CACHE_READY" ]] || {
+        echo "Condition cache is not ready: $CONDITION_SOURCE" >&2
+        exit 1
+    }
+    NODE_CONDITION_ROOT="${SCRATCH_ROOT}/condition_cache"
+    CONDITION_VERSION=$(basename "$(dirname "$CONDITION_SOURCE")")
+    CONDITION_NAME=$(basename "$CONDITION_SOURCE")
+    NODE_CONDITION="${NODE_CONDITION_ROOT}/${CONDITION_VERSION}/${CONDITION_NAME}"
+    CONDITION_LOCK="${SCRATCH_ROOT}/CONDITION_CACHE_${CONDITION_NAME}.lock"
+    CONDITION_SIGNATURE="${NODE_CONDITION}/SOURCE_READY.signature"
+    condition_source_signature="$CONDITION_SOURCE|$(stat -c '%d:%i:%s:%Y' "$CONDITION_SOURCE/CACHE_READY")"
+    (
+        flock -x 201
+        cached_condition_signature=""
+        if [[ -f "$CONDITION_SIGNATURE" ]]; then
+            cached_condition_signature=$(<"$CONDITION_SIGNATURE")
+        fi
+        if [[ ! -f "$NODE_CONDITION/CACHE_READY" || "$cached_condition_signature" != "$condition_source_signature" ]]; then
+            condition_bytes=$(du -sb "$CONDITION_SOURCE" | awk '{print $1}')
+            available_bytes=$(df -PB1 "$SCRATCH_ROOT" | awk 'NR == 2 {print $4}')
+            reserve_bytes=$((TMP_RESERVE_GB * 1024 * 1024 * 1024))
+            (( available_bytes >= condition_bytes + reserve_bytes )) || {
+                echo "Insufficient node-local space for condition cache" >&2
+                exit 1
+            }
+            partial="${NODE_CONDITION_ROOT}/.partial.${CONDITION_NAME}.${SLURM_JOB_ID}.${SLURM_ARRAY_TASK_ID}"
+            rm -rf -- "$partial"
+            mkdir -p "$partial"
+            rsync -a "$CONDITION_SOURCE/" "$partial/"
+            [[ -f "$partial/CACHE_READY" ]] || {
+                echo "Transferred condition cache has no readiness marker" >&2
+                exit 1
+            }
+            printf '%s\n' "$condition_source_signature" > "$partial/SOURCE_READY.signature"
+            mkdir -p "$(dirname "$NODE_CONDITION")"
+            rm -rf -- "$NODE_CONDITION"
+            mv "$partial" "$NODE_CONDITION"
+            echo "Published condition cache $CONDITION_NAME on $(hostname)"
+        else
+            echo "Reusing condition cache $CONDITION_NAME on $(hostname)"
+        fi
+    ) 201>"$CONDITION_LOCK"
+    CONDITION_CACHE_OVERRIDES+=(
+        "cache.condition_variants.root=$NODE_CONDITION_ROOT"
+    )
+fi
+
 JOB_TMP="${TMPDIR:-/tmp/${SLURM_JOB_ID}}"
 RUN_SCRATCH_OUT="${JOB_TMP}/worm_species/outputs/${RUN_ID}"
 RUN_BACK_OUT="${RESULTS_ROOT}/${RUN_ID}"
@@ -95,7 +154,6 @@ copy_results_back() {
 }
 trap copy_results_back EXIT
 
-if [[ -n "$CONDA_SH" ]]; then source "$CONDA_SH"; conda activate "$CONDA_ENV"; fi
 cd "$PROJECT_ROOT"
 export PYTHONPATH="$PROJECT_ROOT/src${PYTHONPATH:+:$PYTHONPATH}"
 export WANDB_NAME="$RUN_ID"
@@ -111,5 +169,6 @@ srun @@TRAIN_COMMAND@@ --config "$RESOLVED_CONFIG" --single-run --override \
     wandb.group="${WANDB_RUN_GROUP:-paper}" \
     cache.enabled=true cache.cache_dir="$NODE_CACHE" cache.dir="$NODE_CACHE" \
     cache.root_dir="$NODE_CACHE" cache.root_dir_cache="$CACHE_PARENT" \
+    "${CONDITION_CACHE_OVERRIDES[@]}" \
     split.predefined_split_dir="$PROJECT_ROOT" || status=$?
 exit "$status"

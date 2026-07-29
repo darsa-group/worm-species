@@ -38,6 +38,7 @@ class MultiTaskWormImageDataset(Dataset):
         target_cols: dict[str, str] | None = None,
         label_to_index_by_task: dict[str, dict[str, int]] | None = None,
         missing_label_index: int = MISSING_LABEL_INDEX,
+        image_is_tensor: bool = False,
     ):
         self.df = df.reset_index(drop=True)
         self.root_dir = Path(root_dir)
@@ -48,6 +49,7 @@ class MultiTaskWormImageDataset(Dataset):
         self.target_cols = target_cols
         self.label_to_index_by_task = label_to_index_by_task
         self.missing_label_index = missing_label_index
+        self.image_is_tensor = image_is_tensor
         self.transform = transform
         self.crop_to_foreground = crop_to_foreground
         self.crop_pad = crop_pad
@@ -76,9 +78,22 @@ class MultiTaskWormImageDataset(Dataset):
     def __getitem__(self, index: int):
         row = self.df.iloc[index]
         image_path = resolve_path(self.root_dir, row[self.image_col])
-        image = Image.open(image_path).convert("RGB")
+        if self.image_is_tensor:
+            image = torch.load(
+                image_path,
+                map_location="cpu",
+                weights_only=True,
+            )
+            if not torch.is_tensor(image) or image.ndim != 3:
+                raise ValueError(
+                    f"Cached condition image must be a [C, H, W] tensor: "
+                    f"{image_path}"
+                )
+            image = image.to(dtype=torch.float32)
+        else:
+            image = Image.open(image_path).convert("RGB")
 
-        if self.crop_to_foreground:
+        if self.crop_to_foreground and not self.image_is_tensor:
             bbox = None
             if (
                 self.mask_col is not None

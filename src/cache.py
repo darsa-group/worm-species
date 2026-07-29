@@ -30,16 +30,74 @@ def _file_stamp(path: Path) -> str:
 def _make_cache_key(
     image_path: Path,
     cfg: dict[str, Any],
+    mask_path: Path | None = None,
 ) -> str:
     data_cfg = cfg["data"]
+    preprocessing = cfg.get("preprocessing", {}) or {}
+    crop_to_foreground = bool(data_cfg.get("crop_to_foreground", True))
 
     text = "|".join([
+        "cache_key_schema=2",
         _file_stamp(image_path),
         str(data_cfg.get("image_col")),
-        str(data_cfg.get("image_size")),
+        str(preprocessing.get("image_size", data_cfg.get("image_size", 224))),
+        str(crop_to_foreground),
+        str(data_cfg.get("crop_pad", 0.15)),
+        _file_stamp(mask_path)
+        if crop_to_foreground and mask_path is not None
+        else "mask_unused",
     ])
     # Preserve existing cache keys; this digest is an identifier, not a security hash.
     return hashlib.md5(text.encode()).hexdigest()
+
+
+def image_cache_path(
+    image_path: Path,
+    cfg: dict[str, Any],
+    mask_path: Path | None = None,
+) -> Path:
+    """Return the established deterministic cache path for one source image."""
+    cache_cfg = cfg.get("cache", {})
+    root_dir = Path(cfg["data"]["root_dir"])
+    cache_dir = Path(cache_cfg.get("dir", "cache/images"))
+    root_dir_cache = Path(cache_cfg.get("root_dir_cache", root_dir))
+    if not cache_dir.is_absolute():
+        cache_dir = root_dir_cache / cache_dir
+    fmt = str(cache_cfg.get("format", "png")).lower()
+    suffix = ".jpg" if fmt in {"jpg", "jpeg"} else ".png"
+    key = _make_cache_key(image_path, cfg, mask_path)
+    return cache_dir / key[:2] / f"{key}{suffix}"
+
+
+def attach_existing_image_cache(
+    cfg: dict[str, Any],
+    df: pd.DataFrame,
+) -> pd.DataFrame:
+    """Attach existing cache paths without building or mutating the cache."""
+    data_cfg = cfg["data"]
+    root_dir = Path(data_cfg["root_dir"])
+    image_col = data_cfg["image_col"]
+    mask_col = data_cfg.get("mask_col")
+    result = df.reset_index(drop=True).copy()
+    paths: list[str | None] = []
+    for _, row in result.iterrows():
+        source = resolve_path(root_dir, row[image_col])
+        mask_path = None
+        if (
+            mask_col is not None
+            and mask_col in row
+            and pd.notna(row[mask_col])
+        ):
+            candidate_mask = resolve_path(root_dir, row[mask_col])
+            if candidate_mask.exists():
+                mask_path = candidate_mask
+        candidate = image_cache_path(source, cfg, mask_path)
+        paths.append(str(candidate) if candidate.is_file() else None)
+    result["_cached_image_path"] = paths
+    result["_cache_status"] = [
+        "exists" if path is not None else "missing" for path in paths
+    ]
+    return result
 
 
 def _cache_one_image(
@@ -55,17 +113,15 @@ def _cache_one_image(
     image_col = data_cfg["image_col"]
     mask_col = data_cfg.get("mask_col")
 
-    image_size = int(data_cfg.get("image_size", 224))
+    image_size = int(
+        (cfg.get("preprocessing", {}) or {}).get(
+            "image_size", data_cfg.get("image_size", 224)
+        )
+    )
     crop_to_foreground = bool(data_cfg.get("crop_to_foreground", True))
     crop_pad = float(data_cfg.get("crop_pad", 0.15))
 
-    fmt = cache_cfg.get("format", "png").lower()
     rebuild = bool(cache_cfg.get("rebuild", False))
-
-    cache_dir = Path(cache_cfg.get("dir", "cache/images"))
-    root_dir_cache = Path(cache_cfg.get("root_dir_cache", root_dir))
-    if not cache_dir.is_absolute():
-        cache_dir = root_dir_cache / cache_dir
 
     image_path = resolve_path(root_dir, row_dict[image_col])
 
@@ -78,10 +134,8 @@ def _cache_one_image(
         if candidate.exists():
             mask_path = candidate
 
-    key = _make_cache_key(image_path, cfg)
-
-    suffix = ".jpg" if fmt in {"jpg", "jpeg"} else ".png"
-    out_path = cache_dir / key[:2] / f"{key}{suffix}"
+    out_path = image_cache_path(image_path, cfg, mask_path)
+    suffix = out_path.suffix
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
     if out_path.exists() and not rebuild:

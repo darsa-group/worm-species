@@ -70,8 +70,14 @@ class PersistentCacheContracts(unittest.TestCase):
         self.assertEqual((verified.rows, verified.cached_rows), (2, 2))
 
     def test_ready_fast_path_does_not_call_builders(self) -> None:
-        self.cache.mkdir()
-        (self.cache / "CACHE_READY").touch()
+        build_persistent_cache(
+            self.config,
+            data_root=self.data,
+            metadata_csv=self.metadata,
+            cache_dir=self.cache,
+            prepare=self._metadata,
+            builder=self._complete,
+        )
         result = build_persistent_cache(
             self.config,
             data_root=self.data,

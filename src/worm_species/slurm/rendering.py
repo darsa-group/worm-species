@@ -23,13 +23,7 @@ _TOKEN = re.compile(r"@@([A-Z][A-Z0-9_]*)@@")
 _TEMPLATE_ROOT = Path(__file__).resolve().parents[3] / "slurm" / "templates"
 _TEMPLATES = frozenset(
     {
-        "cache_build_job.sh.tmpl",
-        "persistent_cache_array_job.sh.tmpl",
-        "node_local_setup_job.sh.tmpl",
-        "node_local_array_job.sh.tmpl",
         "node_shared_cache_array_job.sh.tmpl",
-        "job_local_cue_array_job.sh.tmpl",
-        "node_local_cleanup_job.sh.tmpl",
         "result_collector_job.sh.tmpl",
     }
 )
@@ -128,42 +122,26 @@ def _normalise_copy_mode(value: object) -> str:
 def _select_array_template(config: dict[str, Any]) -> str:
     slurm = config["slurm"]
     mode = str(slurm.get("scratch", {}).get("mode", "none"))
-    expansion = str(slurm.get("planning", {}).get("external_expansion", "sweep"))
-    if mode == "node_local":
-        return "node_local_array_job.sh.tmpl"
-    if mode == "node_shared_cache":
-        return "node_shared_cache_array_job.sh.tmpl"
-    if expansion == "dual_cue":
-        return "job_local_cue_array_job.sh.tmpl"
-    return "persistent_cache_array_job.sh.tmpl"
+    if mode != "node_shared_cache":
+        raise RenderError(
+            "The paper-only repository requires "
+            "slurm.scratch.mode=node_shared_cache"
+        )
+    return "node_shared_cache_array_job.sh.tmpl"
 
 
 def _array_output_name(template_name: str, config: dict[str, Any]) -> str:
-    """Preserve generated filenames while sharing one node-local body."""
-    if template_name != "node_local_array_job.sh.tmpl":
-        return template_name.removesuffix(".tmpl")
-    expansion = str(
-        config.get("slurm", {}).get("planning", {}).get(
-            "external_expansion", "sweep"
-        )
-    )
-    if expansion == "dual_cue":
-        return "node_local_cue_array_job.sh"
-    if expansion == "colour_ablation":
-        return "node_local_colour_array_job.sh"
-    return "node_local_training_array_job.sh"
+    """Return the single paper-pipeline array script name."""
+    return template_name.removesuffix(".tmpl")
 
 
 def _collector_kind(config: dict[str, Any]) -> str:
     slurm = config.get("slurm", {}) or {}
     configured = (slurm.get("collection", {}) or {}).get("kind")
-    if configured not in {None, "auto"}:
-        return str(configured)
-    expansion = str((slurm.get("planning", {}) or {}).get("external_expansion", "sweep"))
-    if expansion == "dual_cue":
-        return "dual-cue"
-    if expansion == "colour_ablation":
-        return "colour-ablation"
+    if configured not in {None, "auto", "standard"}:
+        raise RenderError(
+            "The paper-only repository supports only standard result collection"
+        )
     return "standard"
 
 
@@ -533,54 +511,42 @@ def _render_bundle(
     _write(root / "run_index.tsv", "\n".join(index_lines) + "\n")
 
     scratch = slurm.get("scratch", {})
-    node_local = scratch.get("mode") == "node_local"
     array_template = _select_array_template(config)
     generated = root / "generated_slurm"
     script_names: dict[str, str] = {}
 
-    if scratch.get("mode") == "persistent_cache":
-        paths = slurm.get("paths", {})
-        environment = slurm.get("environment", {})
-        setup = slurm.get("setup", {})
-        cache_build_name = "cache_build_job.sh"
-        cache_build_context = {
-            "ACCOUNT": shell_quote(slurm.get("account", "")),
-            "CACHE_ROOT": shell_quote(paths.get("cache_root", "cache/images")),
-            "CONFIG_PATH": shell_quote(root.resolve() / "resolved_submission_config.yaml"),
-            "CONDA_ENV": shell_quote(environment.get("conda_env", "wormspecies")),
-            "CONDA_SH": shell_quote(environment.get("conda_sh", "")),
-            "CPUS_PER_TASK": shell_quote(setup.get("cpus_per_task", 8)),
-            "DATA_ROOT": shell_quote(paths.get("data_root", "data")),
-            "MEMORY": shell_quote(setup.get("memory", "16G")),
-            "METADATA_CSV": shell_quote(paths.get("metadata_csv", "metadata.csv")),
-            "PROJECT_ROOT": shell_quote(paths.get("project_root", ".")),
-            "TIME_LIMIT": shell_quote(setup.get("time_limit", "02:00:00")),
-        }
-        _write(
-            generated / cache_build_name,
-            render_template("cache_build_job.sh.tmpl", cache_build_context),
-            0o755,
+    if bool(slurm.get("setup", {}).get("enabled", False)) or bool(
+        slurm.get("cleanup", {}).get("enabled", False)
+    ):
+        raise RenderError(
+            "The paper-only node-shared workflow does not use setup or cleanup "
+            "jobs"
         )
 
     array_context = _array_context(
         plan,
         config,
         root.resolve(),
-        node_local=node_local,
+        node_local=False,
     )
-    if node_local:
-        monitoring = slurm.get("monitoring", {}) or {}
+    if array_template == "node_shared_cache_array_job.sh.tmpl":
+        condition_cache = (
+            (config.get("cache", {}) or {}).get(
+                "condition_variants", {}
+            )
+            or {}
+        )
         array_context.update(
             {
-                "MONITORING_ENABLED": (
-                    "true" if bool(monitoring.get("enabled", False)) else "false"
+                "CONDITION_CACHE_ENABLED": (
+                    "true"
+                    if bool(condition_cache.get("enabled", False))
+                    else "false"
                 ),
-                "MONITORING_INTERVAL": shell_quote(
-                    monitoring.get("interval_seconds", 5)
-                ),
-                "SETUP_READY_MARKER": shell_quote(
-                    f"{str(scratch.get('root')).rstrip('/')}/"
-                    f"{scratch.get('ready_marker', 'READY')}"
+                "CONDITION_CACHE_ROOT": shell_quote(
+                    slurm.get("paths", {}).get(
+                        "condition_cache_root", "condition_cache"
+                    )
                 ),
             }
         )
@@ -591,59 +557,6 @@ def _render_bundle(
         0o755,
     )
     script_names["array"] = str(Path("generated_slurm") / array_name)
-
-    if bool(slurm.get("setup", {}).get("enabled", False)):
-        setup_context = {
-            "DATA_ROOT": shell_quote(slurm.get("paths", {}).get("data_root", "data")),
-            "DATA_COPY_COMMAND": shell_join(
-                [
-                    "rsync",
-                    "-a",
-                    "--include=*/",
-                    *[
-                        argument
-                        for pattern in scratch.get("data_include", [])
-                        for argument in (f"--include={pattern}",)
-                    ],
-                    "--exclude=*",
-                    str(slurm.get("paths", {}).get("data_root", "data")).rstrip("/") + "/",
-                    f"{str(scratch.get('root')).rstrip('/')}/data/",
-                ]
-            ),
-            "PROJECT_ROOT": shell_quote(slurm.get("paths", {}).get("project_root", ".")),
-            "READY_MARKER": shell_quote(scratch.get("ready_marker", "READY")),
-            "SCRATCH_DATA": shell_quote(f"{str(scratch.get('root')).rstrip('/')}/data"),
-            "SCRATCH_OUTPUTS": shell_quote(f"{str(scratch.get('root')).rstrip('/')}/outputs"),
-            "SCRATCH_PROJECT": shell_quote(f"{str(scratch.get('root')).rstrip('/')}/project"),
-            "SCRATCH_ROOT": shell_quote(scratch.get("root", "/tmp/worm_species")),
-            "SUBMISSION_ID": shell_quote(scratch.get("submission_id", "")),
-        }
-        setup_name = "node_local_setup_job.sh"
-        _write(
-            generated / setup_name,
-            render_template("node_local_setup_job.sh.tmpl", setup_context),
-            0o755,
-        )
-        script_names["setup"] = str(Path("generated_slurm") / setup_name)
-
-    if bool(slurm.get("cleanup", {}).get("enabled", False)):
-        cleanup_name = "node_local_cleanup_job.sh"
-        _write(
-            generated / cleanup_name,
-            render_template(
-                "node_local_cleanup_job.sh.tmpl",
-                {
-                    "SCRATCH_ROOT": shell_quote(
-                        scratch.get("root", "/tmp/worm_species")
-                    ),
-                    "SUBMISSION_ID": shell_quote(
-                        scratch.get("submission_id", "")
-                    ),
-                },
-            ),
-            0o755,
-        )
-        script_names["cleanup"] = str(Path("generated_slurm") / cleanup_name)
 
     if bool(slurm.get("collection", {}).get("enabled", False)):
         collector_kind = _collector_kind(config)

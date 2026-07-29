@@ -9,11 +9,15 @@ import numpy as np
 import pandas as pd
 from PIL import Image
 import torch
+import yaml
 
+from scripts.run_ablation_pipeline import run_pipeline
 from scripts.build_paper_results import (
+    RESOLUTION_LOSS_LEVELS,
     build_report,
     collect_runs,
     configure_report_style,
+    resolution_loss_schedule,
 )
 from src.worm_species.data.conditions import GaussianBlurPercent, ResolutionLoss
 from src.worm_species.data.holdouts import apply_data_holdout
@@ -37,6 +41,21 @@ class VisualAblationTransformTests(unittest.TestCase):
         self.assertEqual(result.shape, image.shape)
         expected = result[:, :1, :1].expand_as(result)
         self.assertTrue(torch.allclose(result, expected))
+
+    def test_requested_resolution_schedule_has_exact_intermediate_sizes(self) -> None:
+        schedule = resolution_loss_schedule()
+        self.assertEqual(
+            schedule["resolution_loss_percent"].tolist(),
+            list(RESOLUTION_LOSS_LEVELS),
+        )
+        self.assertEqual(
+            schedule["intermediate_pixels_per_side"].tolist(),
+            [224, 168, 112, 56, 28, 14, 1],
+        )
+        self.assertEqual(
+            schedule["retained_linear_dimension_percent"].tolist(),
+            [100.0, 75.0, 50.0, 25.0, 12.5, 6.25, 0.0],
+        )
 
 
 class BiologicalHoldoutTests(unittest.TestCase):
@@ -84,7 +103,7 @@ class GenomePaperPlanTests(unittest.TestCase):
         expected = {
             "genome_ablation_baseline.yaml": (45, "paper-baseline"),
             "genome_visual_ablation.yaml": (
-                125,
+                110,
                 "paper-visual-ablation",
             ),
             "genome_data_holdouts.yaml": (20, "paper-data-holdouts"),
@@ -111,6 +130,84 @@ class GenomePaperPlanTests(unittest.TestCase):
                         for spec in plan.run_specs
                     )
                 )
+                if filename == "genome_visual_ablation.yaml":
+                    resolution = [
+                        spec.resolved_config["input_condition"]["percent"]
+                        for spec in plan.run_specs
+                        if spec.training_transform == "resolution_loss"
+                    ]
+                    self.assertEqual(
+                        sorted(set(resolution)),
+                        list(RESOLUTION_LOSS_LEVELS),
+                    )
+
+    def test_complete_pipeline_dry_run_wires_shared_caches_before_training(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            pipeline = {
+                "name": "test_paper",
+                "cluster_config": str(CLUSTER),
+                "paper_result_dir": str(root / "paper_result"),
+                "dependency": "afterok",
+                "base_cache": {
+                    "enabled": True,
+                    "source_stage": "baseline",
+                    "directory_name": "image_cache_paper_v1",
+                },
+                "condition_cache": {
+                    "enabled": True,
+                    "source_stage": "visual_ablation",
+                    "directory_name": "condition_cache_paper_v1",
+                    "transforms": [
+                        "gaussian_blur_percent",
+                        "patch_shuffle",
+                        "resolution_loss",
+                    ],
+                },
+                "stages": [
+                    {
+                        "name": "baseline",
+                        "config": str(
+                            ROOT / "dev" / "genome_ablation_baseline.yaml"
+                        ),
+                    },
+                    {
+                        "name": "visual_ablation",
+                        "config": str(
+                            ROOT / "dev" / "genome_visual_ablation.yaml"
+                        ),
+                    },
+                    {
+                        "name": "data_holdouts",
+                        "config": str(
+                            ROOT / "dev" / "genome_data_holdouts.yaml"
+                        ),
+                    },
+                ],
+                "report": {"enabled": False},
+            }
+            path = root / "pipeline.yaml"
+            path.write_text(yaml.safe_dump(pipeline), encoding="utf-8")
+            result = run_pipeline(path, "dry-run")
+            self.assertEqual(result["total_model_fits"], 175)
+            self.assertEqual(
+                result["condition_cache"]["condition_count"], 21
+            )
+            baseline_command = result["stages"][0][
+                "dry_run_commands"
+            ][0]
+            visual_command = result["stages"][1][
+                "dry_run_commands"
+            ][0]
+            self.assertIn(
+                "--dependency=afterok:@base_cache", baseline_command
+            )
+            self.assertIn(
+                "--dependency=afterok:@baseline_train:@condition_cache",
+                visual_command,
+            )
 
     def test_genome_uses_one_locked_cache_copy_per_node(self) -> None:
         cluster = load_submission_config(
@@ -364,6 +461,9 @@ class PaperReportTests(unittest.TestCase):
             self.assertIn(
                 "dataset_composition_by_taxon_stage_and_split.csv",
                 summary["tables"],
+            )
+            self.assertIn(
+                "resolution_loss_schedule.csv", summary["tables"]
             )
             collected = collect_runs(paper)
             blur = collected[

@@ -193,6 +193,7 @@ _PATH_TARGETS = (
     "slurm.paths.metadata_csv",
     "slurm.paths.results_root",
     "slurm.paths.cache_root",
+    "slurm.paths.condition_cache_root",
     "slurm.logging.directory",
 )
 

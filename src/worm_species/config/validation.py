@@ -1098,6 +1098,7 @@ def validate_config(
         ("training.num_workers", 0, None, False),
         ("training.val_interval", 0, None, True),
         ("cache.num_workers", 1, None, False),
+        ("cache.condition_variants.protocol_version", 1, None, False),
         ("early_stopping.patience", 0, None, False),
         ("early_stopping.min_delta", 0, None, False),
         ("multi_task.hierarchy_loss.weight", 0, None, False),

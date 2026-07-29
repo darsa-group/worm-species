@@ -2,6 +2,10 @@
 # 5 backbones x 3 complete loss recipes x 3 seeds = 45 model fits.
 extends: ../config.yaml
 
+data:
+  # Inputs are already segmented; do not recrop them using masks or pixels.
+  crop_to_foreground: false
+
 training:
   epochs: 200
   batch_size: 64
@@ -57,6 +61,10 @@ sweep:
       - dinov3_vitb16
       - dinov3_convnext_base
     # Each mapping is one complete recipe, not a Cartesian product.
+    multi_task.loss_weights:
+      - {genus: 1.0, species: 1.0, age: 1.0}
+      - {genus: 2.0, species: 1.0, age: 0.5}
+      - {genus: 1.0, species: 0.5, age: 2.0}
   conditions:
     - {name: original, feature: baseline, transform: original, strength: 0.0, parameters: {}}
 

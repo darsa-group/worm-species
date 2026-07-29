@@ -92,6 +92,7 @@ _SLURM_KEYS: dict[str, object] = {
         "metadata_csv": None,
         "results_root": None,
         "cache_root": None,
+        "condition_cache_root": None,
     },
     "logging": {"directory": None, "separate_stdout_stderr": None},
     "monitoring": {"enabled": None, "interval_seconds": None},
@@ -106,6 +107,7 @@ _PATH_FIELDS = (
     ("paths", "metadata_csv"),
     ("paths", "results_root"),
     ("paths", "cache_root"),
+    ("paths", "condition_cache_root"),
     ("logging", "directory"),
 )
 

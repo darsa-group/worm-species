@@ -1,2 +1,0 @@
-# Optional interactive dashboard dependencies. The indexer itself uses stdlib SQLite.
-streamlit>=1.32

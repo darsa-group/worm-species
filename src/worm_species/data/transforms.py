@@ -114,6 +114,7 @@ def build_split_transform(
     condition: Mapping | None = None,
     original_colour_retention: float = 1.0,
     apply_augmentation: bool | None = None,
+    condition_precomputed: bool = False,
 ) -> transforms.Compose:
     """Compose deterministic preprocessing, augmentation, and input condition.
 
@@ -142,13 +143,14 @@ def build_split_transform(
     )
     if augment:
         operations.extend(_augmentation_operations(augmentation))
-    operations.append(transforms.ToTensor())
-    operations.extend(
-        build_condition_operations(
-            _mapping(condition, "input_condition"),
-            original_colour_retention=original_colour_retention,
+    if not condition_precomputed:
+        operations.append(transforms.ToTensor())
+        operations.extend(
+            build_condition_operations(
+                _mapping(condition, "input_condition"),
+                original_colour_retention=original_colour_retention,
+            )
         )
-    )
     normalisation = _normalisation_operation(preprocessing_config)
     if normalisation is not None:
         operations.append(normalisation)

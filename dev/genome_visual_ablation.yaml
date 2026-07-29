@@ -1,5 +1,5 @@
 # Stage 2: matched visual-information ablations.
-# 5 backbones x 25 conditions = 125 model fits.
+# 5 backbones x 22 conditions = 110 model fits.
 extends: genome_ablation_baseline.yaml
 
 multi_task:
@@ -43,11 +43,21 @@ sweep:
       parameters: {max_sigma: 16.0}
       range: {start: 10, stop: 100, step: 10}
 
-    - name_template: resolution_loss_{percent:03d}pct
-      feature: spatial_detail
-      transform: resolution_loss
-      parameter: percent
-      range: {start: 10, stop: 100, step: 10}
+    # Retained linear dimensions at 224 px:
+    # 224, 168, 112, 56, 28, 14, and the 1 px extreme control.
+    - {name: resolution_loss_000pct, feature: spatial_detail, transform: resolution_loss, strength: 0.0, parameters: {percent: 0}}
+    - {name: resolution_loss_025pct, feature: spatial_detail, transform: resolution_loss, strength: 25.0, parameters: {percent: 25}}
+    - {name: resolution_loss_050pct, feature: spatial_detail, transform: resolution_loss, strength: 50.0, parameters: {percent: 50}}
+    - {name: resolution_loss_075pct, feature: spatial_detail, transform: resolution_loss, strength: 75.0, parameters: {percent: 75}}
+    - {name: resolution_loss_087.5pct, feature: spatial_detail, transform: resolution_loss, strength: 87.5, parameters: {percent: 87.5}}
+    - {name: resolution_loss_093.75pct, feature: spatial_detail, transform: resolution_loss, strength: 93.75, parameters: {percent: 93.75}}
+    - {name: resolution_loss_100pct, feature: spatial_detail, transform: resolution_loss, strength: 100.0, parameters: {percent: 100}}
+
+cache:
+  condition_variants:
+    enabled: true
+    protocol_version: 1
+    storage: torch_float32
 
 # Matched testing is automatic. This adds one original-image cross-condition
 # evaluation per checkpoint without creating another model fit.

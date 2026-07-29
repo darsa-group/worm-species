@@ -7,10 +7,15 @@ import argparse
 import json
 import os
 import shlex
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
 import yaml
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 from worm_species.slurm.config import load_submission_config, parse_memory
 from worm_species.slurm.planning import plan_submission
@@ -21,6 +26,7 @@ from worm_species.slurm.submission import (
     parse_job_id,
     submit_manifest,
 )
+from worm_species.cache.condition_variants import cacheable_conditions
 
 
 def _load_pipeline(path: Path) -> dict:
@@ -65,6 +71,70 @@ python {shlex.quote(str(report_script))} \
     path.chmod(0o755)
 
 
+def _write_condition_cache_job(
+    *,
+    path: Path,
+    project_root: Path,
+    config_path: Path,
+    data_root: Path,
+    metadata_csv: Path,
+    base_cache_root: Path,
+    condition_cache_root: Path,
+    transforms: list[str],
+    conda_sh: str,
+    conda_env: str,
+    num_workers: int,
+) -> None:
+    transform_args = " ".join(shlex.quote(item) for item in transforms)
+    source = f"""#!/usr/bin/env bash
+set -euo pipefail
+source {shlex.quote(conda_sh)}
+conda activate {shlex.quote(conda_env)}
+cd {shlex.quote(str(project_root))}
+export PYTHONPATH={shlex.quote(str(project_root / 'src'))}${{PYTHONPATH:+:$PYTHONPATH}}
+python -m worm_species.cache build-conditions \
+  --config {shlex.quote(str(config_path))} \
+  --data-root {shlex.quote(str(data_root))} \
+  --metadata-csv {shlex.quote(str(metadata_csv))} \
+  --base-cache-dir {shlex.quote(str(base_cache_root))} \
+  --condition-cache-dir {shlex.quote(str(condition_cache_root))} \
+  --condition-index "${{SLURM_ARRAY_TASK_ID:?}}" \
+  --num-workers {int(num_workers)} \
+  --transforms {transform_args}
+"""
+    path.write_text(source, encoding="utf-8")
+    path.chmod(0o755)
+
+
+def _write_base_cache_job(
+    *,
+    path: Path,
+    project_root: Path,
+    config_path: Path,
+    data_root: Path,
+    metadata_csv: Path,
+    cache_root: Path,
+    conda_sh: str,
+    conda_env: str,
+) -> None:
+    source = f"""#!/usr/bin/env bash
+set -euo pipefail
+source {shlex.quote(conda_sh)}
+conda activate {shlex.quote(conda_env)}
+cd {shlex.quote(str(project_root))}
+export PYTHONPATH={shlex.quote(str(project_root / 'src'))}${{PYTHONPATH:+:$PYTHONPATH}}
+python -m worm_species.cache build \
+  --config {shlex.quote(str(config_path))} \
+  --data-root {shlex.quote(str(data_root))} \
+  --metadata-csv {shlex.quote(str(metadata_csv))} \
+  --cache-dir {shlex.quote(str(cache_root))}
+python -m worm_species.cache verify \
+  --cache-dir {shlex.quote(str(cache_root))}
+"""
+    path.write_text(source, encoding="utf-8")
+    path.chmod(0o755)
+
+
 def run_pipeline(pipeline_path: Path, mode: str) -> dict:
     pipeline_path = pipeline_path.resolve()
     pipeline = _load_pipeline(pipeline_path)
@@ -81,6 +151,240 @@ def run_pipeline(pipeline_path: Path, mode: str) -> dict:
     artifact_root.mkdir(parents=True, exist_ok=False)
 
     scheduler = SubprocessSbatchClient()
+    paper_base_cache_root: str | None = None
+    paper_condition_cache_root: str | None = None
+    base_cache_record = {"enabled": False}
+    base_cache_job_id: str | None = None
+    base_cache = pipeline.get("base_cache", {}) or {}
+    if bool(base_cache.get("enabled", False)):
+        source_stage_name = str(base_cache["source_stage"])
+        source_stage = next(
+            (
+                stage
+                for stage in pipeline["stages"]
+                if stage["name"] == source_stage_name
+            ),
+            None,
+        )
+        if source_stage is None:
+            raise ValueError(
+                f"base_cache.source_stage {source_stage_name!r} "
+                "is not a pipeline stage"
+            )
+        source_config_path = (
+            pipeline_dir / source_stage["config"]
+        ).resolve()
+        source_config = load_submission_config(
+            source_config_path,
+            cluster_config=cluster_path,
+        )
+        slurm = source_config["slurm"]
+        paths = slurm["paths"]
+        generic_cache_root = Path(paths["cache_root"])
+        paper_base_cache_root = str(
+            generic_cache_root.parent
+            / str(
+                base_cache.get(
+                    "directory_name", "image_cache_paper_v1"
+                )
+            )
+        )
+        environment = slurm["environment"]
+        cluster_project_root = Path(paths["project_root"])
+        cache_job = artifact_root / "base_cache_job.sh"
+        _write_base_cache_job(
+            path=cache_job,
+            project_root=cluster_project_root,
+            config_path=cluster_project_root
+            / "dev"
+            / source_config_path.name,
+            data_root=Path(paths["data_root"]),
+            metadata_csv=Path(paths["metadata_csv"]),
+            cache_root=Path(paper_base_cache_root),
+            conda_sh=environment["conda_sh"],
+            conda_env=environment["conda_env"],
+        )
+        logs = paper_root / "logs"
+        logs.mkdir(parents=True, exist_ok=True)
+        cache_argv = [
+            "sbatch",
+            "--parsable",
+            f"--account={slurm['account']}",
+            "--nodes=1",
+            "--ntasks=1",
+            (
+                "--cpus-per-task="
+                f"{int(base_cache.get('cpus_per_task', 8))}"
+            ),
+            f"--mem={parse_memory(base_cache.get('memory', '16G'))}",
+            f"--time={base_cache.get('time_limit', '04:00:00')}",
+            "--job-name=worm_base_cache",
+            f"--output={logs / 'base_cache_%j.out'}",
+            f"--error={logs / 'base_cache_%j.err'}",
+            "--export=ALL",
+            str(cache_job),
+        ]
+        base_cache_record = {
+            "enabled": True,
+            "source_stage": source_stage_name,
+            "cache_root": paper_base_cache_root,
+            "script": str(cache_job),
+            "command": cache_argv,
+            "submitted_job_id": None,
+        }
+        if mode == "submit":
+            completed = scheduler.run(cache_argv)
+            if completed.returncode != 0:
+                raise RuntimeError(
+                    "Could not submit base cache job: "
+                    f"{completed.stderr.strip()}"
+                )
+            base_cache_job_id = parse_job_id(completed.stdout)
+            base_cache_record["submitted_job_id"] = base_cache_job_id
+
+    condition_cache_record = {"enabled": False}
+    condition_cache_job_id: str | None = None
+    condition_cache = pipeline.get("condition_cache", {}) or {}
+    if bool(condition_cache.get("enabled", False)):
+        source_stage_name = str(condition_cache["source_stage"])
+        source_stage = next(
+            (
+                stage
+                for stage in pipeline["stages"]
+                if stage["name"] == source_stage_name
+            ),
+            None,
+        )
+        if source_stage is None:
+            raise ValueError(
+                f"condition_cache.source_stage {source_stage_name!r} "
+                "is not a pipeline stage"
+            )
+        source_config_path = (
+            pipeline_dir / source_stage["config"]
+        ).resolve()
+        preliminary_config = load_submission_config(
+            source_config_path, cluster_config=cluster_path
+        )
+        preliminary_paths = preliminary_config["slurm"]["paths"]
+        if paper_base_cache_root is None:
+            generic_cache_root = Path(preliminary_paths["cache_root"])
+            paper_base_cache_root = str(
+                generic_cache_root.parent / "image_cache_paper_v1"
+            )
+        paper_condition_cache_root = str(
+            Path(paper_base_cache_root).parent
+            / str(
+                condition_cache.get(
+                    "directory_name",
+                    "image_condition_cache_paper_v1",
+                )
+            )
+        )
+        source_config = load_submission_config(
+            source_config_path,
+            cluster_config=cluster_path,
+            overrides=[
+                f"slurm.paths.cache_root={paper_base_cache_root}",
+                (
+                    "slurm.paths.condition_cache_root="
+                    f"{paper_condition_cache_root}"
+                ),
+            ],
+        )
+        transforms = [
+            str(item) for item in condition_cache.get("transforms", [])
+        ]
+        if not transforms:
+            raise ValueError("condition_cache.transforms must not be empty")
+        cache_conditions = cacheable_conditions(source_config, transforms)
+        if not cache_conditions:
+            raise ValueError("condition cache selected no sweep conditions")
+        slurm = source_config["slurm"]
+        paths = slurm["paths"]
+        environment = slurm["environment"]
+        condition_cache_root = paths.get("condition_cache_root")
+        if not isinstance(condition_cache_root, str) or not condition_cache_root:
+            raise ValueError(
+                "slurm.paths.condition_cache_root is required"
+            )
+        cache_job = artifact_root / "condition_cache_job.sh"
+        cluster_project_root = Path(paths["project_root"])
+        _write_condition_cache_job(
+            path=cache_job,
+            project_root=cluster_project_root,
+            config_path=cluster_project_root
+            / "dev"
+            / source_config_path.name,
+            data_root=Path(paths["data_root"]),
+            metadata_csv=Path(paths["metadata_csv"]),
+            base_cache_root=Path(paths["cache_root"]),
+            condition_cache_root=Path(condition_cache_root),
+            transforms=transforms,
+            conda_sh=environment["conda_sh"],
+            conda_env=environment["conda_env"],
+            num_workers=int(condition_cache.get("cpus_per_task", 8)),
+        )
+        logs = paper_root / "logs"
+        logs.mkdir(parents=True, exist_ok=True)
+        max_active = int(condition_cache.get("max_active", 8))
+        if max_active < 1 or max_active > 12:
+            raise ValueError(
+                "condition_cache.max_active must be between 1 and 12"
+            )
+        cache_argv = [
+            "sbatch",
+            "--parsable",
+            f"--account={slurm['account']}",
+            "--nodes=1",
+            "--ntasks=1",
+            (
+                "--cpus-per-task="
+                f"{int(condition_cache.get('cpus_per_task', 8))}"
+            ),
+            f"--mem={parse_memory(condition_cache.get('memory', '16G'))}",
+            f"--time={condition_cache.get('time_limit', '04:00:00')}",
+            (
+                "--array=0-"
+                f"{len(cache_conditions) - 1}%{max_active}"
+            ),
+            "--job-name=worm_condition_cache",
+            f"--output={logs / 'condition_cache_%A_%a.out'}",
+            f"--error={logs / 'condition_cache_%A_%a.err'}",
+            "--export=ALL",
+        ]
+        if mode == "submit" and base_cache_job_id:
+            cache_argv.append(
+                f"--dependency=afterok:{base_cache_job_id}"
+            )
+        elif mode == "dry-run" and base_cache_record["enabled"]:
+            cache_argv.append("--dependency=afterok:@base_cache")
+        cache_argv.append(str(cache_job))
+        condition_cache_record = {
+            "enabled": True,
+            "source_stage": source_stage_name,
+            "condition_count": len(cache_conditions),
+            "conditions": [
+                condition["name"] for condition in cache_conditions
+            ],
+            "transforms": transforms,
+            "cache_root": condition_cache_root,
+            "script": str(cache_job),
+            "command": cache_argv,
+            "submitted_job_id": None,
+        }
+        if mode == "submit":
+            completed = scheduler.run(cache_argv)
+            if completed.returncode != 0:
+                raise RuntimeError(
+                    "Could not submit condition cache job: "
+                    f"{completed.stderr.strip()}"
+                )
+            condition_cache_job_id = parse_job_id(completed.stdout)
+            condition_cache_record["submitted_job_id"] = (
+                condition_cache_job_id
+            )
+
     previous_train_id: str | None = None
     stage_records = []
     last_config = None
@@ -93,6 +397,19 @@ def run_pipeline(pipeline_path: Path, mode: str) -> dict:
             cluster_config=cluster_path,
             overrides=[
                 f"slurm.paths.results_root={results_root}",
+                *(
+                    [f"slurm.paths.cache_root={paper_base_cache_root}"]
+                    if paper_base_cache_root is not None
+                    else []
+                ),
+                *(
+                    [
+                        "slurm.paths.condition_cache_root="
+                        f"{paper_condition_cache_root}"
+                    ]
+                    if paper_condition_cache_root is not None
+                    else []
+                ),
                 (
                     "slurm.logging.directory="
                     f"{paper_root / 'logs' / 'slurm' / name}"
@@ -121,14 +438,28 @@ def run_pipeline(pipeline_path: Path, mode: str) -> dict:
         stage_artifacts = artifact_root / name
         manifest = write_artifact_bundle(plan, config, stage_artifacts)
         dry_run_commands = build_submission_commands(manifest)
-        if mode == "dry-run" and stage_records:
-            dry_run_commands[0].insert(
-                -1,
-                (
-                    "--dependency=afterok:"
+        if mode == "dry-run":
+            symbolic_dependencies = []
+            if stage_records:
+                symbolic_dependencies.append(
                     f"@{stage_records[-1]['name']}_train"
-                ),
-            )
+                )
+            if (
+                base_cache_record["enabled"]
+                and name == base_cache_record["source_stage"]
+            ):
+                symbolic_dependencies.append("@base_cache")
+            if (
+                condition_cache_record["enabled"]
+                and name == condition_cache_record["source_stage"]
+            ):
+                symbolic_dependencies.append("@condition_cache")
+            if symbolic_dependencies:
+                dry_run_commands[0].insert(
+                    -1,
+                    "--dependency=afterok:"
+                    + ":".join(symbolic_dependencies),
+                )
         record = {
             "name": name,
             "config": str(config_path),
@@ -141,11 +472,28 @@ def run_pipeline(pipeline_path: Path, mode: str) -> dict:
             "dry_run_commands": dry_run_commands,
         }
         if mode == "submit":
-            dependencies = (
-                [{"kind": "afterok", "job_id": previous_train_id}]
-                if previous_train_id
-                else []
-            )
+            dependencies = []
+            if previous_train_id:
+                dependencies.append(
+                    {"kind": "afterok", "job_id": previous_train_id}
+                )
+            if (
+                base_cache_job_id
+                and name == base_cache_record["source_stage"]
+            ):
+                dependencies.append(
+                    {"kind": "afterok", "job_id": base_cache_job_id}
+                )
+            if (
+                condition_cache_job_id
+                and name == condition_cache_record["source_stage"]
+            ):
+                dependencies.append(
+                    {
+                        "kind": "afterok",
+                        "job_id": condition_cache_job_id,
+                    }
+                )
             submitted = submit_manifest(
                 stage_artifacts / "submission_manifest.json",
                 client=scheduler,
@@ -223,6 +571,8 @@ def run_pipeline(pipeline_path: Path, mode: str) -> dict:
         "paper_result": str(paper_root),
         "artifact_root": str(artifact_root),
         "total_model_fits": sum(stage["run_count"] for stage in stage_records),
+        "base_cache": base_cache_record,
+        "condition_cache": condition_cache_record,
         "stages": stage_records,
         "report": report_record,
     }

@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 import pandas as pd
+import yaml
 
 from ..config.loading import load_config
 
@@ -126,20 +127,35 @@ def _manifest_text(
     image_col: str,
     rows: int,
     cached_rows: int,
+    resolved_config_sha256: str,
+    metadata_sha256: str,
 ) -> str:
     return "\n".join(
         [
             f"created_utc={created_utc}",
             f"host={host}",
             f"config={config_path}",
-            f"config_sha256={hashlib.sha256(config_path.read_bytes()).hexdigest()}",
+            f"config_sha256={resolved_config_sha256}",
+            "cache_key_schema=2",
             f"data_root={data_root}",
             f"metadata_csv={metadata_csv}",
+            f"metadata_sha256={metadata_sha256}",
             f"image_col={image_col}",
             f"rows={rows}",
             f"cached_rows={cached_rows}",
         ]
     ) + "\n"
+
+
+def _manifest_fields(path: Path) -> dict[str, str]:
+    fields: dict[str, str] = {}
+    if not path.is_file():
+        return fields
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if "=" in line:
+            key, value = line.split("=", 1)
+            fields[key] = value
+    return fields
 
 
 def build_persistent_cache(
@@ -164,18 +180,34 @@ def build_persistent_cache(
     lock_path = cache_dir / LOCK_FILE
     ready_path = cache_dir / READY_MARKER
     manifest_path = cache_dir / MANIFEST_FILE
+    source_config = load_config(config_path)
+    resolved_config_sha256 = hashlib.sha256(
+        yaml.safe_dump(source_config, sort_keys=True).encode("utf-8")
+    ).hexdigest()
+    metadata_sha256 = hashlib.sha256(metadata_csv.read_bytes()).hexdigest()
 
     with lock_path.open("a+", encoding="utf-8") as lock_handle:
         fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX)
         if force:
             _remove_stale_payload(cache_dir, lock_path)
         elif ready_path.is_file():
-            return CacheBuildResult(
-                status="already_ready",
-                cache_dir=str(cache_dir),
-                ready_marker=str(ready_path),
-                manifest_path=str(manifest_path),
+            fields = _manifest_fields(manifest_path)
+            reusable = (
+                fields.get("config_sha256") == resolved_config_sha256
+                and fields.get("metadata_sha256") == metadata_sha256
+                and fields.get("cache_key_schema") == "2"
+                and fields.get("data_root") == str(data_root)
+                and fields.get("metadata_csv") == str(metadata_csv)
+                and fields.get("image_col") == image_col
             )
+            if reusable:
+                return CacheBuildResult(
+                    status="already_ready",
+                    cache_dir=str(cache_dir),
+                    ready_marker=str(ready_path),
+                    manifest_path=str(manifest_path),
+                )
+            _remove_stale_payload(cache_dir, lock_path)
 
         if prepare is None:
             from ..data.metadata import prepare_metadata
@@ -186,7 +218,6 @@ def build_persistent_cache(
 
             builder = build_image_cache
 
-        source_config = load_config(config_path)
         runtime_config = _runtime_config(
             source_config,
             data_root=data_root,
@@ -229,6 +260,8 @@ def build_persistent_cache(
             image_col=image_col,
             rows=rows,
             cached_rows=cached_rows,
+            resolved_config_sha256=resolved_config_sha256,
+            metadata_sha256=metadata_sha256,
         )
         _atomic_text(manifest_path, manifest)
         _atomic_text(ready_path, "")
@@ -250,11 +283,7 @@ def verify_persistent_cache(cache_dir: str | Path) -> CacheBuildResult:
     manifest = cache / MANIFEST_FILE
     if not cache.is_dir() or not ready.is_file() or not manifest.is_file():
         raise CacheMaintenanceError(f"persistent cache is not ready: {cache}")
-    fields: dict[str, str] = {}
-    for line in manifest.read_text(encoding="utf-8").splitlines():
-        if "=" in line:
-            key, value = line.split("=", 1)
-            fields[key] = value
+    fields = _manifest_fields(manifest)
     try:
         rows = int(fields["rows"])
         cached_rows = int(fields["cached_rows"])

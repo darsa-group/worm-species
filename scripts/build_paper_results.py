@@ -37,6 +37,16 @@ DEFAULT_STYLE_PATH = (
     PROJECT_ROOT / "dev" / "paper_report_style.yaml"
 )
 REPORT_STYLE: dict[str, Any] = {}
+RESOLUTION_INPUT_SIZE = 224
+RESOLUTION_LOSS_LEVELS = (
+    0.0,
+    25.0,
+    50.0,
+    75.0,
+    87.5,
+    93.75,
+    100.0,
+)
 
 
 def _read_json(path: Path) -> dict:
@@ -92,6 +102,52 @@ def _condition_parameter(
     if isinstance(parameters, dict) and key in parameters:
         return parameters[key]
     return condition.get(key, default)
+
+
+def _format_number(value: Any) -> str:
+    return f"{float(value):g}"
+
+
+def resolution_loss_schedule(
+    image_size: int = RESOLUTION_INPUT_SIZE,
+) -> pd.DataFrame:
+    """Describe every configured spatial-resolution control."""
+    rows = []
+    for percent in RESOLUTION_LOSS_LEVELS:
+        retained = 100.0 - percent
+        intermediate = max(
+            1, int(round(image_size * retained / 100.0))
+        )
+        rows.append(
+            {
+                "resolution_loss_percent": percent,
+                "retained_linear_dimension_percent": retained,
+                "input_size": f"{image_size}x{image_size}",
+                "intermediate_size": f"{intermediate}x{intermediate}",
+                "intermediate_pixels_per_side": intermediate,
+                "interpretation": (
+                    "Extreme spatial-information control: mean colour "
+                    "without spatial structure"
+                    if percent == 100.0
+                    else "Controlled spatial-resolution reduction"
+                ),
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def _resolution_tick_labels() -> tuple[list[float], list[str]]:
+    schedule = resolution_loss_schedule()
+    ticks = schedule["resolution_loss_percent"].tolist()
+    labels = [
+        (
+            f"{_format_number(row.resolution_loss_percent)}\n"
+            f"{_format_number(row.retained_linear_dimension_percent)}% / "
+            f"{int(row.intermediate_pixels_per_side)}px"
+        )
+        for row in schedule.itertuples()
+    ]
+    return ticks, labels
 
 
 def collect_runs(paper_root: Path) -> pd.DataFrame:
@@ -477,6 +533,8 @@ def experimental_ablation_table(
         "test_condition",
         "removed_information",
         "scientific_question",
+        "retained_linear_dimension_percent",
+        "intermediate_size_at_224px",
     ]
     if runs.empty:
         return pd.DataFrame(columns=columns)
@@ -492,20 +550,43 @@ def experimental_ablation_table(
     }
     for _, row in visual.iterrows():
         transform = row["transform"]
+        retained = np.nan
+        intermediate_size = None
         if transform == "saturation":
             removed = "All colour information"
         elif transform == "patch_shuffle":
             removed = f"Global layout using a {int(row['grid_size'])}x{int(row['grid_size'])} shuffled grid"
         elif transform == "gaussian_blur_percent":
-            removed = f"Fine texture; blur severity {int(row['percent'])}%"
+            removed = (
+                "Fine texture; blur severity "
+                f"{_format_number(row['percent'])}%"
+            )
         else:
-            removed = f"Spatial resolution; information loss {int(row['percent'])}%"
+            percent = float(row["percent"])
+            retained = 100.0 - percent
+            intermediate = max(
+                1,
+                int(round(RESOLUTION_INPUT_SIZE * retained / 100.0)),
+            )
+            intermediate_size = f"{intermediate}x{intermediate}"
+            removed = (
+                "Spatial resolution; information loss "
+                f"{_format_number(percent)}%, retaining "
+                f"{_format_number(retained)}% linear dimension "
+                f"({intermediate_size} from 224x224)"
+            )
+            if percent == 100.0:
+                removed += (
+                    "; extreme mean-colour control with no spatial structure"
+                )
         rows.append({
             "ablation": transform,
             "training_condition": row["condition"],
             "test_condition": "matched condition and original images",
             "removed_information": removed,
             "scientific_question": questions[transform],
+            "retained_linear_dimension_percent": retained,
+            "intermediate_size_at_224px": intermediate_size,
         })
     holdout_runs = runs[
         runs["stage"].eq("data_holdouts")
@@ -517,6 +598,8 @@ def experimental_ablation_table(
             "test_condition": f"preserved test cohort {row['holdout']}",
             "removed_information": f"Biological cohort {row['holdout']}",
             "scientific_question": row["holdout_question"],
+            "retained_linear_dimension_percent": np.nan,
+            "intermediate_size_at_224px": None,
         })
     return pd.DataFrame(rows, columns=columns)
 
@@ -650,6 +733,8 @@ def _save_lines(
     xlabel: str,
     ylabel: str = "Matched-test mean macro-F1",
     path: Path,
+    xticks: list[float] | None = None,
+    xticklabels: list[str] | None = None,
 ) -> None:
     if frame.empty:
         return
@@ -660,6 +745,10 @@ def _save_lines(
     ax.set_title(title)
     ax.set_xlabel(xlabel)
     ax.set_ylabel(ylabel)
+    if xticks is not None:
+        ax.set_xticks(xticks)
+    if xticklabels is not None:
+        ax.set_xticklabels(xticklabels, fontsize=8)
     ax.set_ylim(0, 1)
     ax.grid(alpha=0.25)
     ax.legend(bbox_to_anchor=(1.02, 1), loc="upper left")
@@ -906,9 +995,9 @@ def _save_transformation_examples(
         ("Blur 25%", GaussianBlurPercent(25)(tensor)),
         ("Blur 50%", GaussianBlurPercent(50)(tensor)),
         ("Blur 100%", GaussianBlurPercent(100)(tensor)),
-        ("Resolution loss 25%", ResolutionLoss(25)(tensor)),
-        ("Resolution loss 50%", ResolutionLoss(50)(tensor)),
-        ("Resolution loss 100%", ResolutionLoss(100)(tensor)),
+        ("Resolution 50% (112px)", ResolutionLoss(50)(tensor)),
+        ("Resolution 87.5% (28px)", ResolutionLoss(87.5)(tensor)),
+        ("Resolution 100% (1px)", ResolutionLoss(100)(tensor)),
     ]
     fig, axes = plt.subplots(2, 5, figsize=(16, 7))
     for ax, (title, transformed) in zip(axes.flat, examples):
@@ -1003,6 +1092,10 @@ def _save_visual_overview(
         ax.set_ylabel("Matched-test mean macro-F1")
         ax.set_ylim(0, 1)
         ax.grid(alpha=0.25)
+        if transform == "resolution_loss":
+            ticks, labels = _resolution_tick_labels()
+            ax.set_xticks(ticks)
+            ax.set_xticklabels(labels, fontsize=7)
     colour_ax = axes.flat[3]
     colour = visual[visual["transform"].eq("saturation")]
     colour_ax.bar(
@@ -1194,6 +1287,8 @@ def build_report(
     dataset_composition = dataset_composition_table(split_frames)
     model_training = model_training_table(runs)
     experimental_ablations = experimental_ablation_table(runs)
+    resolution_schedule = resolution_loss_schedule()
+    resolution_ticks, resolution_labels = _resolution_tick_labels()
     holdout_definitions = collect_holdout_definitions(paper_root)
     holdout_joined = joined_holdout_metrics(runs, holdouts)
     baseline_by_task = baseline_task_table(baseline)
@@ -1215,6 +1310,9 @@ def build_report(
     )
     experimental_ablations.to_csv(
         tables / "experimental_ablation_definitions.csv", index=False
+    )
+    resolution_schedule.to_csv(
+        tables / "resolution_loss_schedule.csv", index=False
     )
     baseline_by_task.to_csv(
         tables / "baseline_performance_by_task_with_ci.csv", index=False
@@ -1283,16 +1381,18 @@ def build_report(
             path=figures / "visual_gaussian_blur_by_model.png",
         )
         resolution = visual[visual["transform"].eq("resolution_loss")]
-        resolution = _with_original_anchor(
-            resolution, baseline, x="percent", anchor=0
-        )
         _save_lines(
             resolution,
             x="percent",
             value="test_mean_macro_f1",
             title="Spatial-resolution information loss",
-            xlabel="Resolution discarded (%)",
+            xlabel=(
+                "Resolution loss (%)\n"
+                "tick labels: retained linear dimension / intermediate side"
+            ),
             path=figures / "visual_resolution_loss_by_model.png",
+            xticks=resolution_ticks,
+            xticklabels=resolution_labels,
         )
         _save_visual_overview(
             visual,
@@ -1343,9 +1443,14 @@ def build_report(
             x="percent",
             value="mean_macro_f1",
             title="Resolution-loss training, tested on original images",
-            xlabel="Training resolution discarded (%)",
+            xlabel=(
+                "Training resolution loss (%)\n"
+                "tick labels: retained linear dimension / intermediate side"
+            ),
             ylabel="Original-test mean macro-F1",
             path=figures / "visual_resolution_loss_original_test_by_model.png",
+            xticks=resolution_ticks,
+            xticklabels=resolution_labels,
         )
         _save_matched_vs_original(
             matched_original,
@@ -1397,6 +1502,9 @@ def build_report(
         ),
         "methods_table_3_experimental_ablations": (
             not experimental_ablations.empty
+        ),
+        "methods_resolution_loss_schedule": (
+            len(resolution_schedule) == len(RESOLUTION_LOSS_LEVELS)
         ),
         "methods_figure_3_transformation_examples": transformations_created,
         "results_table_1_dataset_composition": not dataset_composition.empty,
