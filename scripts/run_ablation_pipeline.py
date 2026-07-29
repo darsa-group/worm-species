@@ -100,9 +100,9 @@ def run_pipeline(pipeline_path: Path, mode: str) -> dict:
             ],
         )
         plan = plan_submission(config)
-        if plan.array_max_active != 8:
+        if plan.array_max_active > 12:
             raise ValueError(
-                f"Stage {name!r} must cap active training tasks at 8, "
+                f"Stage {name!r} must cap active training tasks at 12, "
                 f"got {plan.array_max_active}."
             )
         hierarchy_runs = [

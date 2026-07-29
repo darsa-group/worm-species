@@ -15,7 +15,7 @@ DASHBOARD_INDEX ?= .cache/worm-species-dashboard/index.sqlite3
 DASHBOARD_DERIVED ?= .cache/worm-species-dashboard/derived
 WIZARD_OUTPUT ?= configs/experiments/interactive.yaml
 PIPELINE_CONFIG ?= dev/genome_ablation_pipeline.yaml
-PIPELINE_MODE ?= dry-run
+PIPELINE_MODE ?= submit
 
 SLURM = PYTHONPATH=src $(PYTHON) -m worm_species.slurm
 CLUSTER_ARG = $(if $(strip $(CLUSTER)),--cluster-config "$(CLUSTER)",)
@@ -115,8 +115,6 @@ dashboard: ## Launch the read-only Streamlit result browser.
 		--cache "$(DASHBOARD_INDEX)" --derived-cache "$(DASHBOARD_DERIVED)"
 
 run-dev:
-	@rm -rf $(RESULTS_ROOT)
-	@rm -rf logs/generated/plan*
 	@for config in dev/*.yaml; do \
 		echo "Running $$config"; \
 		$(MAKE) submit CONFIG="$$config"; \
