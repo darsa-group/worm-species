@@ -26,7 +26,12 @@ from worm_species.slurm.submission import (
     parse_job_id,
     submit_manifest,
 )
-from worm_species.cache.condition_variants import cacheable_conditions
+from worm_species.cache.condition_variants import (
+    cacheable_conditions,
+    condition_cache_directory,
+    condition_cache_settings,
+)
+from worm_species.training.loaders import get_input_condition
 
 
 def _load_pipeline(path: Path) -> dict:
@@ -308,14 +313,59 @@ def run_pipeline(pipeline_path: Path, mode: str) -> dict:
             raise ValueError(
                 "slurm.paths.condition_cache_root is required"
             )
+        protocol_version = int(
+            condition_cache_settings(source_config)["protocol_version"]
+        )
+        builder_directories = {
+            condition_cache_directory(
+                condition_cache_root,
+                condition,
+                protocol_version=protocol_version,
+            )
+            for condition in cache_conditions
+        }
+        source_plan = plan_submission(source_config)
+        checked_training_specs = 0
+        mismatched_training_specs = []
+        for spec in source_plan.run_specs:
+            if spec.training_transform not in transforms:
+                continue
+            checked_training_specs += 1
+            training_condition = get_input_condition(spec.resolved_config)
+            expected_directory = condition_cache_directory(
+                condition_cache_root,
+                training_condition,
+                protocol_version=protocol_version,
+            )
+            if expected_directory not in builder_directories:
+                mismatched_training_specs.append(
+                    {
+                        "run_id": spec.run_id,
+                        "condition": spec.training_condition,
+                        "directory": str(expected_directory),
+                    }
+                )
+        if mismatched_training_specs:
+            example = mismatched_training_specs[0]
+            raise ValueError(
+                "condition-cache identity mismatch between builder and "
+                f"training specifications; {len(mismatched_training_specs)} "
+                f"runs are affected; first={example}"
+            )
+
+        resolved_cache_config = (
+            artifact_root / "condition_cache_source_config.yaml"
+        )
+        resolved_cache_config.write_text(
+            yaml.safe_dump(source_config, sort_keys=True),
+            encoding="utf-8",
+        )
         cache_job = artifact_root / "condition_cache_job.sh"
         cluster_project_root = Path(paths["project_root"])
         _write_condition_cache_job(
             path=cache_job,
             project_root=cluster_project_root,
-            config_path=cluster_project_root
-            / "dev"
-            / source_config_path.name,
+            config_path=resolved_cache_config,
             data_root=Path(paths["data_root"]),
             metadata_csv=Path(paths["metadata_csv"]),
             base_cache_root=Path(paths["cache_root"]),
@@ -364,11 +414,13 @@ def run_pipeline(pipeline_path: Path, mode: str) -> dict:
             "enabled": True,
             "source_stage": source_stage_name,
             "condition_count": len(cache_conditions),
+            "training_spec_paths_checked": checked_training_specs,
             "conditions": [
                 condition["name"] for condition in cache_conditions
             ],
             "transforms": transforms,
             "cache_root": condition_cache_root,
+            "resolved_source_config": str(resolved_cache_config),
             "script": str(cache_job),
             "command": cache_argv,
             "submitted_job_id": None,

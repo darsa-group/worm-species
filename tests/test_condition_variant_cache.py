@@ -14,6 +14,7 @@ from torchvision.transforms import functional as tv_functional
 from src.worm_species.cache.condition_variants import (
     MANIFEST_FILE,
     READY_MARKER,
+    SCHEMA_VERSION,
     TENSOR_COLUMN,
     attach_condition_cache,
     build_condition_cache,
@@ -24,9 +25,13 @@ from src.worm_species.cache.condition_variants import (
 from src.worm_species.cache.maintenance import build_persistent_cache
 from src.worm_species.config.loading import load_config
 from src.worm_species.data.conditions import ResolutionLoss
+from src.worm_species.slurm.config import load_submission_config
+from src.worm_species.slurm.planning import plan_submission
+from src.worm_species.training.loaders import get_input_condition
 
 
 ROOT = Path(__file__).resolve().parents[1]
+CLUSTER = ROOT / "configs" / "clusters" / "genome.yaml"
 
 
 class ConditionVariantCacheTests(unittest.TestCase):
@@ -38,6 +43,65 @@ class ConditionVariantCacheTests(unittest.TestCase):
         self.assertEqual(transforms.count("gaussian_blur_percent"), 10)
         self.assertEqual(transforms.count("patch_shuffle"), 4)
         self.assertEqual(transforms.count("resolution_loss"), 7)
+
+    def test_cache_identity_normalizes_equivalent_numeric_types(self) -> None:
+        builder_condition = {
+            "name": "patch_shuffle_2x2",
+            "feature": "spatial_layout",
+            "transform": "patch_shuffle",
+            "strength": 2,
+            "parameters": {"grid_size": 2, "seed": 2026},
+        }
+        resolved_condition = {
+            "condition": "patch_shuffle_2x2",
+            "feature": "spatial_layout",
+            "transform": "patch_shuffle",
+            "strength": 2.0,
+            "grid_size": 2,
+            "seed": 2026,
+        }
+        self.assertEqual(
+            condition_cache_directory("/cache", builder_condition),
+            condition_cache_directory("/cache", resolved_condition),
+        )
+
+    def test_every_resolved_visual_training_path_matches_builder_path(
+        self,
+    ) -> None:
+        original = load_config(
+            ROOT / "dev" / "genome_visual_ablation.yaml"
+        )
+        builder_conditions = cacheable_conditions(original)
+        builder_paths = {
+            condition_cache_directory("/cache", condition)
+            for condition in builder_conditions
+        }
+        resolved = load_submission_config(
+            ROOT / "dev" / "genome_visual_ablation.yaml",
+            cluster_config=CLUSTER,
+            overrides=[
+                "slurm.paths.cache_root=/cache/base",
+                "slurm.paths.condition_cache_root=/cache",
+            ],
+        )
+        plan = plan_submission(resolved)
+        checked = 0
+        for spec in plan.run_specs:
+            if spec.training_transform not in {
+                "gaussian_blur_percent",
+                "patch_shuffle",
+                "resolution_loss",
+            }:
+                continue
+            checked += 1
+            condition = get_input_condition(spec.resolved_config)
+            self.assertIn(
+                condition_cache_directory("/cache", condition),
+                builder_paths,
+                spec.run_id,
+            )
+        self.assertEqual(checked, 105)
+        self.assertEqual(len(builder_paths), 21)
 
     def test_cache_identity_is_condition_based_and_attaches_complete_tensors(self) -> None:
         condition = {
@@ -62,7 +126,7 @@ class ConditionVariantCacheTests(unittest.TestCase):
                 tensor_path.parent.mkdir(parents=True, exist_ok=True)
                 torch.save(torch.zeros(3, 224, 224), tensor_path)
             manifest = {
-                "schema_version": 1,
+                "schema_version": SCHEMA_VERSION,
                 "protocol_version": 1,
                 "status": "complete",
                 "condition": {

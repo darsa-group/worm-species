@@ -195,6 +195,17 @@ class GenomePaperPlanTests(unittest.TestCase):
             self.assertEqual(
                 result["condition_cache"]["condition_count"], 21
             )
+            self.assertEqual(
+                result["condition_cache"][
+                    "training_spec_paths_checked"
+                ],
+                105,
+            )
+            self.assertTrue(
+                Path(
+                    result["condition_cache"]["resolved_source_config"]
+                ).is_file()
+            )
             baseline_command = result["stages"][0][
                 "dry_run_commands"
             ][0]

@@ -31,7 +31,7 @@ from ..data.metadata import prepare_metadata
 from .maintenance import CacheMaintenanceError
 
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 READY_MARKER = "CACHE_READY"
 MANIFEST_FILE = "condition_cache_manifest.json"
 DEFAULT_TRANSFORMS = frozenset(
@@ -78,11 +78,33 @@ def _canonical_condition(condition: dict[str, Any]) -> dict[str, Any]:
     ):
         if key in raw:
             parameters[key] = copy.deepcopy(raw[key])
+
+    float_parameters = {
+        "retention",
+        "sigma_colour",
+        "sigma_space",
+        "sigma",
+        "percent",
+        "max_sigma",
+    }
+    integer_parameters = {"diameter", "grid_size", "seed"}
+    for key in float_parameters:
+        if key in parameters:
+            parameters[key] = float(parameters[key])
+    for key in integer_parameters:
+        if key in parameters:
+            parameters[key] = int(parameters[key])
+    if "order" in parameters:
+        order = parameters["order"]
+        if isinstance(order, str):
+            order = order.split(",")
+        parameters["order"] = [int(value) for value in order]
+
     return {
         "name": name,
         "feature": str(raw.get("feature", "baseline")),
         "transform": transform_name,
-        "strength": raw.get("strength", 0.0),
+        "strength": float(raw.get("strength", 0.0)),
         "parameters": parameters,
     }
 
