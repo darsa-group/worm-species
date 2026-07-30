@@ -180,6 +180,8 @@ CONFIG_FIELDS: tuple[ConfigField, ...] = (
     _field("cache.condition_variants.protocol_version", int, default=1, range_description=">= 1", consumers=("condition cache",)),
     _field("cache.condition_variants.storage", str, default="torch_float32", choices=("torch_float32",), consumers=("condition cache",)),
     _field("cache.condition_variants.root", str, status="runtime", consumers=("condition cache", "loaders"), categories=("storage", "SLURM")),
+    _field("cache.condition_variants.source_root", str, status="runtime", consumers=("evaluation loaders",), categories=("storage", "SLURM")),
+    _field("cache.condition_variants.staging_root", str, status="runtime", consumers=("evaluation loaders",), categories=("storage", "SLURM")),
     _field("colour_ablation.enabled", bool, default=False, consumers=("compatibility normalization",), status="legacy"),
     _field("colour_ablation.start_percent", int, default=100, range_description="[0, 100]", consumers=("compatibility normalization",), status="legacy"),
     _field("colour_ablation.stop_percent", int, default=0, range_description="[0, 100]", consumers=("compatibility normalization",), status="legacy"),

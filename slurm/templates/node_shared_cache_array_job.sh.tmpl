@@ -86,6 +86,9 @@ source_signature="$CACHE_ROOT|$(stat -c '%d:%i:%s:%Y' "$CACHE_READY_MARKER")"
 
 CONDITION_CACHE_OVERRIDES=()
 if [[ "$CONDITION_CACHE_ENABLED" == "true" ]]; then
+    NODE_CONDITION_ROOT="${SCRATCH_ROOT}/condition_cache"
+    RUNTIME_CONDITION_ROOT="$CONDITION_CACHE_ROOT"
+    RUNTIME_CONDITION_STAGING_ROOT="$NODE_CONDITION_ROOT"
     CONDITION_SOURCE=$(python -m worm_species.cache condition-path \
         --config "$RESOLVED_CONFIG" \
         --condition-cache-dir "$CONDITION_CACHE_ROOT" \
@@ -95,7 +98,6 @@ if [[ "$CONDITION_CACHE_ENABLED" == "true" ]]; then
         echo "Condition cache is not ready: $CONDITION_SOURCE" >&2
         exit 1
     }
-    NODE_CONDITION_ROOT="${SCRATCH_ROOT}/condition_cache"
     CONDITION_VERSION=$(basename "$(dirname "$CONDITION_SOURCE")")
     CONDITION_NAME=$(basename "$CONDITION_SOURCE")
     NODE_CONDITION="${NODE_CONDITION_ROOT}/${CONDITION_VERSION}/${CONDITION_NAME}"
@@ -133,12 +135,15 @@ if [[ "$CONDITION_CACHE_ENABLED" == "true" ]]; then
             echo "Reusing condition cache $CONDITION_NAME on $(hostname)"
         fi
     ) 201>"$CONDITION_LOCK"
-    CONDITION_CACHE_OVERRIDES+=(
-        "cache.condition_variants.root=$NODE_CONDITION_ROOT"
-    )
+    RUNTIME_CONDITION_ROOT="$NODE_CONDITION_ROOT"
     else
-        echo "Condition is not precomputed; using the base image cache"
+        echo "Training condition is not precomputed; cached test conditions will stage on demand"
     fi
+    CONDITION_CACHE_OVERRIDES+=(
+        "cache.condition_variants.root=$RUNTIME_CONDITION_ROOT"
+        "cache.condition_variants.source_root=$CONDITION_CACHE_ROOT"
+        "cache.condition_variants.staging_root=$RUNTIME_CONDITION_STAGING_ROOT"
+    )
 fi
 
 JOB_TMP="${TMPDIR:-/tmp/${SLURM_JOB_ID}}"

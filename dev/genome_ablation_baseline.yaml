@@ -38,6 +38,12 @@ model:
   pretrained: true
   freeze_backbone: false
 
+cache:
+  condition_variants:
+    enabled: true
+    protocol_version: 1
+    storage: torch_float32
+
 wandb:
   enabled: true
   project: worm-species-paper

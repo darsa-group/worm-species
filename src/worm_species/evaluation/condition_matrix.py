@@ -337,14 +337,23 @@ def evaluate_condition_matrix(
     task_rows: list[dict[str, Any]] = []
     relation_counts = {relation: 0 for relation in sorted(RELATIONS)}
 
-    for test_condition in conditions:
+    for condition_index, test_condition in enumerate(conditions, start=1):
         test_name = str(test_condition["condition"])
         reused = test_name == training_name
         if reused:
+            print(
+                f"[{run_name}] Condition matrix "
+                f"{condition_index}/{len(conditions)}: {test_name} "
+                "reuses the matched test evaluation"
+            )
             metrics = baseline_metrics
             true = baseline_true
             pred = baseline_pred
         else:
+            print(
+                f"[{run_name}] Condition matrix "
+                f"{condition_index}/{len(conditions)}: {test_name}"
+            )
             loader = make_test_condition_loader(test_loader_context, test_condition)
             metrics, true, pred = run_epoch(
                 model=model,

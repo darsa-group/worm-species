@@ -34,6 +34,7 @@ from .maintenance import CacheMaintenanceError
 SCHEMA_VERSION = 2
 READY_MARKER = "CACHE_READY"
 MANIFEST_FILE = "condition_cache_manifest.json"
+SUBSET_MANIFEST_FILE = "condition_cache_subset.json"
 DEFAULT_TRANSFORMS = frozenset(
     {
         "gaussian_blur_percent",
@@ -221,6 +222,173 @@ def attach_condition_cache(
             f"{len(missing)} tensors are missing"
         )
     result[TENSOR_COLUMN] = [str(path) for path in paths]
+    return result
+
+
+def stage_condition_cache_subset(
+    frame: pd.DataFrame,
+    *,
+    source_cache_root: str | Path,
+    staging_cache_root: str | Path,
+    condition: dict[str, Any],
+    protocol_version: int,
+) -> pd.DataFrame:
+    """Stage only the tensors referenced by ``frame`` into shared scratch.
+
+    The persistent condition cache is complete for every metadata row, while a
+    post-training evaluator needs only its test frame. A per-condition lock lets
+    concurrent GPU tasks on one node publish and reuse that smaller subset.
+    """
+    source_dir = condition_cache_directory(
+        source_cache_root,
+        condition,
+        protocol_version=protocol_version,
+    ).resolve()
+    staging_dir = condition_cache_directory(
+        staging_cache_root,
+        condition,
+        protocol_version=protocol_version,
+    ).resolve()
+    if source_dir == staging_dir:
+        return attach_condition_cache(
+            frame,
+            cache_root=source_cache_root,
+            condition=condition,
+            protocol_version=protocol_version,
+        )
+    if "_cached_image_path" not in frame.columns:
+        raise CacheMaintenanceError(
+            "condition caching requires '_cached_image_path'"
+        )
+    if (staging_dir / READY_MARKER).is_file():
+        return attach_condition_cache(
+            frame,
+            cache_root=staging_cache_root,
+            condition=condition,
+            protocol_version=protocol_version,
+        )
+
+    ready_path = source_dir / READY_MARKER
+    manifest_path = source_dir / MANIFEST_FILE
+    if not ready_path.is_file() or not manifest_path.is_file():
+        raise CacheMaintenanceError(
+            f"condition cache is not ready: {source_dir}"
+        )
+    try:
+        source_manifest = json.loads(
+            manifest_path.read_text(encoding="utf-8")
+        )
+        source_rows = int(source_manifest["rows"])
+        source_cached_rows = int(source_manifest["cached_rows"])
+    except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+        raise CacheMaintenanceError(
+            f"condition cache manifest is invalid: {manifest_path}"
+        ) from exc
+    if (
+        source_manifest.get("schema_version") != SCHEMA_VERSION
+        or source_manifest.get("status") != "complete"
+        or source_rows < 1
+        or source_cached_rows != source_rows
+    ):
+        raise CacheMaintenanceError(
+            f"condition cache manifest is incomplete: {manifest_path}"
+        )
+
+    stat = ready_path.stat()
+    source_signature = (
+        f"{source_dir}|{stat.st_dev}:{stat.st_ino}:{stat.st_size}:"
+        f"{stat.st_mtime_ns}"
+    )
+    destination_paths = [
+        _tensor_path(staging_dir, path)
+        for path in frame["_cached_image_path"].tolist()
+    ]
+    staging_dir.parent.mkdir(parents=True, exist_ok=True)
+    lock_path = staging_dir.parent / f".{staging_dir.name}.subset.lock"
+    with lock_path.open("a+", encoding="utf-8") as lock:
+        fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+        subset_manifest_path = staging_dir / SUBSET_MANIFEST_FILE
+        existing_signature = None
+        if subset_manifest_path.is_file():
+            try:
+                existing_signature = json.loads(
+                    subset_manifest_path.read_text(encoding="utf-8")
+                ).get("source_signature")
+            except (OSError, json.JSONDecodeError):
+                existing_signature = None
+        if staging_dir.exists() and existing_signature != source_signature:
+            shutil.rmtree(staging_dir)
+
+        source_paths = [
+            _tensor_path(source_dir, path) if isinstance(path, str) else None
+            for path in frame["_cached_image_path"].tolist()
+        ]
+        missing_sources = [
+            str(source_path)
+            for source_path, destination_path in zip(
+                source_paths, destination_paths
+            )
+            if (
+                not destination_path.is_file()
+                and (source_path is None or not source_path.is_file())
+            )
+        ]
+        if missing_sources:
+            raise CacheMaintenanceError(
+                f"condition cache {source_dir} is incomplete for this "
+                f"evaluation: {len(missing_sources)} tensors are missing"
+            )
+        copied = 0
+        for source_path, destination_path in zip(
+            source_paths, destination_paths
+        ):
+            if destination_path.is_file():
+                continue
+            destination_path.parent.mkdir(parents=True, exist_ok=True)
+            descriptor, temporary_name = tempfile.mkstemp(
+                dir=destination_path.parent,
+                prefix=f".{destination_path.name}.",
+            )
+            os.close(descriptor)
+            temporary = Path(temporary_name)
+            try:
+                shutil.copyfile(source_path, temporary)
+                os.replace(temporary, destination_path)
+            finally:
+                temporary.unlink(missing_ok=True)
+            copied += 1
+
+        staging_dir.mkdir(parents=True, exist_ok=True)
+        manifest = {
+            "schema_version": SCHEMA_VERSION,
+            "status": "ready",
+            "condition": _canonical_condition(condition),
+            "source_cache_dir": str(source_dir),
+            "source_signature": source_signature,
+            "staged_tensor_count": sum(
+                1 for _ in (staging_dir / "tensors").rglob("*.pt")
+            ),
+            "required_tensor_count": len(destination_paths),
+            "copied_this_call": copied,
+        }
+        temporary_manifest = subset_manifest_path.with_suffix(".json.tmp")
+        temporary_manifest.write_text(
+            json.dumps(manifest, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        os.replace(temporary_manifest, subset_manifest_path)
+        fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
+
+    missing_staged = [
+        str(path) for path in destination_paths if not path.is_file()
+    ]
+    if missing_staged:
+        raise CacheMaintenanceError(
+            f"staged condition cache {staging_dir} is incomplete: "
+            f"{len(missing_staged)} tensors are missing"
+        )
+    result = frame.copy()
+    result[TENSOR_COLUMN] = [str(path) for path in destination_paths]
     return result
 
 

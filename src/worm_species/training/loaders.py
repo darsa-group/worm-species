@@ -449,6 +449,9 @@ def make_profile_loaders(cfg: dict, profile: TrainingProfile) -> LoaderBundle:
 
     context = None
     if profile.loader_mode == "condition":
+        condition_variants = (
+            (cfg.get("cache", {}) or {}).get("condition_variants", {}) or {}
+        )
         context = {
             "test_df": test_df,
             "dataset_kwargs": base_common_kwargs,
@@ -460,6 +463,14 @@ def make_profile_loaders(cfg: dict, profile: TrainingProfile) -> LoaderBundle:
             "original_colour_retention": colour_retention,
             "training_condition": input_condition,
             "condition_cache_active": condition_cache_active,
+            "condition_cache": {
+                **condition_settings,
+                "root": (
+                    condition_variants.get("source_root")
+                    or condition_variants.get("root")
+                ),
+                "staging_root": condition_variants.get("staging_root"),
+            },
             "split_frames": original_split_frames,
             "target_cols": target_cols,
             "group_col": group_col,

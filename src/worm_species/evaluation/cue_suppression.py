@@ -13,6 +13,10 @@ import pandas as pd
 import torch
 from torch import nn
 from torch.utils.data import DataLoader
+from ..cache.condition_variants import DEFAULT_TRANSFORMS
+from ..cache.condition_variants import TENSOR_COLUMN
+from ..cache.condition_variants import attach_condition_cache
+from ..cache.condition_variants import stage_condition_cache_subset
 from ..training.checkpoints import load_checkpoint
 from ..data.datasets import MultiTaskWormImageDataset
 from ..data.transforms import build_split_transform
@@ -296,6 +300,52 @@ def make_test_condition_loader(test_loader_context: dict, condition: dict) -> Da
     preprocessing = test_loader_context.get("preprocessing") or {
         "image_size": int(test_loader_context["image_size"])
     }
+    frame = test_loader_context["test_df"]
+    dataset_kwargs = dict(test_loader_context["dataset_kwargs"])
+    cache = test_loader_context.get("condition_cache", {}) or {}
+    cacheable = (
+        bool(cache.get("enabled", False))
+        and str(condition.get("transform", "")).lower() in DEFAULT_TRANSFORMS
+    )
+    if cacheable:
+        cache_root = cache.get("root")
+        if not isinstance(cache_root, str) or not cache_root:
+            raise ValueError(
+                "cache.condition_variants.root is required for cached "
+                "post-training evaluation"
+            )
+        protocol_version = int(cache.get("protocol_version", 1))
+        staging_root = cache.get("staging_root")
+        if isinstance(staging_root, str) and staging_root:
+            print(
+                "Staging cached test tensors for condition "
+                f"{condition['condition']} into {staging_root}"
+            )
+            frame = stage_condition_cache_subset(
+                frame,
+                source_cache_root=cache_root,
+                staging_cache_root=staging_root,
+                condition=condition,
+                protocol_version=protocol_version,
+            )
+            cache_location = staging_root
+        else:
+            frame = attach_condition_cache(
+                frame,
+                cache_root=cache_root,
+                condition=condition,
+                protocol_version=protocol_version,
+            )
+            cache_location = cache_root
+        dataset_kwargs.update({
+            "image_col": TENSOR_COLUMN,
+            "crop_to_foreground": False,
+            "image_is_tensor": True,
+        })
+        print(
+            "Using precomputed condition cache for test condition "
+            f"{condition['condition']}: {cache_location}"
+        )
     transform = build_split_transform(
         split="test",
         preprocessing=preprocessing,
@@ -303,11 +353,12 @@ def make_test_condition_loader(test_loader_context: dict, condition: dict) -> Da
         original_colour_retention=float(
             test_loader_context["original_colour_retention"]
         ),
+        condition_precomputed=cacheable,
     )
     dataset = MultiTaskWormImageDataset(
-        test_loader_context["test_df"],
+        frame,
         transform=transform,
-        **test_loader_context["dataset_kwargs"],
+        **dataset_kwargs,
     )
     return DataLoader(
         dataset,

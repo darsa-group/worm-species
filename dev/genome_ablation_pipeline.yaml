@@ -15,6 +15,7 @@ base_cache:
 condition_cache:
   enabled: true
   source_stages: [visual_ablation, visual_interactions]
+  consumer_stages: [baseline, visual_ablation, visual_interactions]
   directory_name: image_condition_cache_paper_v1
   transforms: [gaussian_blur_percent, patch_shuffle, resolution_loss, composed]
   cpus_per_task: 8

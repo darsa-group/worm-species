@@ -60,6 +60,10 @@ content-addressed directory, manifest, ready marker, file lock, and atomic
 publication. Multiple SLURM jobs and nodes can safely read the same persistent
 cache. A training task copies only its required condition directory to
 node-local scratch and validates the shared ready marker before use.
+Original-image baseline tasks keep the persistent cache as their source and
+stage only the test-split tensors needed by each post-training condition. Those
+subsets are locked and shared per node, so concurrent baseline tasks reuse them
+without copying every train and validation tensor or recomputing the transform.
 
 Saturation remains on-the-fly because it is inexpensive.
 

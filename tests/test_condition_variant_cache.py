@@ -21,6 +21,7 @@ from src.worm_species.cache.condition_variants import (
     cacheable_conditions,
     condition_cache_directory,
     resolved_condition_cache_directory,
+    stage_condition_cache_subset,
     verify_condition_cache,
 )
 from src.worm_species.cache.maintenance import build_persistent_cache
@@ -30,6 +31,9 @@ from src.worm_species.data.conditions import ResolutionLoss
 from src.worm_species.slurm.config import load_submission_config
 from src.worm_species.slurm.planning import plan_submission
 from src.worm_species.training.loaders import get_input_condition
+from src.worm_species.evaluation.cue_suppression import (
+    make_test_condition_loader,
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -241,6 +245,181 @@ class ConditionVariantCacheTests(unittest.TestCase):
             )
             self.assertTrue(
                 all(Path(path).is_file() for path in attached[TENSOR_COLUMN])
+            )
+
+    def test_post_training_staging_copies_only_requested_test_tensors(
+        self,
+    ) -> None:
+        condition = {
+            "condition": "patch_shuffle_2x2",
+            "feature": "spatial_layout",
+            "transform": "patch_shuffle",
+            "grid_size": 2,
+            "seed": 2026,
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source_root = root / "persistent"
+            staging_root = root / "node"
+            source_cache = condition_cache_directory(source_root, condition)
+            base_paths = [
+                root / "base" / "aa" / "aa001.png",
+                root / "base" / "bb" / "bb002.png",
+                root / "base" / "cc" / "cc003.png",
+            ]
+            for index, base in enumerate(base_paths):
+                tensor_path = (
+                    source_cache
+                    / "tensors"
+                    / base.stem[:2]
+                    / f"{base.stem}.pt"
+                )
+                tensor_path.parent.mkdir(parents=True, exist_ok=True)
+                torch.save(
+                    torch.full((3, 4, 4), float(index)),
+                    tensor_path,
+                )
+            manifest = {
+                "schema_version": SCHEMA_VERSION,
+                "protocol_version": 1,
+                "status": "complete",
+                "condition": {
+                    "name": "patch_shuffle_2x2",
+                    "feature": "spatial_layout",
+                    "transform": "patch_shuffle",
+                    "strength": 0.0,
+                    "parameters": {"grid_size": 2, "seed": 2026},
+                },
+                "rows": 3,
+                "cached_rows": 3,
+            }
+            (source_cache / MANIFEST_FILE).write_text(
+                json.dumps(manifest), encoding="utf-8"
+            )
+            (source_cache / READY_MARKER).write_text("", encoding="utf-8")
+
+            test_frame = pd.DataFrame({
+                "_cached_image_path": [
+                    str(base_paths[0]),
+                    str(base_paths[2]),
+                ]
+            })
+            staged = stage_condition_cache_subset(
+                test_frame,
+                source_cache_root=source_root,
+                staging_cache_root=staging_root,
+                condition=condition,
+                protocol_version=1,
+            )
+            staged_paths = [Path(path) for path in staged[TENSOR_COLUMN]]
+            self.assertTrue(all(path.is_file() for path in staged_paths))
+            self.assertEqual(
+                len(list(staging_root.rglob("*.pt"))),
+                2,
+            )
+            self.assertFalse(
+                any("bb002" in str(path) for path in staging_root.rglob("*.pt"))
+            )
+
+            staged_again = stage_condition_cache_subset(
+                test_frame,
+                source_cache_root=source_root,
+                staging_cache_root=staging_root,
+                condition=condition,
+                protocol_version=1,
+            )
+            self.assertEqual(
+                staged[TENSOR_COLUMN].tolist(),
+                staged_again[TENSOR_COLUMN].tolist(),
+            )
+            subset_manifest = next(
+                staging_root.rglob("condition_cache_subset.json")
+            )
+            payload = json.loads(subset_manifest.read_text(encoding="utf-8"))
+            self.assertEqual(payload["copied_this_call"], 0)
+            self.assertEqual(payload["required_tensor_count"], 2)
+
+    def test_post_training_loader_reads_precomputed_tensor_without_transform(
+        self,
+    ) -> None:
+        condition = {
+            "condition": "gaussian_blur_100pct",
+            "feature": "texture",
+            "transform": "gaussian_blur_percent",
+            "percent": 100,
+            "max_sigma": 64,
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source_root = root / "persistent"
+            staging_root = root / "node"
+            base = root / "base" / "aa" / "aa001.png"
+            cache = condition_cache_directory(source_root, condition)
+            tensor_path = (
+                cache / "tensors" / base.stem[:2] / f"{base.stem}.pt"
+            )
+            tensor_path.parent.mkdir(parents=True, exist_ok=True)
+            torch.save(torch.ones(3, 4, 4), tensor_path)
+            (cache / MANIFEST_FILE).write_text(
+                json.dumps({
+                    "schema_version": SCHEMA_VERSION,
+                    "protocol_version": 1,
+                    "status": "complete",
+                    "condition": {
+                        "name": condition["condition"],
+                        "feature": condition["feature"],
+                        "transform": condition["transform"],
+                        "strength": 100.0,
+                        "parameters": {
+                            "percent": 100.0,
+                            "max_sigma": 64.0,
+                        },
+                    },
+                    "rows": 1,
+                    "cached_rows": 1,
+                }),
+                encoding="utf-8",
+            )
+            (cache / READY_MARKER).write_text("", encoding="utf-8")
+            context = {
+                "test_df": pd.DataFrame([{
+                    "_cached_image_path": str(base),
+                    "genus": "Aporrectodea",
+                }]),
+                "dataset_kwargs": {
+                    "root_dir": str(root),
+                    "image_col": "_cached_image_path",
+                    "target_cols": {"genus": "genus"},
+                    "label_to_index_by_task": {
+                        "genus": {"Aporrectodea": 0}
+                    },
+                    "mask_col": None,
+                    "crop_to_foreground": False,
+                    "crop_pad": 0.15,
+                    "image_is_tensor": False,
+                },
+                "batch_size": 1,
+                "loader_kwargs": {"num_workers": 0},
+                "image_size": 4,
+                "preprocessing": {
+                    "image_size": 4,
+                    "normalisation": {"enabled": False},
+                },
+                "original_colour_retention": 1.0,
+                "condition_cache": {
+                    "enabled": True,
+                    "protocol_version": 1,
+                    "root": str(source_root),
+                    "staging_root": str(staging_root),
+                },
+            }
+            loader = make_test_condition_loader(context, condition)
+            self.assertTrue(loader.dataset.image_is_tensor)
+            self.assertEqual(loader.dataset.image_col, TENSOR_COLUMN)
+            self.assertEqual(len(loader.dataset.transform.transforms), 1)
+            torch.testing.assert_close(
+                next(iter(loader))["image"],
+                torch.ones(1, 3, 4, 4),
             )
 
     def test_builder_materialises_one_complete_float32_condition(self) -> None:

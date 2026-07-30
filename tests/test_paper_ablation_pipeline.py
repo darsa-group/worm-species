@@ -230,6 +230,11 @@ class GenomePaperPlanTests(unittest.TestCase):
                         "visual_ablation",
                         "visual_interactions",
                     ],
+                    "consumer_stages": [
+                        "baseline",
+                        "visual_ablation",
+                        "visual_interactions",
+                    ],
                     "directory_name": "condition_cache_paper_v1",
                     "transforms": [
                         "gaussian_blur_percent",
@@ -295,7 +300,8 @@ class GenomePaperPlanTests(unittest.TestCase):
                 "dry_run_commands"
             ][0]
             self.assertIn(
-                "--dependency=afterok:@base_cache", baseline_command
+                "--dependency=afterok:@base_cache:@condition_cache",
+                baseline_command,
             )
             self.assertIn(
                 "--dependency=afterok:@baseline_train:@condition_cache",
@@ -322,6 +328,15 @@ class GenomePaperPlanTests(unittest.TestCase):
         self.assertIn("SOURCE_READY.signature", template)
         self.assertIn("--if-cacheable", template)
         self.assertIn('if [[ -n "$CONDITION_SOURCE" ]]', template)
+        self.assertIn(
+            "cache.condition_variants.staging_root="
+            "$RUNTIME_CONDITION_STAGING_ROOT",
+            template,
+        )
+        self.assertIn(
+            "cache.condition_variants.source_root=$CONDITION_CACHE_ROOT",
+            template,
+        )
 
 
 class PaperReportTests(unittest.TestCase):

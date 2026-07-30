@@ -284,6 +284,34 @@ def run_pipeline(pipeline_path: Path, mode: str) -> dict:
                     "is not a pipeline stage"
                 )
             source_stages.append(source_stage)
+        configured_consumer_stages = condition_cache.get(
+            "consumer_stages", source_stage_names
+        )
+        if (
+            not isinstance(configured_consumer_stages, list)
+            or not configured_consumer_stages
+        ):
+            raise ValueError(
+                "condition_cache.consumer_stages must be a non-empty list"
+            )
+        consumer_stage_names = [
+            str(name) for name in configured_consumer_stages
+        ]
+        if len(consumer_stage_names) != len(set(consumer_stage_names)):
+            raise ValueError(
+                "condition_cache.consumer_stages contains duplicate names"
+            )
+        pipeline_stage_names = {
+            str(stage["name"]) for stage in pipeline["stages"]
+        }
+        unknown_consumers = sorted(
+            set(consumer_stage_names) - pipeline_stage_names
+        )
+        if unknown_consumers:
+            raise ValueError(
+                "condition_cache.consumer_stages contains unknown stages: "
+                f"{unknown_consumers}"
+            )
         source_config_paths = [
             (pipeline_dir / stage["config"]).resolve()
             for stage in source_stages
@@ -457,6 +485,7 @@ def run_pipeline(pipeline_path: Path, mode: str) -> dict:
         condition_cache_record = {
             "enabled": True,
             "source_stages": source_stage_names,
+            "consumer_stages": consumer_stage_names,
             "condition_count": len(cache_conditions),
             "training_spec_paths_checked": checked_training_specs,
             "conditions": [
@@ -555,7 +584,7 @@ def run_pipeline(pipeline_path: Path, mode: str) -> dict:
                 symbolic_dependencies.append("@base_cache")
             if (
                 condition_cache_record["enabled"]
-                and name in condition_cache_record["source_stages"]
+                and name in condition_cache_record["consumer_stages"]
             ):
                 symbolic_dependencies.append("@condition_cache")
             if symbolic_dependencies:
@@ -591,7 +620,7 @@ def run_pipeline(pipeline_path: Path, mode: str) -> dict:
                 )
             if (
                 condition_cache_job_id
-                and name in condition_cache_record["source_stages"]
+                and name in condition_cache_record["consumer_stages"]
             ):
                 dependencies.append(
                     {
