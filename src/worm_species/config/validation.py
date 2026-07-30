@@ -20,6 +20,7 @@ KNOWN_TRANSFORMS = frozenset({
     "gaussian_blur_percent",
     "patch_shuffle",
     "resolution_loss",
+    "composed",
 })
 _ABSENT = object()
 
@@ -507,6 +508,42 @@ def _validate_condition_object(
                 issues.append(ValidationIssue(
                     grid_path, f"must divide {image_size_path}={image_size}"
                 ))
+    elif transform == "composed":
+        operations, operations_path = parameter("operations")
+        if not isinstance(operations, list) or not operations:
+            issues.append(ValidationIssue(
+                operations_path,
+                "must be a non-empty list of deterministic transform mappings",
+            ))
+        else:
+            for index, operation in enumerate(operations):
+                operation_path = f"{operations_path}[{index}]"
+                if not isinstance(operation, dict):
+                    issues.append(ValidationIssue(
+                        operation_path, "must be a mapping"
+                    ))
+                    continue
+                nested_transform = str(
+                    operation.get("transform", "original")
+                ).lower()
+                if nested_transform in {"original", "composed"}:
+                    issues.append(ValidationIssue(
+                        f"{operation_path}.transform",
+                        "must be one non-composed visual transform",
+                    ))
+                    continue
+                nested = {
+                    "enabled": True,
+                    "transform": nested_transform,
+                    "parameters": operation.get("parameters", {}),
+                }
+                _validate_condition_object(
+                    config,
+                    nested,
+                    operation_path,
+                    issues,
+                    enabled=True,
+                )
 
 
 def _validate_sweeps(

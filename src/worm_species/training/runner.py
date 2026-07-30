@@ -14,6 +14,7 @@ from sklearn.metrics import confusion_matrix
 from ..evaluation.condition_matrix import evaluate_condition_matrix
 from ..evaluation.cue_suppression import evaluate_test_cue_suppression
 from ..evaluation.data_holdout import evaluate_data_holdout
+from ..evaluation.holdout_controls import evaluate_holdout_controls
 from ..logging import create_wandb_logger
 from ..models.multitask import build_multitask_model
 from ..results.writing import save_json
@@ -538,6 +539,20 @@ def run_one(cfg: dict, profile: TrainingProfile) -> dict:
         child_to_parent_matrix=matrix,
         use_masked_labels=profile.masked_labels,
     )
+    holdout_controls = evaluate_holdout_controls(
+        cfg=cfg,
+        out_dir=out_dir,
+        model=model,
+        bundle=bundle,
+        criteria=criteria,
+        device=device,
+        use_amp=use_amp,
+        task_loss_weights=weights,
+        normalize_loss_by_active_tasks=normalize,
+        hierarchy_cfg=hierarchy_cfg,
+        child_to_parent_matrix=matrix,
+        use_masked_labels=profile.masked_labels,
+    )
 
     if profile.loader_mode == "colour":
         test_mean_macro_f1 = float(
@@ -703,6 +718,8 @@ def run_one(cfg: dict, profile: TrainingProfile) -> dict:
         }
     if data_holdout.get("enabled", False):
         result["data_holdout"] = data_holdout
+    if holdout_controls.get("enabled", False):
+        result["data_holdout_controls"] = holdout_controls
     result.update(model_parameter_counts)
 
     if profile.run_summary:
@@ -731,7 +748,9 @@ def run_one(cfg: dict, profile: TrainingProfile) -> dict:
         summary["data_holdout_name"] = data_holdout["name"]
         for row in data_holdout["tasks"]:
             summary[
-                f"data_holdout/{row['task']}/target_recall"
+                "data_holdout/"
+                f"{row.get('cohort', 'independent_test')}/"
+                f"{row['task']}/target_recall"
             ] = row["target_recall"]
     artifact_paths = [
         out_dir / "config.json",
@@ -747,6 +766,8 @@ def run_one(cfg: dict, profile: TrainingProfile) -> dict:
         *sorted(out_dir.glob("confusion_matrix_*.csv")),
         out_dir / "data_holdout_evaluation" / "summary.json",
         out_dir / "data_holdout_evaluation" / "task_metrics.csv",
+        out_dir / "data_holdout_control_evaluation" / "summary.json",
+        out_dir / "data_holdout_control_evaluation" / "task_metrics.csv",
     ]
     artifact_paths = [path for path in artifact_paths if path.exists()]
     wandb_logger.log_artifacts(

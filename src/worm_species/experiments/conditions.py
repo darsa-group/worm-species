@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import itertools
+import json
 import math
 import re
 from typing import Any
@@ -41,8 +42,8 @@ def format_override(value: Any) -> str:
         return "true" if value else "false"
     if value is None:
         return "null"
-    if isinstance(value, (list, tuple)):
-        return ",".join(str(item) for item in value)
+    if isinstance(value, (dict, list, tuple)):
+        return json.dumps(value, sort_keys=True, separators=(",", ":"))
     return str(value)
 
 
@@ -236,7 +237,7 @@ def condition_overrides(condition: dict) -> list[str]:
     ]
     for key in (
         "retention", "order", "diameter", "sigma_colour", "sigma_space",
-        "sigma", "grid_size", "seed", "percent", "max_sigma",
+        "sigma", "grid_size", "seed", "percent", "max_sigma", "operations",
     ):
         if key in condition:
             lines.append(f"input_condition.{key}={format_override(condition[key])}")

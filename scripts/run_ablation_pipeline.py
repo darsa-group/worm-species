@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import json
 import os
 import shlex
@@ -252,25 +253,43 @@ def run_pipeline(pipeline_path: Path, mode: str) -> dict:
     condition_cache_job_id: str | None = None
     condition_cache = pipeline.get("condition_cache", {}) or {}
     if bool(condition_cache.get("enabled", False)):
-        source_stage_name = str(condition_cache["source_stage"])
-        source_stage = next(
-            (
-                stage
-                for stage in pipeline["stages"]
-                if stage["name"] == source_stage_name
-            ),
-            None,
-        )
-        if source_stage is None:
+        configured_source_stages = condition_cache.get("source_stages")
+        if configured_source_stages is None:
+            configured_source_stages = [condition_cache["source_stage"]]
+        if (
+            not isinstance(configured_source_stages, list)
+            or not configured_source_stages
+        ):
             raise ValueError(
-                f"condition_cache.source_stage {source_stage_name!r} "
-                "is not a pipeline stage"
+                "condition_cache.source_stages must be a non-empty list"
             )
-        source_config_path = (
-            pipeline_dir / source_stage["config"]
-        ).resolve()
+        source_stage_names = [str(name) for name in configured_source_stages]
+        if len(source_stage_names) != len(set(source_stage_names)):
+            raise ValueError(
+                "condition_cache.source_stages contains duplicate names"
+            )
+        source_stages = []
+        for source_stage_name in source_stage_names:
+            source_stage = next(
+                (
+                    stage
+                    for stage in pipeline["stages"]
+                    if stage["name"] == source_stage_name
+                ),
+                None,
+            )
+            if source_stage is None:
+                raise ValueError(
+                    f"condition-cache source stage {source_stage_name!r} "
+                    "is not a pipeline stage"
+                )
+            source_stages.append(source_stage)
+        source_config_paths = [
+            (pipeline_dir / stage["config"]).resolve()
+            for stage in source_stages
+        ]
         preliminary_config = load_submission_config(
-            source_config_path, cluster_config=cluster_path
+            source_config_paths[0], cluster_config=cluster_path
         )
         preliminary_paths = preliminary_config["slurm"]["paths"]
         if paper_base_cache_root is None:
@@ -287,25 +306,43 @@ def run_pipeline(pipeline_path: Path, mode: str) -> dict:
                 )
             )
         )
-        source_config = load_submission_config(
-            source_config_path,
-            cluster_config=cluster_path,
-            overrides=[
-                f"slurm.paths.cache_root={paper_base_cache_root}",
-                (
-                    "slurm.paths.condition_cache_root="
-                    f"{paper_condition_cache_root}"
-                ),
-            ],
-        )
         transforms = [
             str(item) for item in condition_cache.get("transforms", [])
         ]
         if not transforms:
             raise ValueError("condition_cache.transforms must not be empty")
-        cache_conditions = cacheable_conditions(source_config, transforms)
+        source_configs = [
+            load_submission_config(
+                source_config_path,
+                cluster_config=cluster_path,
+                overrides=[
+                    f"slurm.paths.cache_root={paper_base_cache_root}",
+                    (
+                        "slurm.paths.condition_cache_root="
+                        f"{paper_condition_cache_root}"
+                    ),
+                ],
+            )
+            for source_config_path in source_config_paths
+        ]
+        cache_conditions = []
+        for source_config in source_configs:
+            cache_conditions.extend(
+                cacheable_conditions(source_config, transforms)
+            )
+        cache_names = [condition["name"] for condition in cache_conditions]
+        if len(cache_names) != len(set(cache_names)):
+            duplicates = sorted({
+                name for name in cache_names if cache_names.count(name) > 1
+            })
+            raise ValueError(
+                "condition-cache sources contain duplicate condition names: "
+                f"{duplicates}"
+            )
         if not cache_conditions:
             raise ValueError("condition cache selected no sweep conditions")
+        source_config = copy.deepcopy(source_configs[0])
+        source_config.setdefault("sweep", {})["conditions"] = cache_conditions
         slurm = source_config["slurm"]
         paths = slurm["paths"]
         environment = slurm["environment"]
@@ -325,29 +362,33 @@ def run_pipeline(pipeline_path: Path, mode: str) -> dict:
             )
             for condition in cache_conditions
         }
-        source_plan = plan_submission(source_config)
         checked_training_specs = 0
         mismatched_training_specs = []
-        for spec in source_plan.run_specs:
-            if spec.training_transform not in transforms:
-                continue
-            checked_training_specs += 1
-            training_condition = get_input_condition(
-                normalize_config(spec.resolved_config)
-            )
-            expected_directory = condition_cache_directory(
-                condition_cache_root,
-                training_condition,
-                protocol_version=protocol_version,
-            )
-            if expected_directory not in builder_directories:
-                mismatched_training_specs.append(
-                    {
-                        "run_id": spec.run_id,
-                        "condition": spec.training_condition,
-                        "directory": str(expected_directory),
-                    }
+        for source_stage_name, stage_config in zip(
+            source_stage_names, source_configs
+        ):
+            source_plan = plan_submission(stage_config)
+            for spec in source_plan.run_specs:
+                if spec.training_transform not in transforms:
+                    continue
+                checked_training_specs += 1
+                training_condition = get_input_condition(
+                    normalize_config(spec.resolved_config)
                 )
+                expected_directory = condition_cache_directory(
+                    condition_cache_root,
+                    training_condition,
+                    protocol_version=protocol_version,
+                )
+                if expected_directory not in builder_directories:
+                    mismatched_training_specs.append(
+                        {
+                            "stage": source_stage_name,
+                            "run_id": spec.run_id,
+                            "condition": spec.training_condition,
+                            "directory": str(expected_directory),
+                        }
+                    )
         if mismatched_training_specs:
             example = mismatched_training_specs[0]
             raise ValueError(
@@ -415,7 +456,7 @@ def run_pipeline(pipeline_path: Path, mode: str) -> dict:
         cache_argv.append(str(cache_job))
         condition_cache_record = {
             "enabled": True,
-            "source_stage": source_stage_name,
+            "source_stages": source_stage_names,
             "condition_count": len(cache_conditions),
             "training_spec_paths_checked": checked_training_specs,
             "conditions": [
@@ -477,18 +518,26 @@ def run_pipeline(pipeline_path: Path, mode: str) -> dict:
                 f"Stage {name!r} must cap active training tasks at 12, "
                 f"got {plan.array_max_active}."
             )
-        hierarchy_runs = [
-            spec.run_id
-            for spec in plan.run_specs
-            if bool(
-                spec.resolved_config.get("multi_task", {})
-                .get("hierarchy_loss", {})
-                .get("enabled", False)
+        hierarchy_weights = sorted({
+            (
+                float(
+                    spec.resolved_config.get("multi_task", {})
+                    .get("hierarchy_loss", {})
+                    .get("weight", 0.0)
+                )
+                if bool(
+                    spec.resolved_config.get("multi_task", {})
+                    .get("hierarchy_loss", {})
+                    .get("enabled", False)
+                )
+                else 0.0
             )
-        ]
-        if hierarchy_runs:
+            for spec in plan.run_specs
+        })
+        if hierarchy_weights != [0.0, 0.2]:
             raise ValueError(
-                f"Stage {name!r} unexpectedly enables hierarchy loss."
+                f"Stage {name!r} must resolve hierarchy weights [0.0, 0.2], "
+                f"got {hierarchy_weights}."
             )
         stage_artifacts = artifact_root / name
         manifest = write_artifact_bundle(plan, config, stage_artifacts)
@@ -506,7 +555,7 @@ def run_pipeline(pipeline_path: Path, mode: str) -> dict:
                 symbolic_dependencies.append("@base_cache")
             if (
                 condition_cache_record["enabled"]
-                and name == condition_cache_record["source_stage"]
+                and name in condition_cache_record["source_stages"]
             ):
                 symbolic_dependencies.append("@condition_cache")
             if symbolic_dependencies:
@@ -523,6 +572,7 @@ def run_pipeline(pipeline_path: Path, mode: str) -> dict:
             "run_count": plan.array_size,
             "max_active": plan.array_max_active,
             "models": list(plan.models),
+            "hierarchy_loss_weights": hierarchy_weights,
             "submitted": {},
             "dry_run_commands": dry_run_commands,
         }
@@ -541,7 +591,7 @@ def run_pipeline(pipeline_path: Path, mode: str) -> dict:
                 )
             if (
                 condition_cache_job_id
-                and name == condition_cache_record["source_stage"]
+                and name in condition_cache_record["source_stages"]
             ):
                 dependencies.append(
                     {
@@ -603,7 +653,9 @@ def run_pipeline(pipeline_path: Path, mode: str) -> dict:
         if mode == "submit":
             report_argv.append(f"--dependency=afterok:{previous_train_id}")
         else:
-            report_argv.append("--dependency=afterok:@data_holdouts_train")
+            report_argv.append(
+                f"--dependency=afterok:@{stage_records[-1]['name']}_train"
+            )
         report_argv.append(str(report_job))
         report_record = {
             "enabled": True,

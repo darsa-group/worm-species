@@ -37,6 +37,7 @@ class LoaderBundle:
     target_cols: dict
     test_loader_context: dict | None = None
     data_holdout_loader: DataLoader | None = None
+    data_holdout_loaders: dict[str, DataLoader] | None = None
     data_holdout_audit: dict | None = None
 
 
@@ -94,6 +95,7 @@ def get_input_condition(cfg: dict) -> dict:
         "seed",
         "percent",
         "max_sigma",
+        "operations",
     }
     for key in parameter_keys:
         value = raw.get(key, nested_parameters.get(key))
@@ -132,6 +134,13 @@ def get_input_condition(cfg: dict) -> dict:
             grid_size=int(condition["grid_size"]),
             seed=int(condition.get("seed", cfg.get("seed", 0))),
         )
+    elif transform_name == "composed":
+        operations = condition.get("operations")
+        if not isinstance(operations, list) or not operations:
+            raise ValueError(
+                "input_condition.operations must be a non-empty list for composed"
+            )
+        condition["operations"] = copy.deepcopy(operations)
     elif transform_name not in {"original", "grayscale"}:
         raise ValueError(
             f"Unsupported input condition transform: {transform_name!r}."
@@ -201,6 +210,11 @@ def make_profile_loaders(cfg: dict, profile: TrainingProfile) -> LoaderBundle:
             drop=True
         )
 
+    original_split_frames = {
+        "train": train_df.copy(),
+        "validation": val_df.copy(),
+        "test": test_df.copy(),
+    }
     holdout = apply_data_holdout(
         config=cfg,
         train=train_df,
@@ -212,7 +226,8 @@ def make_profile_loaders(cfg: dict, profile: TrainingProfile) -> LoaderBundle:
     train_df = holdout.train
     val_df = holdout.validation
     test_df = holdout.test
-    evaluation_cohort = holdout.evaluation_cohort
+    development_cohort = holdout.development_cohort
+    test_cohort = holdout.test_cohort
 
     if not profile.masked_labels:
         require_complete_task_labels(
@@ -274,9 +289,13 @@ def make_profile_loaders(cfg: dict, profile: TrainingProfile) -> LoaderBundle:
         train_df = attach_condition_cache(train_df, **attach_kwargs)
         val_df = attach_condition_cache(val_df, **attach_kwargs)
         test_df = attach_condition_cache(test_df, **attach_kwargs)
-        if evaluation_cohort is not None:
-            evaluation_cohort = attach_condition_cache(
-                evaluation_cohort, **attach_kwargs
+        if development_cohort is not None:
+            development_cohort = attach_condition_cache(
+                development_cohort, **attach_kwargs
+            )
+        if test_cohort is not None:
+            test_cohort = attach_condition_cache(
+                test_cohort, **attach_kwargs
             )
 
     if profile.loader_mode == "colour":
@@ -371,18 +390,24 @@ def make_profile_loaders(cfg: dict, profile: TrainingProfile) -> LoaderBundle:
         **eval_loader_kwargs,
     )
     data_holdout_loader = None
-    if evaluation_cohort is not None:
+    data_holdout_loaders = {}
+    for cohort_name, cohort_frame in (
+        ("development_withheld", development_cohort),
+        ("independent_test", test_cohort),
+    ):
+        if cohort_frame is None:
+            continue
         holdout_ds = MultiTaskWormImageDataset(
-            evaluation_cohort,
-            transform=eval_tf,
-            **common_kwargs,
+            cohort_frame, transform=eval_tf, **common_kwargs
         )
-        data_holdout_loader = DataLoader(
+        data_holdout_loaders[cohort_name] = DataLoader(
             holdout_ds,
             batch_size=batch_size,
             shuffle=False,
             **eval_loader_kwargs,
         )
+    if data_holdout_loaders:
+        data_holdout_loader = data_holdout_loaders.get("independent_test")
 
     split_summary = {}
     if profile.loader_mode in {"colour", "condition"}:
@@ -435,6 +460,9 @@ def make_profile_loaders(cfg: dict, profile: TrainingProfile) -> LoaderBundle:
             "original_colour_retention": colour_retention,
             "training_condition": input_condition,
             "condition_cache_active": condition_cache_active,
+            "split_frames": original_split_frames,
+            "target_cols": target_cols,
+            "group_col": group_col,
         }
 
     return LoaderBundle(
@@ -448,6 +476,7 @@ def make_profile_loaders(cfg: dict, profile: TrainingProfile) -> LoaderBundle:
         target_cols=target_cols,
         test_loader_context=context,
         data_holdout_loader=data_holdout_loader,
+        data_holdout_loaders=data_holdout_loaders or None,
         data_holdout_audit=holdout.audit,
     )
 

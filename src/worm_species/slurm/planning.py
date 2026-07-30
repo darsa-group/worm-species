@@ -205,6 +205,15 @@ def generate_external_specs(
         seed_suffix = (
             f"_seed_{slug(seed_value)}" if seed_value is not None else ""
         )
+        hierarchy_value = assignments.get("multi_task.hierarchy_loss")
+        hierarchy_suffix = ""
+        if isinstance(hierarchy_value, dict):
+            hierarchy_weight = (
+                float(hierarchy_value.get("weight", 0.0))
+                if bool(hierarchy_value.get("enabled", False))
+                else 0.0
+            )
+            hierarchy_suffix = f"_hloss_{slug(hierarchy_weight)}"
         run_id = (
             None
             if clear_run_names
@@ -243,7 +252,8 @@ def generate_external_specs(
         if run_id is None:
             run_id = (
                 f"run_{index:03d}_{slug(model)}_{slug(condition_name)}"
-                f"{loss_suffix}{holdout_suffix}{seed_suffix}_"
+                f"{loss_suffix}{holdout_suffix}{seed_suffix}"
+                f"{hierarchy_suffix}_"
                 f"{datetime.now().strftime('%Y%m%d%H%M%S')}"
             )
         specs.append((run_id, overrides, model, condition_name))

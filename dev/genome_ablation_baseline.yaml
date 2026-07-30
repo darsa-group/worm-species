@@ -1,5 +1,5 @@
 # Stage 1: original-image baselines.
-# 5 backbones x 3 complete loss recipes x 3 seeds = 45 model fits.
+# 5 backbones x 3 loss recipes x 3 seeds x 2 hierarchy settings = 90 fits.
 extends: ../config.yaml
 
 data:
@@ -65,12 +65,92 @@ sweep:
       - {genus: 1.0, species: 1.0, age: 1.0}
       - {genus: 2.0, species: 1.0, age: 0.5}
       - {genus: 1.0, species: 0.5, age: 2.0}
+    # Atomic recipes prevent invalid enabled/weight Cartesian combinations.
+    multi_task.hierarchy_loss:
+      - {enabled: false, parent_task: genus, child_task: species, weight: 0.0}
+      - {enabled: true, parent_task: genus, child_task: species, weight: 0.2}
   conditions:
     - {name: original, feature: baseline, transform: original, strength: 0.0, parameters: {}}
 
 evaluation:
-  test_conditions: {enabled: false, conditions: [], evaluate_original_training: false}
-  condition_matrix: {enabled: false, conditions: [], write_reports: false}
+  # Registry for baseline-checkpoint controls. These evaluations do not create
+  # extra fits and are performed only after the validation-selected checkpoint.
+  test_conditions:
+    enabled: false
+    evaluate_original_training: false
+    conditions:
+      - {name: colour_000pct, feature: colour, transform: saturation, strength: 1.0, parameters: {retention: 0.0}}
+      - {name: patch_shuffle_2x2, feature: spatial_layout, transform: patch_shuffle, strength: 2, parameters: {grid_size: 2, seed: 2026}}
+      - {name: patch_shuffle_4x4, feature: spatial_layout, transform: patch_shuffle, strength: 4, parameters: {grid_size: 4, seed: 2026}}
+      - {name: patch_shuffle_8x8, feature: spatial_layout, transform: patch_shuffle, strength: 8, parameters: {grid_size: 8, seed: 2026}}
+      - {name: patch_shuffle_16x16, feature: spatial_layout, transform: patch_shuffle, strength: 16, parameters: {grid_size: 16, seed: 2026}}
+      - {name: gaussian_blur_002pct, feature: texture, transform: gaussian_blur_percent, strength: 2.0, parameters: {percent: 2, max_sigma: 64.0}}
+      - {name: gaussian_blur_005pct, feature: texture, transform: gaussian_blur_percent, strength: 5.0, parameters: {percent: 5, max_sigma: 64.0}}
+      - {name: gaussian_blur_010pct, feature: texture, transform: gaussian_blur_percent, strength: 10.0, parameters: {percent: 10, max_sigma: 64.0}}
+      - {name: gaussian_blur_025pct, feature: texture, transform: gaussian_blur_percent, strength: 25.0, parameters: {percent: 25, max_sigma: 64.0}}
+      - {name: gaussian_blur_040pct, feature: texture, transform: gaussian_blur_percent, strength: 40.0, parameters: {percent: 40, max_sigma: 64.0}}
+      - {name: gaussian_blur_050pct, feature: texture, transform: gaussian_blur_percent, strength: 50.0, parameters: {percent: 50, max_sigma: 64.0}}
+      - {name: gaussian_blur_060pct, feature: texture, transform: gaussian_blur_percent, strength: 60.0, parameters: {percent: 60, max_sigma: 64.0}}
+      - {name: gaussian_blur_075pct, feature: texture, transform: gaussian_blur_percent, strength: 75.0, parameters: {percent: 75, max_sigma: 64.0}}
+      - {name: gaussian_blur_090pct, feature: texture, transform: gaussian_blur_percent, strength: 90.0, parameters: {percent: 90, max_sigma: 64.0}}
+      - {name: gaussian_blur_100pct, feature: texture, transform: gaussian_blur_percent, strength: 100.0, parameters: {percent: 100, max_sigma: 64.0}}
+      - {name: resolution_loss_000pct, feature: spatial_detail, transform: resolution_loss, strength: 0.0, parameters: {percent: 0}}
+      - {name: resolution_loss_025pct, feature: spatial_detail, transform: resolution_loss, strength: 25.0, parameters: {percent: 25}}
+      - {name: resolution_loss_050pct, feature: spatial_detail, transform: resolution_loss, strength: 50.0, parameters: {percent: 50}}
+      - {name: resolution_loss_075pct, feature: spatial_detail, transform: resolution_loss, strength: 75.0, parameters: {percent: 75}}
+      - {name: resolution_loss_087.5pct, feature: spatial_detail, transform: resolution_loss, strength: 87.5, parameters: {percent: 87.5}}
+      - {name: resolution_loss_093.75pct, feature: spatial_detail, transform: resolution_loss, strength: 93.75, parameters: {percent: 93.75}}
+      - {name: resolution_loss_100pct, feature: spatial_detail, transform: resolution_loss, strength: 100.0, parameters: {percent: 100}}
+  condition_matrix:
+    enabled: true
+    conditions:
+      - colour_000pct
+      - patch_shuffle_2x2
+      - patch_shuffle_4x4
+      - patch_shuffle_8x8
+      - patch_shuffle_16x16
+      - gaussian_blur_002pct
+      - gaussian_blur_005pct
+      - gaussian_blur_010pct
+      - gaussian_blur_025pct
+      - gaussian_blur_040pct
+      - gaussian_blur_050pct
+      - gaussian_blur_060pct
+      - gaussian_blur_075pct
+      - gaussian_blur_090pct
+      - gaussian_blur_100pct
+      - resolution_loss_000pct
+      - resolution_loss_025pct
+      - resolution_loss_050pct
+      - resolution_loss_075pct
+      - resolution_loss_087.5pct
+      - resolution_loss_093.75pct
+      - resolution_loss_100pct
+    allow_training_condition_absent: true
+    write_reports: false
+  data_holdout_controls:
+    enabled: true
+    definitions:
+      - name: juvenile_aporrectodea_longa
+        question: "Can the model recognise juvenile age and Aporrectodea_longa when that exact combination was never seen during development?"
+        where: {species: Aporrectodea_longa, age: Juvenile}
+        evaluation_where: {species: Aporrectodea_longa, age: Juvenile}
+        primary_tasks: [age, species]
+      - name: juvenile_allolobophora_chlorotica
+        question: "Can the model recognise juvenile age and Allolobophora_chlorotica when that exact combination was never seen during development?"
+        where: {species: Allolobophora_chlorotica, age: Juvenile}
+        evaluation_where: {species: Allolobophora_chlorotica, age: Juvenile}
+        primary_tasks: [age, species]
+      - name: juvenile_genus_aporrectodea
+        question: "Can the model recognise juvenile age and genus Aporrectodea when all juvenile Aporrectodea were hidden during development?"
+        where: {genus: Aporrectodea, age: Juvenile}
+        evaluation_where: {genus: Aporrectodea, age: Juvenile}
+        primary_tasks: [age, genus]
+      - name: unseen_species_aporrectodea_longa_for_genus
+        question: "Can the model recognise genus Aporrectodea for the completely unseen species Aporrectodea_longa?"
+        where: {species: Aporrectodea_longa}
+        evaluation_where: {species: Aporrectodea_longa, genus: Aporrectodea}
+        primary_tasks: [genus]
 
 output:
   out_dir: paper_result/runs/baseline

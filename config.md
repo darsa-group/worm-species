@@ -9,15 +9,17 @@ It composes these files:
 | `configs/defaults/base.yaml` | canonical data, training, split, cache, and logging defaults |
 | `config.yaml` | segmented RGB input and preprocessing defaults |
 | `configs/clusters/genome.yaml` | Genome paths, resources, environment, and node-shared scratch |
-| `dev/genome_ablation_baseline.yaml` | 45 original-image baseline fits |
-| `dev/genome_visual_ablation.yaml` | 110 matched visual-ablation fits |
-| `dev/genome_data_holdouts.yaml` | 20 biological holdout fits |
+| `dev/genome_ablation_baseline.yaml` | 90 original-image baseline fits |
+| `dev/genome_visual_ablation.yaml` | 660 matched visual-ablation fits |
+| `dev/genome_visual_interactions.yaml` | 600 Gaussian pairwise-interaction fits |
+| `dev/genome_data_holdouts.yaml` | 120 biological holdout fits |
 | `dev/paper_report_style.yaml` | editable paper-figure styling |
 
 Configuration inheritance uses `extends`. Child mappings are merged
 recursively; child scalar and list values replace their parents. The pipeline
 passes the cluster profile separately, then applies paper-specific persistent
-cache roots as runtime overrides.
+cache roots as runtime overrides. Each phase uses seeds 40, 41, and 42 and
+crosses every fit with hierarchy-loss weights 0 and 0.2.
 
 ## Pipeline controls
 
@@ -25,7 +27,8 @@ cache roots as runtime overrides.
 cache before any GPU stage. `condition_cache` creates one array task per
 cacheable condition and depends on the base-cache job. Baseline training
 depends on the base cache; visual training depends on both baseline completion
-and all condition-cache tasks.
+and all condition-cache tasks; interactions and holdouts follow as separate
+dependent phases.
 
 Relevant pipeline keys:
 
@@ -36,7 +39,7 @@ Relevant pipeline keys:
 | `condition_cache.directory_name` | persistent shared condition-cache directory |
 | `condition_cache.transforms` | deterministic transforms selected for precomputation |
 | `condition_cache.max_active` | maximum concurrent CPU cache builders |
-| `stages` | ordered baseline, visual, and holdout configs |
+| `stages` | ordered baseline, visual, interaction, and holdout configs |
 | `report` | final completed-runs-only paper build |
 
 ## Image and condition caches
@@ -81,6 +84,11 @@ Resolution loss uses percentages
 `[224, 168, 112, 56, 28, 14, 1]`. Matched testing uses the conditioned cache;
 the configured original-image cross-condition evaluation uses the unconditioned
 base cache.
+
+`dev/genome_visual_interactions.yaml` defines 20 ordered compound conditions.
+Gaussian blur at 25%, 50%, 75%, or 100% is applied first, then paired
+separately with zero colour or each patch-shuffle grid. Resolution is excluded
+from this interaction matrix and retained as a standalone three-way control.
 
 ## Commands
 

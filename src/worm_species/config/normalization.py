@@ -330,7 +330,7 @@ def _normalize_input_condition(raw: Any) -> dict[str, Any]:
     canonical_parameters = copy.deepcopy(dict(parameters))
     for key in (
         "retention", "order", "diameter", "sigma_colour", "sigma_space",
-        "sigma", "grid_size", "seed", "percent", "max_sigma",
+        "sigma", "grid_size", "seed", "percent", "max_sigma", "operations",
     ):
         if key in condition and key not in canonical_parameters:
             canonical_parameters[key] = condition[key]
@@ -361,7 +361,7 @@ def _normalize_legacy_aliases(config: dict[str, Any]) -> NormalizationResult:
     if raw_input is not None:
         if isinstance(raw_input, Mapping) and any(
             key in raw_input
-            for key in ("condition", "retention", "order", "diameter", "sigma_colour", "sigma_space", "sigma", "grid_size", "seed", "percent", "max_sigma")
+            for key in ("condition", "retention", "order", "diameter", "sigma_colour", "sigma_space", "sigma", "grid_size", "seed", "percent", "max_sigma", "operations")
         ):
             warnings.append(_warning("input_condition.*", "input_condition.parameters.*"))
         normalized["input_condition"] = _normalize_input_condition(raw_input)

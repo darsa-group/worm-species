@@ -12,6 +12,7 @@ palette:
   - "#B279A2"
 
 best_baseline_colour: "#111111"
+chance_colour: "#777777"
 workflow_data_colour: "#D9EDF7"
 workflow_model_colour: "#DFF0D8"
 workflow_experiment_colour: "#FCE8C3"

@@ -19,7 +19,11 @@ from scripts.build_paper_results import (
     configure_report_style,
     resolution_loss_schedule,
 )
-from src.worm_species.data.conditions import GaussianBlurPercent, ResolutionLoss
+from src.worm_species.data.conditions import (
+    GaussianBlurPercent,
+    ResolutionLoss,
+    build_condition_operations,
+)
 from src.worm_species.data.holdouts import apply_data_holdout
 from src.worm_species.slurm.config import load_submission_config
 from src.worm_species.slurm.planning import plan_submission
@@ -56,6 +60,33 @@ class VisualAblationTransformTests(unittest.TestCase):
             schedule["retained_linear_dimension_percent"].tolist(),
             [100.0, 75.0, 50.0, 25.0, 12.5, 6.25, 0.0],
         )
+
+    def test_composed_condition_applies_operations_in_configured_order(
+        self,
+    ) -> None:
+        image = torch.rand(3, 16, 16)
+        operations = build_condition_operations({
+            "transform": "composed",
+            "parameters": {
+                "operations": [
+                    {
+                        "transform": "gaussian_blur_percent",
+                        "parameters": {"percent": 50, "max_sigma": 4},
+                    },
+                    {
+                        "transform": "resolution_loss",
+                        "parameters": {"percent": 100},
+                    },
+                ]
+            },
+        })
+        self.assertEqual(len(operations), 4)
+        result = image
+        for operation in operations:
+            result = operation(result)
+        self.assertTrue(torch.allclose(
+            result, result[:, :1, :1].expand_as(result)
+        ))
 
 
 class BiologicalHoldoutTests(unittest.TestCase):
@@ -95,18 +126,27 @@ class BiologicalHoldoutTests(unittest.TestCase):
         self.assertEqual(result.validation["id"].tolist(), ["b", "c"])
         pd.testing.assert_frame_equal(result.test, test)
         self.assertEqual(result.evaluation_cohort["id"].tolist(), ["a"])
+        self.assertEqual(
+            result.development_cohort["_holdout_source_split"].tolist(),
+            ["train", "validation"],
+        )
+        self.assertEqual(result.test_cohort["id"].tolist(), ["a"])
         self.assertTrue(result.audit["test_unchanged"])
 
 
 class GenomePaperPlanTests(unittest.TestCase):
-    def test_all_three_stages_are_bounded_and_hloss_is_off(self) -> None:
+    def test_all_four_stages_use_three_seeds_and_both_hloss_levels(self) -> None:
         expected = {
-            "genome_ablation_baseline.yaml": (45, "paper-baseline"),
+            "genome_ablation_baseline.yaml": (90, "paper-baseline"),
             "genome_visual_ablation.yaml": (
-                110,
+                660,
                 "paper-visual-ablation",
             ),
-            "genome_data_holdouts.yaml": (20, "paper-data-holdouts"),
+            "genome_visual_interactions.yaml": (
+                600,
+                "paper-visual-interactions",
+            ),
+            "genome_data_holdouts.yaml": (120, "paper-data-holdouts"),
         }
         for filename, (run_count, wandb_group) in expected.items():
             with self.subTest(config=filename):
@@ -122,13 +162,27 @@ class GenomePaperPlanTests(unittest.TestCase):
                 self.assertTrue(config["wandb"]["compact"])
                 self.assertFalse(config["wandb"]["save_code"])
                 self.assertFalse(config["wandb"]["log_model"])
+                hierarchy = [
+                    spec.resolved_config["multi_task"]["hierarchy_loss"]
+                    for spec in plan.run_specs
+                ]
+                self.assertEqual(
+                    {float(item["weight"]) for item in hierarchy},
+                    {0.0, 0.2},
+                )
                 self.assertTrue(
                     all(
-                        not spec.resolved_config["multi_task"][
-                            "hierarchy_loss"
-                        ]["enabled"]
-                        for spec in plan.run_specs
+                        bool(item["enabled"])
+                        == (float(item["weight"]) > 0)
+                        for item in hierarchy
                     )
+                )
+                self.assertEqual(
+                    {
+                        spec.resolved_config["seed"]
+                        for spec in plan.run_specs
+                    },
+                    {40, 41, 42},
                 )
                 if filename == "genome_visual_ablation.yaml":
                     resolution = [
@@ -141,6 +195,18 @@ class GenomePaperPlanTests(unittest.TestCase):
                     self.assertEqual(
                         sorted(set(resolution)),
                         list(RESOLUTION_LOSS_LEVELS),
+                    )
+                if filename == "genome_visual_interactions.yaml":
+                    self.assertEqual(
+                        {spec.training_transform for spec in plan.run_specs},
+                        {"composed"},
+                    )
+                    self.assertEqual(
+                        {
+                            spec.resolved_config["seed"]
+                            for spec in plan.run_specs
+                        },
+                        {40, 41, 42},
                     )
 
     def test_complete_pipeline_dry_run_wires_shared_caches_before_training(
@@ -160,12 +226,16 @@ class GenomePaperPlanTests(unittest.TestCase):
                 },
                 "condition_cache": {
                     "enabled": True,
-                    "source_stage": "visual_ablation",
+                    "source_stages": [
+                        "visual_ablation",
+                        "visual_interactions",
+                    ],
                     "directory_name": "condition_cache_paper_v1",
                     "transforms": [
                         "gaussian_blur_percent",
                         "patch_shuffle",
                         "resolution_loss",
+                        "composed",
                     ],
                 },
                 "stages": [
@@ -187,21 +257,28 @@ class GenomePaperPlanTests(unittest.TestCase):
                             ROOT / "dev" / "genome_data_holdouts.yaml"
                         ),
                     },
+                    {
+                        "name": "visual_interactions",
+                        "config": str(
+                            ROOT / "dev"
+                            / "genome_visual_interactions.yaml"
+                        ),
+                    },
                 ],
                 "report": {"enabled": False},
             }
             path = root / "pipeline.yaml"
             path.write_text(yaml.safe_dump(pipeline), encoding="utf-8")
             result = run_pipeline(path, "dry-run")
-            self.assertEqual(result["total_model_fits"], 175)
+            self.assertEqual(result["total_model_fits"], 1470)
             self.assertEqual(
-                result["condition_cache"]["condition_count"], 21
+                result["condition_cache"]["condition_count"], 41
             )
             self.assertEqual(
                 result["condition_cache"][
                     "training_spec_paths_checked"
                 ],
-                105,
+                1230,
             )
             self.assertTrue(
                 Path(
@@ -214,12 +291,19 @@ class GenomePaperPlanTests(unittest.TestCase):
             visual_command = result["stages"][1][
                 "dry_run_commands"
             ][0]
+            interaction_command = result["stages"][3][
+                "dry_run_commands"
+            ][0]
             self.assertIn(
                 "--dependency=afterok:@base_cache", baseline_command
             )
             self.assertIn(
                 "--dependency=afterok:@baseline_train:@condition_cache",
                 visual_command,
+            )
+            self.assertIn(
+                "--dependency=afterok:@data_holdouts_train:@condition_cache",
+                interaction_command,
             )
 
     def test_genome_uses_one_locked_cache_copy_per_node(self) -> None:
@@ -454,7 +538,7 @@ class PaperReportTests(unittest.TestCase):
                 paper, split_root=split_root, data_root=data_root
             )
             self.assertEqual(summary["completed_runs"], 8)
-            self.assertEqual(len(summary["figures"]), 17)
+            self.assertGreaterEqual(len(summary["figures"]), 21)
             self.assertTrue(summary["representative_images_created"])
             self.assertTrue(summary["transformation_examples_created"])
             self.assertTrue(
@@ -472,6 +556,44 @@ class PaperReportTests(unittest.TestCase):
             self.assertIn(
                 "figure_6_matched_vs_original_performance.png",
                 summary["figures"],
+            )
+            self.assertIn(
+                "figure_01_combined_baseline.png",
+                summary["figures"],
+            )
+            self.assertIn(
+                "figure_02_combined_visual_ablation.png",
+                summary["figures"],
+            )
+            self.assertIn(
+                "figure_03_structured_holdout_subplots.png",
+                summary["figures"],
+            )
+            self.assertIn(
+                "figure_01_combined_baseline_hloss_comparison.png",
+                summary["figures"],
+            )
+            self.assertIn(
+                "figure_02_combined_visual_ablation_hloss_comparison.png",
+                summary["figures"],
+            )
+            self.assertIn(
+                "figure_03_structured_holdout_subplots_hloss_comparison.png",
+                summary["figures"],
+            )
+            self.assertIn(
+                "figure_02_combined_visual_ablation",
+                summary["figure_source_directories"],
+            )
+            figure_source = (
+                paper / "figure_sources"
+                / "figure_02_combined_visual_ablation"
+            )
+            self.assertTrue((figure_source / "plot_data.csv").is_file())
+            self.assertTrue((figure_source / "manifest.json").is_file())
+            self.assertTrue((figure_source / "source_image.png").is_file())
+            self.assertTrue(
+                (figure_source / "transformed_images.csv").is_file()
             )
             self.assertIn(
                 "dataset_composition_by_taxon_stage_and_split.csv",

@@ -242,6 +242,7 @@ CONFIG_FIELDS: tuple[ConfigField, ...] = (
     _field("input_condition.sigma", int, float, status="runtime", consumers=("matched-condition trainer",)),
     _field("input_condition.grid_size", int, status="runtime", consumers=("matched-condition trainer",)),
     _field("input_condition.seed", int, status="runtime", consumers=("matched-condition trainer",)),
+    _field("input_condition.operations", list, status="runtime", consumers=("matched-condition trainer",)),
     _field("input_condition.parameters", dict, default={}, consumers=("matched-condition trainer",)),
     _field("input_condition.parameters.*", object, consumers=("matched-condition trainer",)),
     _field("evaluation.test_conditions.enabled", bool, default=False, consumers=("post-training evaluation",)),
@@ -251,6 +252,8 @@ CONFIG_FIELDS: tuple[ConfigField, ...] = (
     _field("evaluation.condition_matrix.conditions", list, default=(), consumers=("post-training evaluation",)),
     _field("evaluation.condition_matrix.allow_training_condition_absent", bool, default=False, consumers=("post-training evaluation",)),
     _field("evaluation.condition_matrix.write_reports", bool, default=True, consumers=("post-training evaluation",)),
+    _field("evaluation.data_holdout_controls.enabled", bool, default=False, consumers=("post-training evaluation",)),
+    _field("evaluation.data_holdout_controls.definitions", list, default=(), consumers=("post-training evaluation",)),
 )
 
 

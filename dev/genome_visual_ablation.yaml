@@ -1,5 +1,5 @@
 # Stage 2: matched visual-information ablations.
-# 5 backbones x 22 conditions = 110 model fits.
+# 5 backbones x 22 conditions x 3 seeds x 2 hierarchy settings = 660 fits.
 extends: genome_ablation_baseline.yaml
 
 multi_task:
@@ -14,8 +14,7 @@ wandb:
 
 sweep:
   parameters:
-    # Downstream ablations remain single-seed despite inheriting the baseline.
-    seed: [42]
+    seed: [40, 41, 42]
     model.name:
       - resnet50
       - convnext_base
@@ -24,6 +23,9 @@ sweep:
       - dinov3_convnext_base
     multi_task.loss_weights:
       - {genus: 1.0, species: 0.5, age: 2.0}
+    multi_task.hierarchy_loss:
+      - {enabled: false, parent_task: genus, child_task: species, weight: 0.0}
+      - {enabled: true, parent_task: genus, child_task: species, weight: 0.2}
   conditions:
     - name: colour_000pct
       feature: colour
@@ -36,12 +38,17 @@ sweep:
     - {name: patch_shuffle_8x8, feature: spatial_layout, transform: patch_shuffle, strength: 8, parameters: {grid_size: 8, seed: 2026}}
     - {name: patch_shuffle_16x16, feature: spatial_layout, transform: patch_shuffle, strength: 16, parameters: {grid_size: 16, seed: 2026}}
 
-    - name_template: gaussian_blur_{percent:03d}pct
-      feature: texture
-      transform: gaussian_blur_percent
-      parameter: percent
-      parameters: {max_sigma: 16.0}
-      range: {start: 10, stop: 100, step: 10}
+    # Non-linear coverage preserves mild blur while reaching sigma=64.
+    - {name: gaussian_blur_002pct, feature: texture, transform: gaussian_blur_percent, strength: 2.0, parameters: {percent: 2, max_sigma: 64.0}}
+    - {name: gaussian_blur_005pct, feature: texture, transform: gaussian_blur_percent, strength: 5.0, parameters: {percent: 5, max_sigma: 64.0}}
+    - {name: gaussian_blur_010pct, feature: texture, transform: gaussian_blur_percent, strength: 10.0, parameters: {percent: 10, max_sigma: 64.0}}
+    - {name: gaussian_blur_025pct, feature: texture, transform: gaussian_blur_percent, strength: 25.0, parameters: {percent: 25, max_sigma: 64.0}}
+    - {name: gaussian_blur_040pct, feature: texture, transform: gaussian_blur_percent, strength: 40.0, parameters: {percent: 40, max_sigma: 64.0}}
+    - {name: gaussian_blur_050pct, feature: texture, transform: gaussian_blur_percent, strength: 50.0, parameters: {percent: 50, max_sigma: 64.0}}
+    - {name: gaussian_blur_060pct, feature: texture, transform: gaussian_blur_percent, strength: 60.0, parameters: {percent: 60, max_sigma: 64.0}}
+    - {name: gaussian_blur_075pct, feature: texture, transform: gaussian_blur_percent, strength: 75.0, parameters: {percent: 75, max_sigma: 64.0}}
+    - {name: gaussian_blur_090pct, feature: texture, transform: gaussian_blur_percent, strength: 90.0, parameters: {percent: 90, max_sigma: 64.0}}
+    - {name: gaussian_blur_100pct, feature: texture, transform: gaussian_blur_percent, strength: 100.0, parameters: {percent: 100, max_sigma: 64.0}}
 
     # Retained linear dimensions at 224 px:
     # 224, 168, 112, 56, 28, 14, and the 1 px extreme control.
@@ -63,6 +70,7 @@ cache:
 # evaluation per checkpoint without creating another model fit.
 evaluation:
   test_conditions: {enabled: false, conditions: [], evaluate_original_training: false}
+  data_holdout_controls: {enabled: false, definitions: []}
   condition_matrix:
     enabled: true
     conditions: [original]

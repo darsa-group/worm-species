@@ -4,16 +4,21 @@ This branch contains only the code, configuration, documentation, and focused
 tests reachable from the Genome paper pipeline:
 
 1. build one deterministic segmented-image base cache;
-2. precompute deterministic Gaussian blur, patch shuffle, and resolution-loss
-   variants on the persistent shared filesystem;
-3. train 45 original-image baselines;
-4. train 110 matched visual-ablation models;
-5. train 20 biological holdout models;
-6. collect completed results and rebuild the paper tables and figures.
+2. precompute deterministic Gaussian blur, patch shuffle, resolution-loss, and
+   pairwise compound variants on the persistent shared filesystem;
+3. train 90 original-image baselines;
+4. train 660 matched standalone visual-ablation models;
+5. train 600 Gaussian pairwise-interaction models;
+6. train 120 biological holdout models;
+7. collect completed results and rebuild the paper tables and figures.
 
-The pipeline contains 175 model fits. Baselines use five backbones, three seeds,
-and three complete loss-weight recipes. Visual and holdout experiments use one
-seed and compare with the best baseline.
+The pipeline contains 1,470 model fits. Every phase uses seeds 40, 41, and 42,
+and every fit is repeated with hierarchy loss disabled (`h=0`) and enabled at
+weight `h=0.2`. Baselines use five backbones and three complete task-loss
+recipes; downstream phases use the fixed genus-1/species-0.5/age-2 recipe.
+Baseline controls are matched by backbone, seed, task-loss recipe, and
+hierarchy-loss weight. The report retains the original `h=0` figures and emits
+an `_hloss_comparison` counterpart for each scientific performance figure.
 
 ## Run it
 
@@ -31,7 +36,7 @@ make ablation-pipeline PIPELINE_MODE=submit
 
 The entrypoint is
 [`dev/genome_ablation_pipeline.yaml`](dev/genome_ablation_pipeline.yaml).
-It selects the Genome cluster profile, all three experiment stages, both cache
+It selects the Genome cluster profile, all four experiment stages, both cache
 jobs, and the final report job. `afterok` dependencies prevent downstream
 stages from running after a failed prerequisite.
 
@@ -47,7 +52,8 @@ conditions only:
 
 - Gaussian blur;
 - seeded patch shuffle;
-- resolution loss.
+- resolution loss;
+- composed Gaussian-blur × colour or patch conditions.
 
 Random train augmentation remains live. Each condition has a versioned,
 content-addressed directory, manifest, ready marker, file lock, and atomic
@@ -56,6 +62,15 @@ cache. A training task copies only its required condition directory to
 node-local scratch and validates the shared ready marker before use.
 
 Saturation remains on-the-fly because it is inexpensive.
+
+## Gaussian and interaction schedules
+
+Standalone Gaussian severity uses percentages
+`2, 5, 10, 25, 40, 50, 60, 75, 90, 100` with `max_sigma=64`. The four
+interaction levels are 25, 50, 75, and 100 percent (sigma 16, 32, 48, and 64).
+Each is crossed separately with colour removal and four patch grids, creating
+20 interpretable pairwise conditions. Resolution is deliberately excluded from
+this interaction matrix and evaluated in its standalone three-way control.
 
 ## Resolution-loss schedule
 
@@ -87,6 +102,19 @@ Styling is editable in
 [`dev/paper_report_style.yaml`](dev/paper_report_style.yaml). The report also
 writes `resolution_loss_schedule.csv`, and resolution plots label both retained
 linear dimension and the corresponding 224-pixel intermediate size.
+
+Every metric graph is aggregated across seeds with 95% t-confidence intervals
+and a class-count-derived chance reference. PNG, PDF, and SVG versions are
+written. Exact plotted rows, seed summaries, style settings, representative
+source images, transformed level images, hashes, and manifests are saved below
+`paper_result/figure_sources/`. The reproducible notebook is
+[`notebooks/worm_species_figures_tables_confusion_matrices.ipynb`](notebooks/worm_species_figures_tables_confusion_matrices.ipynb).
+
+Holdout runs report both the cohort removed from train/validation and the
+independent matching test cohort. Corresponding baseline checkpoints are
+evaluated on the exact same cohorts. Resolution plots likewise compare matched
+resolution training/testing, resolution-trained models on original images, and
+original-trained baselines on the same transformed test images.
 
 ## Verification
 

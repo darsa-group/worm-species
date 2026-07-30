@@ -30,58 +30,66 @@ def evaluate_data_holdout(
     holdout = cfg.get("data_holdout", {}) or {}
     if not bool(holdout.get("enabled", False)):
         return {"enabled": False}
-    if bundle.data_holdout_loader is None or bundle.data_holdout_audit is None:
-        raise ValueError("Enabled data holdout has no evaluation cohort loader.")
-
-    metrics, true, pred = run_hierarchy_epoch(
-        model=model,
-        loader=bundle.data_holdout_loader,
-        criteria=criteria,
-        optimizer=None,
-        device=device,
-        train=False,
-        scaler=None,
-        use_amp=use_amp,
-        task_loss_weights=task_loss_weights,
-        normalize_loss_by_active_tasks=normalize_loss_by_active_tasks,
-        hierarchy_cfg=hierarchy_cfg,
-        child_to_parent_matrix=child_to_parent_matrix,
-        use_masked_labels=use_masked_labels,
+    loaders = bundle.data_holdout_loaders or (
+        {"independent_test": bundle.data_holdout_loader}
+        if bundle.data_holdout_loader is not None
+        else {}
     )
+    if not loaders or bundle.data_holdout_audit is None:
+        raise ValueError("Enabled data holdout has no evaluation cohort loader.")
 
     evaluation_where = dict(
         holdout.get("evaluation_where") or holdout.get("where") or {}
     )
     task_rows = []
-    for task in holdout["primary_tasks"]:
-        label = evaluation_where.get(task)
-        label_to_index = bundle.label_to_index_by_task[task]
-        supported = label is None or label in label_to_index
-        y_true = np.asarray(true.get(task, []), dtype=int)
-        y_pred = np.asarray(pred.get(task, []), dtype=int)
-        target_n = 0
-        target_recall = float("nan")
-        if supported and label is not None:
-            target_index = label_to_index[label]
-            target_mask = y_true == target_index
-            target_n = int(target_mask.sum())
-            if target_n:
-                target_recall = float(
-                    (y_pred[target_mask] == target_index).mean()
-                )
-        task_rows.append({
-            "holdout": holdout["name"],
-            "question": holdout["question"],
-            "task": task,
-            "target_label": label,
-            "class_supported_by_training_head": bool(supported),
-            "n": int(metrics.get(f"{task}_n", 0)),
-            "accuracy": metrics.get(f"{task}_accuracy"),
-            "balanced_accuracy": metrics.get(f"{task}_balanced_accuracy"),
-            "macro_f1": metrics.get(f"{task}_macro_f1"),
-            "target_n": target_n,
-            "target_recall": target_recall,
-        })
+    metrics_by_cohort = {}
+    for cohort_name, loader in loaders.items():
+        metrics, true, pred = run_hierarchy_epoch(
+            model=model,
+            loader=loader,
+            criteria=criteria,
+            optimizer=None,
+            device=device,
+            train=False,
+            scaler=None,
+            use_amp=use_amp,
+            task_loss_weights=task_loss_weights,
+            normalize_loss_by_active_tasks=normalize_loss_by_active_tasks,
+            hierarchy_cfg=hierarchy_cfg,
+            child_to_parent_matrix=child_to_parent_matrix,
+            use_masked_labels=use_masked_labels,
+        )
+        metrics_by_cohort[cohort_name] = metrics
+        for task in holdout["primary_tasks"]:
+            label = evaluation_where.get(task)
+            label_to_index = bundle.label_to_index_by_task[task]
+            supported = label is None or label in label_to_index
+            y_true = np.asarray(true.get(task, []), dtype=int)
+            y_pred = np.asarray(pred.get(task, []), dtype=int)
+            target_n = 0
+            target_recall = float("nan")
+            if supported and label is not None:
+                target_index = label_to_index[label]
+                target_mask = y_true == target_index
+                target_n = int(target_mask.sum())
+                if target_n:
+                    target_recall = float(
+                        (y_pred[target_mask] == target_index).mean()
+                    )
+            task_rows.append({
+                "holdout": holdout["name"],
+                "question": holdout["question"],
+                "cohort": cohort_name,
+                "task": task,
+                "target_label": label,
+                "class_supported_by_training_head": bool(supported),
+                "n": int(metrics.get(f"{task}_n", 0)),
+                "accuracy": metrics.get(f"{task}_accuracy"),
+                "balanced_accuracy": metrics.get(f"{task}_balanced_accuracy"),
+                "macro_f1": metrics.get(f"{task}_macro_f1"),
+                "target_n": target_n,
+                "target_recall": target_recall,
+            })
 
     root = Path(out_dir) / "data_holdout_evaluation"
     root.mkdir(parents=True, exist_ok=True)
@@ -92,7 +100,7 @@ def evaluate_data_holdout(
         "name": holdout["name"],
         "question": holdout["question"],
         "audit": bundle.data_holdout_audit,
-        "metrics": metrics,
+        "metrics_by_cohort": metrics_by_cohort,
         "tasks": task_rows,
         "task_metrics_path": str(task_path),
     }

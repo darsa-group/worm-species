@@ -1,0 +1,71 @@
+# Stage 3: pairwise Gaussian-blur interactions with colour and patch ablations.
+# 5 backbones x 20 conditions x 3 seeds x 2 hierarchy settings = 600 fits.
+extends: genome_visual_ablation.yaml
+
+wandb:
+  group: paper-visual-interactions
+  tags: [paper, visual-interaction]
+
+sweep:
+  parameters:
+    seed: [40, 41, 42]
+    model.name:
+      - resnet50
+      - convnext_base
+      - vit_b_16
+      - dinov3_vitb16
+      - dinov3_convnext_base
+    multi_task.loss_weights:
+      - {genus: 1.0, species: 0.5, age: 2.0}
+    multi_task.hierarchy_loss:
+      - {enabled: false, parent_task: genus, child_task: species, weight: 0.0}
+      - {enabled: true, parent_task: genus, child_task: species, weight: 0.2}
+  conditions:
+    # Operation order is fixed: Gaussian blur first, then the paired ablation.
+    - {name: blur025__colour000, feature: texture_x_colour, transform: composed, strength: 25.0, parameters: {operations: [{transform: gaussian_blur_percent, parameters: {percent: 25, max_sigma: 64.0}}, {transform: saturation, parameters: {retention: 0.0}}]}}
+    - {name: blur025__patch2x2, feature: texture_x_layout, transform: composed, strength: 25.0, parameters: {operations: [{transform: gaussian_blur_percent, parameters: {percent: 25, max_sigma: 64.0}}, {transform: patch_shuffle, parameters: {grid_size: 2, seed: 2026}}]}}
+    - {name: blur025__patch4x4, feature: texture_x_layout, transform: composed, strength: 25.0, parameters: {operations: [{transform: gaussian_blur_percent, parameters: {percent: 25, max_sigma: 64.0}}, {transform: patch_shuffle, parameters: {grid_size: 4, seed: 2026}}]}}
+    - {name: blur025__patch8x8, feature: texture_x_layout, transform: composed, strength: 25.0, parameters: {operations: [{transform: gaussian_blur_percent, parameters: {percent: 25, max_sigma: 64.0}}, {transform: patch_shuffle, parameters: {grid_size: 8, seed: 2026}}]}}
+    - {name: blur025__patch16x16, feature: texture_x_layout, transform: composed, strength: 25.0, parameters: {operations: [{transform: gaussian_blur_percent, parameters: {percent: 25, max_sigma: 64.0}}, {transform: patch_shuffle, parameters: {grid_size: 16, seed: 2026}}]}}
+
+    - {name: blur050__colour000, feature: texture_x_colour, transform: composed, strength: 50.0, parameters: {operations: [{transform: gaussian_blur_percent, parameters: {percent: 50, max_sigma: 64.0}}, {transform: saturation, parameters: {retention: 0.0}}]}}
+    - {name: blur050__patch2x2, feature: texture_x_layout, transform: composed, strength: 50.0, parameters: {operations: [{transform: gaussian_blur_percent, parameters: {percent: 50, max_sigma: 64.0}}, {transform: patch_shuffle, parameters: {grid_size: 2, seed: 2026}}]}}
+    - {name: blur050__patch4x4, feature: texture_x_layout, transform: composed, strength: 50.0, parameters: {operations: [{transform: gaussian_blur_percent, parameters: {percent: 50, max_sigma: 64.0}}, {transform: patch_shuffle, parameters: {grid_size: 4, seed: 2026}}]}}
+    - {name: blur050__patch8x8, feature: texture_x_layout, transform: composed, strength: 50.0, parameters: {operations: [{transform: gaussian_blur_percent, parameters: {percent: 50, max_sigma: 64.0}}, {transform: patch_shuffle, parameters: {grid_size: 8, seed: 2026}}]}}
+    - {name: blur050__patch16x16, feature: texture_x_layout, transform: composed, strength: 50.0, parameters: {operations: [{transform: gaussian_blur_percent, parameters: {percent: 50, max_sigma: 64.0}}, {transform: patch_shuffle, parameters: {grid_size: 16, seed: 2026}}]}}
+
+    - {name: blur075__colour000, feature: texture_x_colour, transform: composed, strength: 75.0, parameters: {operations: [{transform: gaussian_blur_percent, parameters: {percent: 75, max_sigma: 64.0}}, {transform: saturation, parameters: {retention: 0.0}}]}}
+    - {name: blur075__patch2x2, feature: texture_x_layout, transform: composed, strength: 75.0, parameters: {operations: [{transform: gaussian_blur_percent, parameters: {percent: 75, max_sigma: 64.0}}, {transform: patch_shuffle, parameters: {grid_size: 2, seed: 2026}}]}}
+    - {name: blur075__patch4x4, feature: texture_x_layout, transform: composed, strength: 75.0, parameters: {operations: [{transform: gaussian_blur_percent, parameters: {percent: 75, max_sigma: 64.0}}, {transform: patch_shuffle, parameters: {grid_size: 4, seed: 2026}}]}}
+    - {name: blur075__patch8x8, feature: texture_x_layout, transform: composed, strength: 75.0, parameters: {operations: [{transform: gaussian_blur_percent, parameters: {percent: 75, max_sigma: 64.0}}, {transform: patch_shuffle, parameters: {grid_size: 8, seed: 2026}}]}}
+    - {name: blur075__patch16x16, feature: texture_x_layout, transform: composed, strength: 75.0, parameters: {operations: [{transform: gaussian_blur_percent, parameters: {percent: 75, max_sigma: 64.0}}, {transform: patch_shuffle, parameters: {grid_size: 16, seed: 2026}}]}}
+
+    - {name: blur100__colour000, feature: texture_x_colour, transform: composed, strength: 100.0, parameters: {operations: [{transform: gaussian_blur_percent, parameters: {percent: 100, max_sigma: 64.0}}, {transform: saturation, parameters: {retention: 0.0}}]}}
+    - {name: blur100__patch2x2, feature: texture_x_layout, transform: composed, strength: 100.0, parameters: {operations: [{transform: gaussian_blur_percent, parameters: {percent: 100, max_sigma: 64.0}}, {transform: patch_shuffle, parameters: {grid_size: 2, seed: 2026}}]}}
+    - {name: blur100__patch4x4, feature: texture_x_layout, transform: composed, strength: 100.0, parameters: {operations: [{transform: gaussian_blur_percent, parameters: {percent: 100, max_sigma: 64.0}}, {transform: patch_shuffle, parameters: {grid_size: 4, seed: 2026}}]}}
+    - {name: blur100__patch8x8, feature: texture_x_layout, transform: composed, strength: 100.0, parameters: {operations: [{transform: gaussian_blur_percent, parameters: {percent: 100, max_sigma: 64.0}}, {transform: patch_shuffle, parameters: {grid_size: 8, seed: 2026}}]}}
+    - {name: blur100__patch16x16, feature: texture_x_layout, transform: composed, strength: 100.0, parameters: {operations: [{transform: gaussian_blur_percent, parameters: {percent: 100, max_sigma: 64.0}}, {transform: patch_shuffle, parameters: {grid_size: 16, seed: 2026}}]}}
+
+cache:
+  condition_variants:
+    enabled: true
+    protocol_version: 1
+    storage: torch_float32
+
+evaluation:
+  test_conditions: {enabled: false, conditions: [], evaluate_original_training: false}
+  data_holdout_controls: {enabled: false, definitions: []}
+  condition_matrix:
+    enabled: true
+    conditions: [original]
+    allow_training_condition_absent: true
+    write_reports: false
+
+output:
+  out_dir: paper_result/runs/visual_interactions
+
+slurm:
+  planning:
+    experiment_type: genome_visual_interactions
+    external_expansion: sweep
+    clear_run_names: true

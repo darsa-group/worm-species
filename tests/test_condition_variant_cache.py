@@ -133,8 +133,26 @@ class ConditionVariantCacheTests(unittest.TestCase):
                 builder_paths,
                 spec.run_id,
             )
-        self.assertEqual(checked, 105)
+        self.assertEqual(checked, 630)
         self.assertEqual(len(builder_paths), 21)
+
+    def test_interaction_config_has_20_cacheable_composed_conditions(
+        self,
+    ) -> None:
+        config = load_config(
+            ROOT / "dev" / "genome_visual_interactions.yaml"
+        )
+        selected = cacheable_conditions(config)
+        self.assertEqual(len(selected), 20)
+        self.assertEqual(
+            {condition["transform"] for condition in selected},
+            {"composed"},
+        )
+        paths = {
+            condition_cache_directory("/cache", condition)
+            for condition in selected
+        }
+        self.assertEqual(len(paths), 20)
 
     def test_uncached_condition_path_can_be_skipped_by_node_staging(
         self,

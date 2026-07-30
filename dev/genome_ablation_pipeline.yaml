@@ -14,9 +14,9 @@ base_cache:
 
 condition_cache:
   enabled: true
-  source_stage: visual_ablation
+  source_stages: [visual_ablation, visual_interactions]
   directory_name: image_condition_cache_paper_v1
-  transforms: [gaussian_blur_percent, patch_shuffle, resolution_loss]
+  transforms: [gaussian_blur_percent, patch_shuffle, resolution_loss, composed]
   cpus_per_task: 8
   memory: 16G
   time_limit: "04:00:00"
@@ -27,6 +27,8 @@ stages:
     config: genome_ablation_baseline.yaml
   - name: visual_ablation
     config: genome_visual_ablation.yaml
+  - name: visual_interactions
+    config: genome_visual_interactions.yaml
   - name: data_holdouts
     config: genome_data_holdouts.yaml
 

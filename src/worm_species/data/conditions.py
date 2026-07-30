@@ -269,6 +269,7 @@ def _condition_parameters(condition: dict) -> dict:
         "seed",
         "percent",
         "max_sigma",
+        "operations",
     ):
         if key in condition:
             parameters[key] = condition[key]
@@ -283,6 +284,29 @@ def build_condition_operations(
     condition = dict(condition or {})
     transform_name = str(condition.get("transform", "original")).lower()
     parameters = _condition_parameters(condition)
+
+    if transform_name == "composed":
+        configured = parameters.get("operations")
+        if not isinstance(configured, list) or not configured:
+            raise ValueError(
+                "composed input conditions require a non-empty operations list"
+            )
+        operations = []
+        for index, operation in enumerate(configured):
+            if not isinstance(operation, dict):
+                raise TypeError(
+                    f"composed operation {index} must be a mapping"
+                )
+            nested_transform = str(
+                operation.get("transform", "original")
+            ).lower()
+            if nested_transform in {"original", "composed"}:
+                raise ValueError(
+                    "composed operations must be non-original, non-composed "
+                    f"transforms; got {nested_transform!r} at index {index}"
+                )
+            operations.extend(build_condition_operations(operation))
+        return operations
 
     if transform_name == "saturation":
         retention = float(parameters["retention"])

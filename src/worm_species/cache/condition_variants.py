@@ -35,7 +35,12 @@ SCHEMA_VERSION = 2
 READY_MARKER = "CACHE_READY"
 MANIFEST_FILE = "condition_cache_manifest.json"
 DEFAULT_TRANSFORMS = frozenset(
-    {"gaussian_blur_percent", "patch_shuffle", "resolution_loss"}
+    {
+        "gaussian_blur_percent",
+        "patch_shuffle",
+        "resolution_loss",
+        "composed",
+    }
 )
 TENSOR_COLUMN = "_condition_cached_tensor_path"
 
@@ -75,6 +80,7 @@ def _canonical_condition(condition: dict[str, Any]) -> dict[str, Any]:
         "seed",
         "percent",
         "max_sigma",
+        "operations",
     ):
         if key in raw:
             parameters[key] = copy.deepcopy(raw[key])
