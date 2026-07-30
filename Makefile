@@ -2,7 +2,7 @@
 
 PYTHON ?= python
 PIPELINE_CONFIG ?= dev/genome_ablation_pipeline.yaml
-PIPELINE_MODE ?= dry-run
+PIPELINE_MODE ?= submit
 PAPER_RESULT ?= paper_result
 SPLIT_ROOT ?= .
 DATA_ROOT ?= ../petridish-worm-images
