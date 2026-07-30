@@ -15,3 +15,6 @@ __all__ = [
     "build_label_maps",
     "read_csvs_from_dir",
 ]
+from .samplers import JointSpeciesStageSampler
+
+__all__ = ["JointSpeciesStageSampler"]

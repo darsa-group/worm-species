@@ -1,0 +1,16 @@
+extends: _base.yaml
+
+model:
+  multitask_architecture: split_taxonomy_age
+  branch_mode: auto
+  adapter_dim: 256
+  adapter_dropout: 0.2
+  pooling: {type: task_attention, dropout: 0.1}
+
+wandb:
+  group: generalisation-split-taxonomy-age
+  tags: [generalisation, split-taxonomy-age]
+
+slurm:
+  planning:
+    run_name_prefix: split_taxonomy_age

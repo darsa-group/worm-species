@@ -61,6 +61,8 @@ def evaluate_data_holdout(
         )
         metrics_by_cohort[cohort_name] = metrics
         for task in holdout["primary_tasks"]:
+            if task not in criteria or task not in bundle.label_to_index_by_task:
+                continue
             label = evaluation_where.get(task)
             label_to_index = bundle.label_to_index_by_task[task]
             supported = label is None or label in label_to_index
@@ -94,7 +96,23 @@ def evaluate_data_holdout(
     root = Path(out_dir) / "data_holdout_evaluation"
     root.mkdir(parents=True, exist_ok=True)
     task_path = root / "task_metrics.csv"
-    pd.DataFrame(task_rows).to_csv(task_path, index=False)
+    pd.DataFrame(
+        task_rows,
+        columns=[
+            "holdout",
+            "question",
+            "cohort",
+            "task",
+            "target_label",
+            "class_supported_by_training_head",
+            "n",
+            "accuracy",
+            "balanced_accuracy",
+            "macro_f1",
+            "target_n",
+            "target_recall",
+        ],
+    ).to_csv(task_path, index=False)
     result = {
         "enabled": True,
         "name": holdout["name"],

@@ -46,6 +46,7 @@ _SLURM_KEYS: dict[str, object] = {
         "experiment_type": None,
         "external_expansion": None,
         "clear_run_names": None,
+        "run_name_prefix": None,
     },
     "setup": {
         "enabled": None,

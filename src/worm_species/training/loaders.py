@@ -20,6 +20,7 @@ from ..data.labels import build_label_maps
 from ..data.labels import get_target_cols
 from ..data.labels import read_csvs_from_dir
 from ..data.metadata import prepare_metadata
+from ..data.samplers import JointSpeciesStageSampler
 from ..data.transforms import build_split_transform
 from .modes import TrainingProfile
 from .modes import get_profile
@@ -39,6 +40,7 @@ class LoaderBundle:
     data_holdout_loader: DataLoader | None = None
     data_holdout_loaders: dict[str, DataLoader] | None = None
     data_holdout_audit: dict | None = None
+    sampler_summary: object | None = None
 
 
 def require_complete_task_labels(
@@ -151,7 +153,7 @@ def get_input_condition(cfg: dict) -> dict:
 
 def make_profile_loaders(cfg: dict, profile: TrainingProfile) -> LoaderBundle:
     df = prepare_metadata(cfg)
-    target_cols = get_target_cols(cfg)
+    all_target_cols = get_target_cols(cfg)
     group_col = cfg["data"]["group_col"]
     split_target_col = cfg["data"].get(
         "split_target_col", "__taxon_for_split__"
@@ -220,7 +222,7 @@ def make_profile_loaders(cfg: dict, profile: TrainingProfile) -> LoaderBundle:
         train=train_df,
         validation=val_df,
         test=test_df,
-        target_cols=target_cols,
+        target_cols=all_target_cols,
         group_col=group_col,
     )
     train_df = holdout.train
@@ -228,6 +230,24 @@ def make_profile_loaders(cfg: dict, profile: TrainingProfile) -> LoaderBundle:
     test_df = holdout.test
     development_cohort = holdout.development_cohort
     test_cohort = holdout.test_cohort
+
+    architecture = str(
+        (cfg.get("model", {}) or {}).get(
+            "multitask_architecture", "shared_heads"
+        )
+    )
+    if architecture == "single_task":
+        target_task = str(
+            (cfg.get("model", {}) or {}).get("target_task", "")
+        )
+        if target_task not in all_target_cols:
+            raise ValueError(
+                f"model.target_task={target_task!r} is not in "
+                f"data.target_cols={list(all_target_cols)}"
+            )
+        target_cols = {target_task: all_target_cols[target_task]}
+    else:
+        target_cols = all_target_cols
 
     if not profile.masked_labels:
         require_complete_task_labels(
@@ -371,10 +391,39 @@ def make_profile_loaders(cfg: dict, profile: TrainingProfile) -> LoaderBundle:
         train_loader_kwargs["prefetch_factor"] = 4
         eval_loader_kwargs["prefetch_factor"] = 2
 
+    sampler_cfg = (cfg.get("data", {}) or {}).get("sampler", {}) or {}
+    sampler_type = str(sampler_cfg.get("type", "default"))
+    train_sampler = None
+    sampler_summary = None
+    if sampler_type == "joint_species_stage":
+        required = {"species", "age"}
+        if not required.issubset(all_target_cols):
+            raise ValueError(
+                "joint_species_stage sampling requires species and age in "
+                "data.target_cols"
+            )
+        train_sampler = JointSpeciesStageSampler(
+            train_df,
+            species_col=all_target_cols["species"],
+            stage_col=all_target_cols["age"],
+            group_col=group_col,
+            replacement=bool(sampler_cfg.get("replacement", True)),
+            samples_per_epoch=sampler_cfg.get("samples_per_epoch"),
+            seed=int(cfg.get("seed", 0)),
+        )
+        sampler_summary = train_sampler.summary
+        print("Joint species-stage training sampler:")
+        print(sampler_summary.to_string(index=False))
+    elif sampler_type != "default":
+        raise ValueError(
+            "data.sampler.type must be default or joint_species_stage"
+        )
+
     train_loader = DataLoader(
         train_ds,
         batch_size=batch_size,
-        shuffle=True,
+        shuffle=train_sampler is None,
+        sampler=train_sampler,
         **train_loader_kwargs,
     )
     val_loader = DataLoader(
@@ -478,6 +527,7 @@ def make_profile_loaders(cfg: dict, profile: TrainingProfile) -> LoaderBundle:
         data_holdout_loader=data_holdout_loader,
         data_holdout_loaders=data_holdout_loaders or None,
         data_holdout_audit=holdout.audit,
+        sampler_summary=sampler_summary,
     )
 
 

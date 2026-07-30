@@ -159,6 +159,7 @@ def generate_external_specs(
     planning = (config.get("slurm", {}) or {}).get("planning", {}) or {}
     compatibility_kind = str(planning.get("external_expansion", "sweep"))
     clear_run_names = bool(planning.get("clear_run_names", False))
+    run_name_prefix = str(planning.get("run_name_prefix", "")).strip()
     canonical_sweep = canonical.get("sweep", {}) or {}
     parameter_count = len(canonical_sweep.get("parameters", {}) or {})
     evaluation = canonical.get("evaluation", {}) or {}
@@ -256,6 +257,8 @@ def generate_external_specs(
                 f"{hierarchy_suffix}_"
                 f"{datetime.now().strftime('%Y%m%d%H%M%S')}"
             )
+        if run_name_prefix:
+            run_id = f"{slug(run_name_prefix)}_{run_id}"
         specs.append((run_id, overrides, model, condition_name))
     return specs
 

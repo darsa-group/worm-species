@@ -1,0 +1,18 @@
+extends: split_taxonomy_age.yaml
+
+data:
+  sampler:
+    type: joint_species_stage
+    replacement: true
+    samples_per_epoch: null
+
+training:
+  gradient_strategy: {type: pcgrad}
+
+wandb:
+  group: generalisation-split-joint-sampler-pcgrad
+  tags: [generalisation, split-taxonomy-age, joint-sampler, pcgrad]
+
+slurm:
+  planning:
+    run_name_prefix: split_joint_sampler_pcgrad

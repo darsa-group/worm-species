@@ -73,6 +73,11 @@ data:
     species: 3
     age: 3
 
+  sampler:
+    type: default
+    replacement: true
+    samples_per_epoch: null
+
 multi_task:
   loss_weights:
     genus: 1.0
@@ -123,6 +128,26 @@ model:
   name: "efficientnet_b0"   # resnet18, efficientnet_b0, vit_b_16, dinov3_vits16
   pretrained: true
   freeze_backbone: false
+  multitask_architecture: shared_heads
+  target_task: null
+  branch_mode: auto
+  adapter_dim: 256
+  adapter_dropout: 0.2
+  pooling:
+    type: global_average
+    dropout: 0.1
+  age_species_adversary:
+    enabled: false
+    weight: 0.05
+    warmup_epochs: 10
+    max_weight: 0.1
+
+loss:
+  age_supervised_contrastive:
+    enabled: false
+    weight: 0.1
+    temperature: 0.07
+    cross_species_positives: true
 
 training:
   # Preferred trainer behaviour is selected by explicit switches in this file,
@@ -143,6 +168,11 @@ training:
   class_weight: true
   num_workers: 6
   val_interval: 10
+  gradient_diagnostics:
+    enabled: false
+    interval_steps: 100
+  gradient_strategy:
+    type: standard
 
 output:
   out_dir: "outputs"

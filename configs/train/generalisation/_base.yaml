@@ -1,32 +1,73 @@
-# Stage 3: obvious biological holdout questions.
-# 5 backbones x 4 holdouts x 3 seeds x 2 hierarchy settings = 120 fits.
-extends: genome_ablation_baseline.yaml
+# Shared contract for task-specific generalisation diagnostics.
+extends: ../../../dev/genome_ablation_baseline.yaml
+
+model:
+  name: convnext_base
+  pretrained: true
+  freeze_backbone: false
+  multitask_architecture: shared_heads
+  target_task: null
+  branch_mode: auto
+  adapter_dim: 256
+  adapter_dropout: 0.2
+  pooling: {type: global_average, dropout: 0.1}
+  age_species_adversary:
+    enabled: false
+    weight: 0.05
+    warmup_epochs: 10
+    max_weight: 0.1
+
+data:
+  sampler:
+    type: default
+    replacement: true
+    samples_per_epoch: null
+
+loss:
+  age_supervised_contrastive:
+    enabled: false
+    weight: 0.1
+    temperature: 0.07
+    cross_species_positives: true
+
+training:
+  gradient_diagnostics: {enabled: true, interval_steps: 100}
+  gradient_strategy: {type: standard}
 
 multi_task:
   loss_weights: {genus: 1.0, species: 0.5, age: 2.0}
+  selection_metric: mean_macro_f1
   hierarchy_loss:
     enabled: false
+    parent_task: genus
+    child_task: species
     weight: 0.0
 
+evaluation:
+  test_conditions: {enabled: false, conditions: [], evaluate_original_training: false}
+  condition_matrix: {enabled: false, conditions: [], write_reports: false}
+  data_holdout_controls: {enabled: false, definitions: []}
+
 wandb:
-  group: paper-data-holdouts
-  tags: [paper, data-holdout]
+  enabled: true
+  project: worm-species-generalisation
+  group: generalisation
+  tags: [generalisation]
+  compact: true
+  save_code: false
+  log_model: false
 
 sweep:
+  enabled: true
   parameters:
     seed: [40, 41, 42]
-    model.name:
-      - resnet50
-      - convnext_base
-      - vit_b_16
-      - dinov3_vitb16
-      - dinov3_convnext_base
+    model.name: [convnext_base]
     multi_task.loss_weights:
       - {genus: 1.0, species: 0.5, age: 2.0}
     multi_task.hierarchy_loss:
       - {enabled: false, parent_task: genus, child_task: species, weight: 0.0}
-      - {enabled: true, parent_task: genus, child_task: species, weight: 0.2}
     data_holdout:
+      - {enabled: false, name: original_baseline, question: Original predefined split, remove_from: [train, validation], where: {}, evaluation_where: {}, primary_tasks: []}
       - enabled: true
         name: juvenile_aporrectodea_longa
         question: Can the model recognise juvenile age and Aporrectodea_longa when that exact combination was never seen during development?
@@ -34,7 +75,6 @@ sweep:
         where: {species: Aporrectodea_longa, age: Juvenile}
         evaluation_where: {species: Aporrectodea_longa, age: Juvenile}
         primary_tasks: [age, species]
-
       - enabled: true
         name: juvenile_allolobophora_chlorotica
         question: Can the model recognise juvenile age and Allolobophora_chlorotica when that exact combination was never seen during development?
@@ -42,7 +82,6 @@ sweep:
         where: {species: Allolobophora_chlorotica, age: Juvenile}
         evaluation_where: {species: Allolobophora_chlorotica, age: Juvenile}
         primary_tasks: [age, species]
-
       - enabled: true
         name: juvenile_genus_aporrectodea
         question: Can the model recognise juvenile age and genus Aporrectodea when all juvenile Aporrectodea were hidden during development?
@@ -50,7 +89,6 @@ sweep:
         where: {genus: Aporrectodea, age: Juvenile}
         evaluation_where: {genus: Aporrectodea, age: Juvenile}
         primary_tasks: [age, genus]
-
       - enabled: true
         name: unseen_species_aporrectodea_longa_for_genus
         question: Can the model recognise genus Aporrectodea for the completely unseen species Aporrectodea_longa?
@@ -61,16 +99,11 @@ sweep:
   conditions:
     - {name: original, feature: baseline, transform: original, strength: 0.0, parameters: {}}
 
-evaluation:
-  test_conditions: {enabled: false, conditions: [], evaluate_original_training: false}
-  data_holdout_controls: {enabled: false, definitions: []}
-  condition_matrix: {enabled: false, conditions: [], write_reports: false}
-
 output:
-  out_dir: paper_result/runs/data_holdouts
+  out_dir: outputs/generalisation
 
 slurm:
   planning:
-    experiment_type: genome_data_holdouts
+    experiment_type: task_specific_multitask_generalisation
     external_expansion: sweep
     clear_run_names: true

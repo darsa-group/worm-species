@@ -1,0 +1,19 @@
+extends: split_taxonomy_age.yaml
+
+data:
+  sampler:
+    type: joint_species_stage
+    replacement: true
+    samples_per_epoch: null
+
+sweep:
+  parameters:
+    seed: [42]
+
+wandb:
+  group: generalisation-split-joint-sampler
+  tags: [generalisation, split-taxonomy-age, joint-sampler]
+
+slurm:
+  planning:
+    run_name_prefix: split_joint_sampler

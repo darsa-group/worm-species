@@ -1,0 +1,23 @@
+extends: _base.yaml
+
+model:
+  multitask_architecture: single_task
+  target_task: genus
+
+multi_task:
+  selection_metric: genus_macro_f1
+
+training:
+  gradient_diagnostics: {enabled: false, interval_steps: 100}
+
+sweep:
+  parameters:
+    seed: [42]
+
+wandb:
+  group: generalisation-single-task-genus
+  tags: [generalisation, single-task, genus]
+
+slurm:
+  planning:
+    run_name_prefix: single_task_genus

@@ -8,6 +8,8 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 
+from ..data.labels import MISSING_LABEL
+
 
 def compute_individual_class_weights(
     train_df: pd.DataFrame,
@@ -192,3 +194,72 @@ def hierarchy_consistency_loss(
         )
 
         return 0.5 * (parent_loss + child_loss)
+
+
+def age_supervised_contrastive_loss(
+    embeddings: torch.Tensor,
+    age_labels: torch.Tensor,
+    *,
+    species_labels: torch.Tensor | None = None,
+    temperature: float = 0.07,
+    cross_species_positives: bool = True,
+) -> tuple[torch.Tensor | None, dict[str, float | int]]:
+    """Supervised contrastive loss with cross-species age positives preferred."""
+    if temperature <= 0:
+        raise ValueError("Supervised-contrastive temperature must be positive")
+    valid = age_labels != MISSING_LABEL
+    if species_labels is not None:
+        valid &= species_labels != MISSING_LABEL
+    embeddings = embeddings[valid]
+    ages = age_labels[valid]
+    species = species_labels[valid] if species_labels is not None else None
+    valid_count = int(len(ages))
+    empty_stats = {
+        "valid_anchor_count": 0,
+        "valid_anchor_proportion": 0.0,
+        "candidate_anchor_count": valid_count,
+    }
+    if valid_count < 2:
+        return None, empty_stats
+
+    embeddings = F.normalize(embeddings.float(), dim=-1)
+    logits = embeddings @ embeddings.T / float(temperature)
+    identity = torch.eye(valid_count, dtype=torch.bool, device=logits.device)
+    logits_mask = ~identity
+    same_age = ages[:, None].eq(ages[None, :]) & logits_mask
+    positive_mask = same_age
+    if cross_species_positives and species is not None:
+        cross_species = (
+            same_age
+            & species[:, None].ne(species[None, :])
+        )
+        has_cross_species = cross_species.any(dim=1, keepdim=True)
+        positive_mask = torch.where(
+            has_cross_species,
+            cross_species,
+            same_age,
+        )
+
+    valid_anchors = positive_mask.any(dim=1)
+    valid_anchor_count = int(valid_anchors.sum().item())
+    stats = {
+        "valid_anchor_count": valid_anchor_count,
+        "valid_anchor_proportion": (
+            float(valid_anchor_count / valid_count)
+            if valid_count else 0.0
+        ),
+        "candidate_anchor_count": valid_count,
+    }
+    if valid_anchor_count == 0:
+        return None, stats
+
+    masked_logits = logits.masked_fill(~logits_mask, -torch.inf)
+    log_prob = masked_logits - torch.logsumexp(
+        masked_logits, dim=1, keepdim=True
+    )
+    positive_counts = positive_mask.sum(dim=1).clamp_min(1)
+    mean_positive_log_prob = (
+        log_prob.masked_fill(~positive_mask, 0.0).sum(dim=1)
+        / positive_counts
+    )
+    return -mean_positive_log_prob[valid_anchors].mean(), stats

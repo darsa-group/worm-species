@@ -132,6 +132,11 @@ def evaluate_holdout_controls(
                 f"{definition['name']}::{cohort_name}"
             ] = metrics
             for task in definition["primary_tasks"]:
+                if (
+                    task not in criteria
+                    or task not in bundle.label_to_index_by_task
+                ):
+                    continue
                 label = evaluation_where.get(task)
                 label_map = bundle.label_to_index_by_task[task]
                 supported = label is None or label in label_map

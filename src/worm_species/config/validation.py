@@ -723,6 +723,106 @@ def _validate_tasks(config: dict[str, Any], issues: list[ValidationIssue]) -> No
                 ))
 
 
+def _validate_generalisation_features(
+    config: dict[str, Any],
+    issues: list[ValidationIssue],
+) -> None:
+    model = config.get("model", {}) or {}
+    data = config.get("data", {}) or {}
+    training = config.get("training", {}) or {}
+    loss = config.get("loss", {}) or {}
+    if not all(
+        isinstance(section, dict)
+        for section in (model, data, training, loss)
+    ):
+        return
+    architecture = str(
+        model.get("multitask_architecture", "shared_heads")
+    )
+    target_cols = data.get("target_cols", {}) or {}
+    if architecture == "single_task":
+        target_task = model.get("target_task")
+        if target_task not in {"genus", "species", "age"}:
+            issues.append(ValidationIssue(
+                "model.target_task",
+                "is required for single_task and must be genus, species, or age",
+            ))
+        elif target_task not in target_cols:
+            issues.append(ValidationIssue(
+                "model.target_task",
+                "must name a task present in data.target_cols",
+            ))
+        hierarchy = (config.get("multi_task", {}) or {}).get(
+            "hierarchy_loss", {}
+        ) or {}
+        if isinstance(hierarchy, dict) and hierarchy.get("enabled", False):
+            issues.append(ValidationIssue(
+                "multi_task.hierarchy_loss.enabled",
+                "must be false for a single-task architecture",
+            ))
+    if architecture == "split_taxonomy_age":
+        missing = {"genus", "species", "age"} - set(target_cols)
+        if missing:
+            issues.append(ValidationIssue(
+                "data.target_cols",
+                "split_taxonomy_age requires genus, species, and age; "
+                f"missing {sorted(missing)}",
+            ))
+
+    sampler = data.get("sampler", {}) or {}
+    if not isinstance(sampler, dict):
+        issues.append(ValidationIssue("data.sampler", "must be a mapping"))
+    elif sampler.get("type", "default") == "joint_species_stage":
+        missing = {"species", "age"} - set(target_cols)
+        if missing:
+            issues.append(ValidationIssue(
+                "data.sampler.type",
+                "joint_species_stage requires species and age target columns",
+            ))
+
+    strategy = training.get("gradient_strategy", {}) or {}
+    if not isinstance(strategy, dict):
+        issues.append(ValidationIssue(
+            "training.gradient_strategy", "must be a mapping"
+        ))
+    elif (
+        strategy.get("type", "standard") == "pcgrad"
+        and architecture == "single_task"
+    ):
+        issues.append(ValidationIssue(
+            "training.gradient_strategy.type",
+            "pcgrad requires at least two active tasks",
+        ))
+
+    diagnostics = training.get("gradient_diagnostics", {}) or {}
+    if not isinstance(diagnostics, dict):
+        issues.append(ValidationIssue(
+            "training.gradient_diagnostics", "must be a mapping"
+        ))
+
+    supcon = loss.get("age_supervised_contrastive", {}) or {}
+    if not isinstance(supcon, dict):
+        issues.append(ValidationIssue(
+            "loss.age_supervised_contrastive", "must be a mapping"
+        ))
+    elif supcon.get("enabled", False) and architecture != "split_taxonomy_age":
+        issues.append(ValidationIssue(
+            "loss.age_supervised_contrastive.enabled",
+            "is supported only by split_taxonomy_age",
+        ))
+
+    adversary = model.get("age_species_adversary", {}) or {}
+    if not isinstance(adversary, dict):
+        issues.append(ValidationIssue(
+            "model.age_species_adversary", "must be a mapping"
+        ))
+    elif adversary.get("enabled", False) and architecture != "split_taxonomy_age":
+        issues.append(ValidationIssue(
+            "model.age_species_adversary.enabled",
+            "is supported only by split_taxonomy_age",
+        ))
+
+
 def _validate_paths(config: dict[str, Any], issues: list[ValidationIssue]) -> None:
     data_root = _get(config, "data.root_dir")
     metadata = _get(config, "data.metadata_csv")
@@ -1097,7 +1197,7 @@ def validate_config(
         "model", "training", "output", "cache", "colour_ablation", "experiment",
         "test_cue_suppression", "condition_matrix_evaluation",
         "matched_condition_training", "sweep", "input_condition",
-        "preprocessing", "augmentation", "evaluation", "data_holdout",
+        "preprocessing", "augmentation", "evaluation", "data_holdout", "loss",
     ):
         value = config.get(section, _ABSENT)
         if value is not _ABSENT and value is not None and not isinstance(value, dict):
@@ -1139,6 +1239,16 @@ def validate_config(
         ("early_stopping.patience", 0, None, False),
         ("early_stopping.min_delta", 0, None, False),
         ("multi_task.hierarchy_loss.weight", 0, None, False),
+        ("data.sampler.samples_per_epoch", 0, None, True),
+        ("model.adapter_dim", 0, None, True),
+        ("model.adapter_dropout", 0, 1, False),
+        ("model.pooling.dropout", 0, 1, False),
+        ("model.age_species_adversary.weight", 0, None, False),
+        ("model.age_species_adversary.warmup_epochs", 0, None, False),
+        ("model.age_species_adversary.max_weight", 0, None, False),
+        ("loss.age_supervised_contrastive.weight", 0, None, False),
+        ("loss.age_supervised_contrastive.temperature", 0, None, True),
+        ("training.gradient_diagnostics.interval_steps", 0, None, True),
     ):
         value = _get(config, path)
         if value is not _ABSENT and _is_type(value, (int, float)):
@@ -1174,6 +1284,7 @@ def validate_config(
             issues.append(ValidationIssue(path, "must be a non-empty string"))
 
     _validate_tasks(config, issues)
+    _validate_generalisation_features(config, issues)
     _validate_preprocessing_and_augmentation(config, issues, resolved_workflow)
     _validate_transform_parameters(config, issues)
     _validate_sweeps(config, issues, resolved_workflow)

@@ -1,6 +1,7 @@
 # Configuration layout
 
-Only the Genome paper-ablation configuration graph is retained.
+The Genome paper-ablation graph remains the paper workflow. Task-specific
+multitask diagnostics are an additional, isolated configuration family.
 
 ```text
 dev/genome_ablation_pipeline.yaml
@@ -13,6 +14,19 @@ dev/genome_ablation_pipeline.yaml
 ├── dev/genome_data_holdouts.yaml
 │   └── dev/genome_ablation_baseline.yaml
 └── dev/paper_report_style.yaml
+
+configs/train/generalisation/_base.yaml
+├── shared_heads.yaml
+├── single_task_genus.yaml
+├── single_task_species.yaml
+├── single_task_age.yaml
+├── split_taxonomy_age.yaml
+│   ├── split_joint_sampler.yaml
+│   ├── split_pcgrad.yaml
+│   ├── split_age_supcon.yaml
+│   ├── split_joint_sampler_pcgrad.yaml
+│   ├── split_full.yaml
+│   └── split_species_adversary.yaml
 ```
 
 The pipeline renders safely by default:
@@ -27,7 +41,16 @@ Explicit submission:
 make ablation-pipeline PIPELINE_MODE=submit
 ```
 
-The full plan is 175 fits: 45 baseline, 110 visual ablation, and 20 data
-holdout. It also contains a shared base-cache job, a 21-task deterministic
-condition-cache array, completed-result collectors, and a final paper-report
-job.
+The paper pipeline contains 1,470 fits plus shared cache, collector, and report
+jobs. Generalisation configs are submitted separately to avoid accidental
+Cartesian expansion. The five principal matrices each contain 15 runs: three
+seeds across the original split and four structured holdouts. Isolated
+mechanism and exploratory matrices contain five seed-42 runs unless explicitly
+promoted.
+
+Validate one diagnostic matrix with:
+
+```bash
+make generalisation-validate \
+  GENERALISATION_CONFIG=configs/train/generalisation/split_full.yaml
+```

@@ -1,0 +1,19 @@
+extends: _base.yaml
+
+model:
+  multitask_architecture: single_task
+  target_task: age
+
+multi_task:
+  selection_metric: age_macro_f1
+
+training:
+  gradient_diagnostics: {enabled: false, interval_steps: 100}
+
+wandb:
+  group: generalisation-single-task-age
+  tags: [generalisation, single-task, age]
+
+slurm:
+  planning:
+    run_name_prefix: single_task_age

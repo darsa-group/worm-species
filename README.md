@@ -125,3 +125,24 @@ make test
 This runs the retained configuration, cache, transform, model, evaluation,
 logging, loss, and end-to-end dry-run/report tests. A dry-run proves planning
 and rendering, not real training or live cluster execution.
+
+## Task-specific multitask diagnostics
+
+The repository also includes a backward-compatible diagnostic family for
+negative transfer and species–developmental-stage confounding. It retains
+`shared_heads` as the default, and adds single-task heads, split taxonomy/age
+branches, task-specific pooling, joint species–stage sampling, PCGrad, age
+supervised-contrastive learning, and a separate exploratory species adversary.
+
+The configurations, architecture diagrams, training commands, output
+contracts, and holdout interpretation guide are in
+[`docs/GENERALISATION_EXPERIMENTS.md`](docs/GENERALISATION_EXPERIMENTS.md).
+Generate completed-run tables, publication figures, and computed explanations
+with:
+
+```bash
+make generalisation-report
+```
+
+Ordinary random splits primarily measure interpolation. The structured
+holdouts are the relevant evidence for biological generalisation.

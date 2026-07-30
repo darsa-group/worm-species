@@ -74,6 +74,8 @@ def run_test_evaluation(
     profile: TrainingProfile,
     wandb_logger,
     input_condition: dict,
+    age_supcon_cfg: dict,
+    age_species_adversary_cfg: dict,
 ) -> tuple[dict, dict[str, list[int]], dict[str, list[int]]]:
     """Evaluate one checkpoint on the test split and save its outputs."""
     checkpoint = load_checkpoint(checkpoint_path, map_location=device)
@@ -93,6 +95,8 @@ def run_test_evaluation(
         hierarchy_cfg,
         matrix,
         profile.masked_labels,
+        age_supcon_cfg=age_supcon_cfg,
+        age_species_adversary_cfg=age_species_adversary_cfg,
     )
 
     wandb_condition = (
@@ -181,6 +185,64 @@ def run_test_evaluation(
     return test_metrics, true, pred
 
 
+def save_age_embedding_diagnostics(
+    *,
+    model: torch.nn.Module,
+    loader,
+    device: torch.device,
+    use_amp: bool,
+    out_dir: Path,
+) -> dict[str, str] | None:
+    """Save best-checkpoint age embeddings and their descriptive labels."""
+    model.eval()
+    embedding_batches = []
+    rows = []
+    with torch.no_grad():
+        for batch in loader:
+            images = batch["image"].to(device, non_blocking=True)
+            with torch.amp.autocast(
+                enabled=use_amp and device.type == "cuda",
+                device_type=device.type,
+            ):
+                outputs = model(images)
+            embeddings = outputs.get("age_embedding")
+            if embeddings is None:
+                return None
+            embedding_batches.append(
+                embeddings.detach().float().cpu().numpy()
+            )
+            label_names = batch.get("label_names", {})
+            paths = batch.get("path", [""] * len(images))
+            for index in range(len(images)):
+                rows.append({
+                    "row": len(rows),
+                    "developmental_stage": (
+                        label_names.get(
+                            "age", ["<MISSING>"] * len(images)
+                        )[index]
+                    ),
+                    "species": (
+                        label_names.get(
+                            "species", ["<MISSING>"] * len(images)
+                        )[index]
+                    ),
+                    "path": paths[index],
+                })
+    if not embedding_batches:
+        return None
+    embedding_path = out_dir / "age_embeddings_best.npz"
+    metadata_path = out_dir / "age_embeddings_best_metadata.csv"
+    np.savez_compressed(
+        embedding_path,
+        embeddings=np.concatenate(embedding_batches, axis=0),
+    )
+    pd.DataFrame(rows).to_csv(metadata_path, index=False)
+    return {
+        "embeddings": str(embedding_path),
+        "metadata": str(metadata_path),
+    }
+
+
 def run_one(cfg: dict, profile: TrainingProfile) -> dict:
     """Run exactly one resolved configuration; never generate another config."""
     set_seed(cfg["seed"])
@@ -242,6 +304,11 @@ def run_one(cfg: dict, profile: TrainingProfile) -> dict:
         bundle.label_to_index_by_task,
         out_dir / "label_to_index_by_task.json",
     )
+    if bundle.sampler_summary is not None:
+        bundle.sampler_summary.to_csv(
+            out_dir / "joint_species_stage_sampler.csv",
+            index=False,
+        )
     print(f"Split summary and label maps saved to {out_dir}")
 
     num_classes_by_task = {
@@ -252,6 +319,11 @@ def run_one(cfg: dict, profile: TrainingProfile) -> dict:
         cfg,
         num_classes_by_task,
     ).to(device)
+    if hasattr(model, "branch_mode_used"):
+        print(
+            "Split taxonomy-age branch mode: "
+            f"{model.branch_mode_used}"
+        )
     model_parameter_counts = {
         "total_parameters": int(
             sum(parameter.numel() for parameter in model.parameters())
@@ -329,6 +401,20 @@ def run_one(cfg: dict, profile: TrainingProfile) -> dict:
         "selection_metric", "mean_macro_f1"
     )
     interval = cfg["training"].get("val_interval", 3)
+    gradient_strategy_cfg = (
+        cfg.get("training", {}).get("gradient_strategy", {}) or {}
+    )
+    gradient_diagnostics_cfg = (
+        cfg.get("training", {}).get("gradient_diagnostics", {}) or {}
+    )
+    age_supcon_cfg = (
+        cfg.get("loss", {}).get("age_supervised_contrastive", {}) or {}
+    )
+    age_species_adversary_cfg = (
+        cfg.get("model", {}).get("age_species_adversary", {}) or {}
+    )
+    gradient_diagnostics_records: list[dict] = []
+    global_step = 0
 
     print(
         f"Training for {cfg['training']['epochs']} epochs with early stopping: "
@@ -349,7 +435,15 @@ def run_one(cfg: dict, profile: TrainingProfile) -> dict:
             hierarchy_cfg,
             matrix,
             profile.masked_labels,
+            epoch=epoch,
+            global_step_offset=global_step,
+            gradient_strategy_cfg=gradient_strategy_cfg,
+            gradient_diagnostics_cfg=gradient_diagnostics_cfg,
+            gradient_diagnostics_records=gradient_diagnostics_records,
+            age_supcon_cfg=age_supcon_cfg,
+            age_species_adversary_cfg=age_species_adversary_cfg,
         )
+        global_step += len(bundle.train_loader)
         validate = (
             epoch == 1
             or epoch % interval == 0
@@ -370,6 +464,9 @@ def run_one(cfg: dict, profile: TrainingProfile) -> dict:
                 hierarchy_cfg,
                 matrix,
                 profile.masked_labels,
+                epoch=epoch,
+                age_supcon_cfg=age_supcon_cfg,
+                age_species_adversary_cfg=age_species_adversary_cfg,
             )[0]
         else:
             val_metrics = {}
@@ -462,6 +559,20 @@ def run_one(cfg: dict, profile: TrainingProfile) -> dict:
             break
 
     pd.DataFrame(history).to_csv(out_dir / "history.csv", index=False)
+    if gradient_diagnostics_cfg.get("enabled", False):
+        pd.DataFrame(
+            gradient_diagnostics_records,
+            columns=[
+                "epoch",
+                "step",
+                "genus_gradient_norm",
+                "species_gradient_norm",
+                "age_gradient_norm",
+                "genus_species_cosine",
+                "genus_age_cosine",
+                "species_age_cosine",
+            ],
+        ).to_csv(out_dir / "gradient_diagnostics.csv", index=False)
     payload = build_checkpoint_payload(
         profile=profile,
         model_state=model.state_dict(),
@@ -504,6 +615,8 @@ def run_one(cfg: dict, profile: TrainingProfile) -> dict:
         profile=profile,
         wandb_logger=wandb_logger,
         input_condition=input_condition,
+        age_supcon_cfg=age_supcon_cfg,
+        age_species_adversary_cfg=age_species_adversary_cfg,
     )
     test_metrics, true, pred = run_test_evaluation(
         checkpoint_name="best",
@@ -523,6 +636,15 @@ def run_one(cfg: dict, profile: TrainingProfile) -> dict:
         profile=profile,
         wandb_logger=wandb_logger,
         input_condition=input_condition,
+        age_supcon_cfg=age_supcon_cfg,
+        age_species_adversary_cfg=age_species_adversary_cfg,
+    )
+    age_embedding_artifacts = save_age_embedding_diagnostics(
+        model=model,
+        loader=bundle.test_loader,
+        device=device,
+        use_amp=use_amp,
+        out_dir=out_dir,
     )
 
     data_holdout = evaluate_data_holdout(
@@ -720,6 +842,25 @@ def run_one(cfg: dict, profile: TrainingProfile) -> dict:
         result["data_holdout"] = data_holdout
     if holdout_controls.get("enabled", False):
         result["data_holdout_controls"] = holdout_controls
+    if age_embedding_artifacts is not None:
+        result["age_embedding_artifacts"] = age_embedding_artifacts
+    result.update({
+        "multitask_architecture": cfg.get("model", {}).get(
+            "multitask_architecture", "shared_heads"
+        ),
+        "target_task": cfg.get("model", {}).get("target_task"),
+        "branch_mode_used": getattr(model, "branch_mode_used", None),
+        "sampler": cfg.get("data", {}).get("sampler", {}).get(
+            "type", "default"
+        ),
+        "gradient_strategy": gradient_strategy_cfg.get("type", "standard"),
+        "age_supervised_contrastive_enabled": bool(
+            age_supcon_cfg.get("enabled", False)
+        ),
+        "species_adversary_enabled": bool(
+            age_species_adversary_cfg.get("enabled", False)
+        ),
+    })
     result.update(model_parameter_counts)
 
     if profile.run_summary:
@@ -762,6 +903,10 @@ def run_one(cfg: dict, profile: TrainingProfile) -> dict:
         out_dir / "model_parameters.json",
         out_dir / "run_summary.json",
         out_dir / "best_model.pt",
+        out_dir / "gradient_diagnostics.csv",
+        out_dir / "joint_species_stage_sampler.csv",
+        out_dir / "age_embeddings_best.npz",
+        out_dir / "age_embeddings_best_metadata.csv",
         *sorted(out_dir.glob("classification_report_*.csv")),
         *sorted(out_dir.glob("confusion_matrix_*.csv")),
         out_dir / "data_holdout_evaluation" / "summary.json",

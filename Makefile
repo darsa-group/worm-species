@@ -7,6 +7,10 @@ PAPER_RESULT ?= paper_result
 SPLIT_ROOT ?= .
 DATA_ROOT ?= ../petridish-worm-images
 REPORT_STYLE ?= dev/paper_report_style.yaml
+GENERALISATION_CONFIG ?= configs/train/generalisation/shared_heads.yaml
+GENERALISATION_RESULTS ?= outputs/generalisation
+GENERALISATION_REPORT ?= outputs/generalisation_report
+GENERALISATION_CLUSTER ?= configs/clusters/genome.yaml
 
 PAPER_TESTS := \
 	tests.test_paper_ablation_pipeline \
@@ -15,9 +19,13 @@ PAPER_TESTS := \
 	tests.test_data_transforms \
 	tests.test_config_validation \
 	tests.test_models \
-	tests.test_training_losses
+	tests.test_training_losses \
+	tests.test_generalisation_configs \
+	tests.test_generalisation_models \
+	tests.test_generalisation_training \
+	tests.test_generalisation_report
 
-.PHONY: help ablation-pipeline paper-report test
+.PHONY: help ablation-pipeline paper-report generalisation-validate generalisation-report test
 
 help: ## Show the paper-pipeline commands.
 	@echo "Worm Species paper pipeline"
@@ -26,6 +34,8 @@ help: ## Show the paper-pipeline commands.
 	@echo "  make ablation-pipeline PIPELINE_MODE=submit"
 	@echo "                                             Submit its dependency chain."
 	@echo "  make paper-report                         Rebuild completed-run paper outputs."
+	@echo "  make generalisation-validate              Validate one diagnostic run matrix."
+	@echo "  make generalisation-report                Build completed-run diagnostic outputs."
 	@echo "  make test                                 Run the focused paper-pipeline tests."
 	@echo
 	@echo "Dry-run is the default; scheduler submission is always explicit."
@@ -41,6 +51,17 @@ paper-report: ## Rebuild tables and figures from completed runs only.
 		--split-root "$(SPLIT_ROOT)" \
 		--data-root "$(DATA_ROOT)" \
 		--style "$(REPORT_STYLE)"
+
+generalisation-validate: ## Validate one task-specific generalisation matrix.
+	PYTHONPATH=.:src $(PYTHON) -m worm_species.slurm validate \
+		--config "$(GENERALISATION_CONFIG)" \
+		--cluster-config "$(GENERALISATION_CLUSTER)"
+
+generalisation-report: ## Aggregate completed task-specific generalisation runs.
+	MPLCONFIGDIR=/tmp/mplconfig PYTHONPATH=.:src $(PYTHON) \
+		-m worm_species.analysis.generalisation_report \
+		--results-root "$(GENERALISATION_RESULTS)" \
+		--output-dir "$(GENERALISATION_REPORT)"
 
 test: ## Run the retained paper-pipeline verification surface.
 	MPLCONFIGDIR=/tmp/mplconfig PYTHONPATH=.:src $(PYTHON) -m unittest $(PAPER_TESTS)

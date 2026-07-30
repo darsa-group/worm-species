@@ -1,0 +1,20 @@
+extends: split_taxonomy_age.yaml
+
+model:
+  age_species_adversary:
+    enabled: true
+    weight: 0.05
+    warmup_epochs: 10
+    max_weight: 0.1
+
+sweep:
+  parameters:
+    seed: [42]
+
+wandb:
+  group: generalisation-split-species-adversary-exploratory
+  tags: [generalisation, split-taxonomy-age, species-adversary, exploratory]
+
+slurm:
+  planning:
+    run_name_prefix: split_species_adversary
