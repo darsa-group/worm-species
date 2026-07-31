@@ -16,7 +16,7 @@ PERFORMANCE_RESULTS ?= outputs/performance
 PERFORMANCE_REPORT ?= outputs/performance_report
 PERFORMANCE_CLUSTER ?= configs/clusters/genome.yaml
 PERFORMANCE_ARTIFACTS ?= submissions/performance_full
-PERFORMANCE_GENOME_SOURCE ?= $(HOME)/worm-species/source
+PERFORMANCE_GENOME_SOURCE ?= /home/devd/worm-species/wormsource2
 PERFORMANCE_GENOME_RESULTS ?= outputs_slurm
 PERFORMANCE_GENOME_REPORT ?= outputs/performance_genome_report
 LOCAL_SMOKE_ROOT ?= local_slurm_simulation
@@ -82,12 +82,14 @@ generalisation-report: ## Aggregate completed task-specific generalisation runs.
 performance-validate: ## Validate one 3-backbone performance matrix.
 	PYTHONPATH=.:src $(PYTHON) -m worm_species.slurm validate \
 		--config "$(PERFORMANCE_CONFIG)" \
-		--cluster-config "$(PERFORMANCE_CLUSTER)"
+		--cluster-config "$(PERFORMANCE_CLUSTER)" \
+		--override slurm.paths.project_root="$(PERFORMANCE_GENOME_SOURCE)"
 
 performance-genome-dry-run: performance-validate ## Render the Genome performance jobs without submitting.
 	PYTHONPATH=.:src $(PYTHON) -m worm_species.slurm launch \
 		--config "$(PERFORMANCE_CONFIG)" \
 		--cluster-config "$(PERFORMANCE_CLUSTER)" \
+		--override slurm.paths.project_root="$(PERFORMANCE_GENOME_SOURCE)" \
 		--artifacts-dir "$(PERFORMANCE_ARTIFACTS)" \
 		--dry-run
 
@@ -109,6 +111,7 @@ performance-genome-submit: performance-validate performance-genome-source-check 
 	PYTHONPATH=.:src $(PYTHON) -m worm_species.slurm launch \
 		--config "$(PERFORMANCE_CONFIG)" \
 		--cluster-config "$(PERFORMANCE_CLUSTER)" \
+		--override slurm.paths.project_root="$(PERFORMANCE_GENOME_SOURCE)" \
 		--artifacts-dir "$(PERFORMANCE_ARTIFACTS)" \
 		--submit
 
