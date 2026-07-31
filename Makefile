@@ -16,6 +16,9 @@ PERFORMANCE_RESULTS ?= outputs/performance
 PERFORMANCE_REPORT ?= outputs/performance_report
 PERFORMANCE_CLUSTER ?= configs/clusters/genome.yaml
 PERFORMANCE_ARTIFACTS ?= submissions/performance_full
+PERFORMANCE_GENOME_SOURCE ?= $(HOME)/worm-species/source
+PERFORMANCE_GENOME_RESULTS ?= outputs_slurm
+PERFORMANCE_GENOME_REPORT ?= outputs/performance_genome_report
 LOCAL_SMOKE_ROOT ?= local_slurm_simulation
 
 PAPER_TESTS := \
@@ -32,7 +35,7 @@ PAPER_TESTS := \
 	tests.test_generalisation_report \
 	tests.test_performance_features
 
-.PHONY: help ablation-pipeline paper-report generalisation-validate generalisation-report performance-validate performance-genome-dry-run performance-genome-submit performance-report performance-local-smoke test
+.PHONY: help ablation-pipeline paper-report generalisation-validate generalisation-report performance-validate performance-genome-source-check performance-genome-dry-run performance-genome-submit performance-genome-report performance-report performance-local-smoke test
 
 help: ## Show the paper-pipeline commands.
 	@echo "Worm Species paper pipeline"
@@ -46,6 +49,7 @@ help: ## Show the paper-pipeline commands.
 	@echo "  make performance-validate                 Validate the 3-backbone performance matrix."
 	@echo "  make performance-genome-dry-run           Render the Genome jobs without submitting."
 	@echo "  make performance-genome-submit            Validate and submit the Genome jobs."
+	@echo "  make performance-genome-report            Report completed Genome jobs from outputs_slurm."
 	@echo "  make performance-report                   Build individual-level performance outputs."
 	@echo "  make performance-local-smoke              Render and run a synthetic 5-epoch local simulation."
 	@echo "  make test                                 Run the focused paper-pipeline tests."
@@ -87,12 +91,32 @@ performance-genome-dry-run: performance-validate ## Render the Genome performanc
 		--artifacts-dir "$(PERFORMANCE_ARTIFACTS)" \
 		--dry-run
 
-performance-genome-submit: performance-validate ## Validate and submit the Genome performance jobs.
+performance-genome-source-check: ## Require the Genome runtime checkout to match this submission checkout.
+	@expected="$$(git rev-parse HEAD)"; \
+	actual="$$(git -C "$(PERFORMANCE_GENOME_SOURCE)" rev-parse HEAD 2>/dev/null || true)"; \
+	if [ "$$actual" != "$$expected" ]; then \
+		echo "Genome source checkout mismatch: expected $$expected, got $${actual:-missing}" >&2; \
+		echo "Update $(PERFORMANCE_GENOME_SOURCE) before submitting." >&2; \
+		exit 1; \
+	fi; \
+	if [ -n "$$(git -C "$(PERFORMANCE_GENOME_SOURCE)" status --porcelain --untracked-files=no)" ]; then \
+		echo "Genome source checkout has tracked modifications: $(PERFORMANCE_GENOME_SOURCE)" >&2; \
+		exit 1; \
+	fi; \
+	echo "Genome source checkout matches $$expected"
+
+performance-genome-submit: performance-validate performance-genome-source-check ## Validate and submit the Genome performance jobs.
 	PYTHONPATH=.:src $(PYTHON) -m worm_species.slurm launch \
 		--config "$(PERFORMANCE_CONFIG)" \
 		--cluster-config "$(PERFORMANCE_CLUSTER)" \
 		--artifacts-dir "$(PERFORMANCE_ARTIFACTS)" \
 		--submit
+
+performance-genome-report: ## Aggregate completed Genome performance runs.
+	MPLCONFIGDIR=/tmp/mplconfig PYTHONPATH=.:src $(PYTHON) \
+		-m worm_species.analysis.generalisation_report \
+		--results-root "$(PERFORMANCE_GENOME_RESULTS)" \
+		--output-dir "$(PERFORMANCE_GENOME_REPORT)"
 
 performance-report: ## Aggregate completed performance runs.
 	MPLCONFIGDIR=/tmp/mplconfig PYTHONPATH=.:src $(PYTHON) \
