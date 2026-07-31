@@ -1,0 +1,16 @@
+extends: ../generalisation/split_taxonomy_age.yaml
+
+# Matched architecture-scale comparison requested for the three established
+# torchvision families used by this repository.
+sweep:
+  parameters:
+    model.name: [convnext_base, vit_b_16, resnet18]
+
+output:
+  out_dir: outputs/performance
+
+multi_task:
+  selection_metric: individual_mean_macro_f1
+
+evaluation:
+  individual_level: {enabled: true, aggregation: mean_probability}

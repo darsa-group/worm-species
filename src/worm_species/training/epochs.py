@@ -20,7 +20,9 @@ from .gradients import (
 )
 from .losses import (
     age_supervised_contrastive_loss,
+    genus_supervised_contrastive_loss,
     hierarchy_consistency_loss,
+    taxonomy_consistency_loss,
 )
 from .metrics import safe_metric
 
@@ -57,12 +59,21 @@ def run_hierarchy_epoch(
     gradient_diagnostics_records: list[dict] | None = None,
     age_supcon_cfg: dict | None = None,
     age_species_adversary_cfg: dict | None = None,
+    genus_supcon_cfg: dict | None = None,
+    taxonomy_consistency_cfg: dict | None = None,
+    species_to_genus_matrix: torch.Tensor | None = None,
 ):
     if train:
         model.train()
         sampler = getattr(loader, "sampler", None)
         if callable(getattr(sampler, "set_epoch", None)):
             sampler.set_epoch(epoch)
+        batch_sampler = getattr(loader, "batch_sampler", None)
+        if callable(getattr(batch_sampler, "set_epoch", None)):
+            batch_sampler.set_epoch(epoch)
+        dataset = getattr(loader, "dataset", None)
+        if callable(getattr(dataset, "set_epoch", None)):
+            dataset.set_epoch(epoch)
     else:
         model.eval()
 
@@ -75,6 +86,8 @@ def run_hierarchy_epoch(
     gradient_diagnostics_cfg = gradient_diagnostics_cfg or {}
     age_supcon_cfg = age_supcon_cfg or {}
     age_species_adversary_cfg = age_species_adversary_cfg or {}
+    genus_supcon_cfg = genus_supcon_cfg or {}
+    taxonomy_consistency_cfg = taxonomy_consistency_cfg or {}
     gradient_strategy = str(
         gradient_strategy_cfg.get("type", "standard")
     )
@@ -117,6 +130,10 @@ def run_hierarchy_epoch(
     )
     use_supcon = bool(age_supcon_cfg.get("enabled", False))
     use_adversary = bool(age_species_adversary_cfg.get("enabled", False))
+    use_genus_supcon = bool(genus_supcon_cfg.get("enabled", False))
+    use_taxonomy_consistency = bool(
+        taxonomy_consistency_cfg.get("enabled", False)
+    )
     if train and callable(getattr(model, "set_adversary_coefficient", None)):
         model.set_adversary_coefficient(
             _adversary_coefficient(age_species_adversary_cfg, epoch)
@@ -128,12 +145,23 @@ def run_hierarchy_epoch(
     supcon_losses = []
     supcon_valid_anchors = 0
     supcon_candidate_anchors = 0
+    supcon_cross_species_pairs = 0
+    supcon_same_species_pairs = 0
+    supcon_invalid_anchors = 0
+    genus_supcon_losses = []
+    genus_valid_anchors = 0
+    genus_candidate_anchors = 0
+    genus_cross_species_pairs = 0
+    taxonomy_losses = []
+    taxonomy_agreements = []
     adversary_losses = []
     adversary_correct = 0
     adversary_total = 0
     negative_pair_proportions = []
     all_true = {task: [] for task in tasks}
     all_pred = {task: [] for task in tasks}
+    diagnostic_image_true = {task: [] for task in tasks}
+    diagnostic_image_pred = {task: [] for task in tasks}
 
     complete_exact_correct = 0
     complete_exact_total = 0
@@ -144,6 +172,15 @@ def run_hierarchy_epoch(
             task: batch["labels"][task].to(device, non_blocking=True)
             for task in tasks
         }
+        barcode_values = [str(value) for value in batch.get("barcode", [])]
+        barcode_lookup = {
+            value: index for index, value in enumerate(dict.fromkeys(barcode_values))
+        }
+        individual_labels = torch.tensor(
+            [barcode_lookup[value] for value in barcode_values],
+            dtype=torch.long,
+            device=device,
+        )
 
         if train:
             optimizer.zero_grad(set_to_none=True)
@@ -153,7 +190,14 @@ def run_hierarchy_epoch(
                 enabled=(use_amp and device.type == "cuda"),
                 device_type=device.type,
             ):
-                outputs = model(x)
+                view_mask = batch.get("view_mask")
+                if view_mask is not None:
+                    view_mask = view_mask.to(device, non_blocking=True)
+                outputs = (
+                    model(x, view_mask=view_mask)
+                    if view_mask is not None
+                    else model(x)
+                )
                 logits_by_task = {}
                 for task in tasks:
                     logits = task_logits(outputs, task)
@@ -242,6 +286,7 @@ def run_hierarchy_epoch(
                             age_embedding,
                             y["age"],
                             species_labels=y.get("species"),
+                            individual_labels=individual_labels,
                             temperature=float(
                                 age_supcon_cfg.get("temperature", 0.07)
                             ),
@@ -256,6 +301,59 @@ def run_hierarchy_epoch(
                         total_loss = total_loss + float(
                             age_supcon_cfg.get("weight", 0.1)
                         ) * supcon_loss
+
+                genus_supcon_loss = None
+                genus_stats = {
+                    "valid_anchor_count": 0,
+                    "candidate_anchor_count": 0,
+                    "cross_species_positive_pairs": 0,
+                }
+                if use_genus_supcon:
+                    genus_embedding = outputs.get("genus_embedding")
+                    if genus_embedding is None or not {"genus", "species"}.issubset(y):
+                        raise ValueError(
+                            "Genus supervised contrastive loss requires genus and "
+                            "species labels plus genus_embedding"
+                        )
+                    genus_supcon_loss, genus_stats = genus_supervised_contrastive_loss(
+                        genus_embedding,
+                        y["genus"],
+                        y["species"],
+                        individual_labels,
+                        temperature=float(genus_supcon_cfg.get("temperature", 0.07)),
+                        cross_species_positives=bool(
+                            genus_supcon_cfg.get("cross_species_positives", True)
+                        ),
+                    )
+                    if genus_supcon_loss is not None:
+                        total_loss = total_loss + float(
+                            genus_supcon_cfg.get("weight", 0.05)
+                        ) * genus_supcon_loss
+
+                taxonomy_loss = None
+                taxonomy_agreement = float("nan")
+                if use_taxonomy_consistency:
+                    if species_to_genus_matrix is None or not {"genus", "species"}.issubset(y):
+                        raise ValueError(
+                            "Taxonomy consistency requires genus/species heads and mapping"
+                        )
+                    taxonomy_valid = (
+                        (y["genus"] != MISSING_LABEL)
+                        & (y["species"] != MISSING_LABEL)
+                    )
+                    taxonomy_loss, taxonomy_agreement = taxonomy_consistency_loss(
+                        logits_by_task["genus"],
+                        logits_by_task["species"],
+                        species_to_genus_matrix,
+                        taxonomy_valid,
+                        direction=str(
+                            taxonomy_consistency_cfg.get("direction", "symmetric")
+                        ),
+                    )
+                    if taxonomy_loss is not None:
+                        total_loss = total_loss + float(
+                            taxonomy_consistency_cfg.get("weight", 0.05)
+                        ) * taxonomy_loss
 
                 adversary_loss = None
                 adversary_logits = outputs.get("species_adversary_logits")
@@ -363,6 +461,26 @@ def run_hierarchy_epoch(
         supcon_candidate_anchors += int(
             supcon_stats.get("candidate_anchor_count", 0)
         )
+        supcon_cross_species_pairs += int(
+            supcon_stats.get("cross_species_positive_pairs", 0)
+        )
+        supcon_same_species_pairs += int(
+            supcon_stats.get("same_species_positive_pairs", 0)
+        )
+        supcon_invalid_anchors += int(
+            supcon_stats.get("invalid_anchor_count", 0)
+        )
+        if genus_supcon_loss is not None:
+            genus_supcon_losses.append(float(genus_supcon_loss.item()))
+        genus_valid_anchors += int(genus_stats.get("valid_anchor_count", 0))
+        genus_candidate_anchors += int(genus_stats.get("candidate_anchor_count", 0))
+        genus_cross_species_pairs += int(
+            genus_stats.get("cross_species_positive_pairs", 0)
+        )
+        if taxonomy_loss is not None:
+            taxonomy_losses.append(float(taxonomy_loss.item()))
+        if np.isfinite(taxonomy_agreement):
+            taxonomy_agreements.append(float(taxonomy_agreement))
         if adversary_loss is not None:
             adversary_losses.append(float(adversary_loss.item()))
             adversary_valid = y["species"] != MISSING_LABEL
@@ -401,6 +519,23 @@ def run_hierarchy_epoch(
                 all_pred[task].extend(
                     pred[valid].detach().cpu().numpy().tolist()
                 )
+            image_logits = outputs.get("image_logits_by_task")
+            if image_logits is not None and task in image_logits:
+                per_view = image_logits[task]
+                mask = (
+                    view_mask
+                    if view_mask is not None
+                    else torch.ones(per_view.shape[:2], dtype=torch.bool, device=device)
+                )
+                repeated = y[task][:, None].expand_as(mask)
+                diagnostic_valid = mask & (repeated != MISSING_LABEL)
+                if diagnostic_valid.any():
+                    diagnostic_image_true[task].extend(
+                        repeated[diagnostic_valid].detach().cpu().tolist()
+                    )
+                    diagnostic_image_pred[task].extend(
+                        per_view.argmax(dim=-1)[diagnostic_valid].detach().cpu().tolist()
+                    )
 
         if complete_mask.any():
             complete_exact_total += int(complete_mask.sum().item())
@@ -440,6 +575,37 @@ def run_hierarchy_epoch(
             float(supcon_valid_anchors / supcon_candidate_anchors)
             if supcon_candidate_anchors else 0.0
         )
+        metrics["valid_anchor_fraction"] = metrics[
+            "age_supcon_valid_anchor_proportion"
+        ]
+        metrics["number_of_cross_species_positive_pairs"] = (
+            supcon_cross_species_pairs
+        )
+        metrics["number_of_same_species_positive_pairs"] = (
+            supcon_same_species_pairs
+        )
+        metrics["number_of_invalid_anchors"] = supcon_invalid_anchors
+    if use_genus_supcon:
+        metrics["genus_supcon_loss"] = (
+            float(np.mean(genus_supcon_losses))
+            if genus_supcon_losses else float("nan")
+        )
+        metrics["valid_genus_anchor_fraction"] = (
+            float(genus_valid_anchors / genus_candidate_anchors)
+            if genus_candidate_anchors else 0.0
+        )
+        metrics["cross_species_genus_positive_pairs"] = (
+            genus_cross_species_pairs
+        )
+    if use_taxonomy_consistency:
+        metrics["taxonomy_consistency_loss"] = (
+            float(np.mean(taxonomy_losses))
+            if taxonomy_losses else float("nan")
+        )
+        metrics["genus_species_agreement_rate"] = (
+            float(np.mean(taxonomy_agreements))
+            if taxonomy_agreements else float("nan")
+        )
     if use_adversary:
         metrics["species_adversary_loss"] = (
             float(np.mean(adversary_losses))
@@ -457,6 +623,22 @@ def run_hierarchy_epoch(
         )
 
     if train:
+        metrics["individual_level_training_loss"] = metrics["loss"]
+        for task in tasks:
+            if diagnostic_image_true[task]:
+                metrics[f"{task}_image_diagnostic_accuracy"] = safe_metric(
+                    accuracy_score,
+                    diagnostic_image_true[task],
+                    diagnostic_image_pred[task],
+                )
+                metrics[f"{task}_image_diagnostic_macro_f1"] = float(
+                    f1_score(
+                        diagnostic_image_true[task],
+                        diagnostic_image_pred[task],
+                        average="macro",
+                        zero_division=0,
+                    )
+                )
         return metrics, all_true, all_pred
 
     macro_f1_values = []

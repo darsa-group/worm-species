@@ -15,11 +15,14 @@ from ..cache.condition_variants import TENSOR_COLUMN
 from ..cache.condition_variants import attach_condition_cache
 from ..cache.condition_variants import condition_cache_settings
 from ..data.datasets import MultiTaskWormImageDataset
+from ..data.datasets import MultiViewWormImageDataset
+from ..data.datasets import multiview_collate
 from ..data.holdouts import apply_data_holdout
 from ..data.labels import build_label_maps
 from ..data.labels import get_target_cols
 from ..data.labels import read_csvs_from_dir
 from ..data.metadata import prepare_metadata
+from ..data.samplers import CrossSpeciesStageContrastiveBatchSampler
 from ..data.samplers import JointSpeciesStageSampler
 from ..data.transforms import build_split_transform
 from .modes import TrainingProfile
@@ -35,12 +38,16 @@ class LoaderBundle:
     index_to_label_by_task: dict
     split_summary: dict
     train_df: object
+    val_df: object
+    test_df: object
     target_cols: dict
     test_loader_context: dict | None = None
     data_holdout_loader: DataLoader | None = None
     data_holdout_loaders: dict[str, DataLoader] | None = None
     data_holdout_audit: dict | None = None
     sampler_summary: object | None = None
+    holdout_frames: dict[str, object] | None = None
+    multiview_evaluation_max_images: int | None = None
 
 
 def require_complete_task_labels(
@@ -374,8 +381,9 @@ def make_profile_loaders(cfg: dict, profile: TrainingProfile) -> LoaderBundle:
         ),
         "crop_pad": cfg["data"].get("crop_pad", 0.15),
         "image_is_tensor": condition_cache_active,
+        "barcode_col": group_col,
     }
-    train_ds = MultiTaskWormImageDataset(
+    train_image_ds = MultiTaskWormImageDataset(
         train_df, transform=train_tf, **common_kwargs
     )
     val_ds = MultiTaskWormImageDataset(val_df, transform=eval_tf, **common_kwargs)
@@ -391,11 +399,32 @@ def make_profile_loaders(cfg: dict, profile: TrainingProfile) -> LoaderBundle:
         train_loader_kwargs["prefetch_factor"] = 4
         eval_loader_kwargs["prefetch_factor"] = 2
 
+    multiview_cfg = (cfg.get("data", {}) or {}).get("multiview", {}) or {}
+    multiview_enabled = bool(multiview_cfg.get("enabled", False))
+    train_ds = (
+        MultiViewWormImageDataset(
+            train_image_ds,
+            images_per_individual=int(
+                multiview_cfg.get("images_per_individual", 3)
+            ),
+            image_sampling=str(multiview_cfg.get("image_sampling", "random")),
+            seed=int(cfg.get("seed", 0)),
+        )
+        if multiview_enabled
+        else train_image_ds
+    )
     sampler_cfg = (cfg.get("data", {}) or {}).get("sampler", {}) or {}
     sampler_type = str(sampler_cfg.get("type", "default"))
     train_sampler = None
+    train_batch_sampler = None
     sampler_summary = None
     if sampler_type == "joint_species_stage":
+        if multiview_enabled:
+            raise ValueError(
+                "joint_species_stage is image-indexed and cannot be combined "
+                "with data.multiview.enabled; use "
+                "cross_species_stage_contrastive"
+            )
         required = {"species", "age"}
         if not required.issubset(all_target_cols):
             raise ValueError(
@@ -414,18 +443,50 @@ def make_profile_loaders(cfg: dict, profile: TrainingProfile) -> LoaderBundle:
         sampler_summary = train_sampler.summary
         print("Joint species-stage training sampler:")
         print(sampler_summary.to_string(index=False))
+    elif sampler_type == "cross_species_stage_contrastive":
+        train_batch_sampler = CrossSpeciesStageContrastiveBatchSampler(
+            train_df,
+            species_col=all_target_cols["species"],
+            stage_col=all_target_cols["age"],
+            group_col=group_col,
+            species_per_stage=int(sampler_cfg.get("species_per_stage", 3)),
+            individuals_per_species_stage=int(
+                sampler_cfg.get("individuals_per_species_stage", 2)
+            ),
+            images_per_individual=int(
+                sampler_cfg.get("images_per_individual", 1)
+            ),
+            replacement=bool(sampler_cfg.get("replacement", True)),
+            samples_per_epoch=sampler_cfg.get("samples_per_epoch"),
+            seed=int(cfg.get("seed", 0)),
+            individual_dataset=multiview_enabled,
+        )
+        sampler_summary = train_batch_sampler.summary
+        print("Cross-species stage contrastive batch sampler:")
+        print(sampler_summary.to_string(index=False))
     elif sampler_type != "default":
         raise ValueError(
-            "data.sampler.type must be default or joint_species_stage"
+            "data.sampler.type must be default, joint_species_stage, or "
+            "cross_species_stage_contrastive"
         )
 
-    train_loader = DataLoader(
-        train_ds,
-        batch_size=batch_size,
-        shuffle=train_sampler is None,
-        sampler=train_sampler,
-        **train_loader_kwargs,
-    )
+    collate_fn = multiview_collate if multiview_enabled else None
+    if train_batch_sampler is not None:
+        train_loader = DataLoader(
+            train_ds,
+            batch_sampler=train_batch_sampler,
+            collate_fn=collate_fn,
+            **train_loader_kwargs,
+        )
+    else:
+        train_loader = DataLoader(
+            train_ds,
+            batch_size=batch_size,
+            shuffle=train_sampler is None,
+            sampler=train_sampler,
+            collate_fn=collate_fn,
+            **train_loader_kwargs,
+        )
     val_loader = DataLoader(
         val_ds,
         batch_size=batch_size,
@@ -522,12 +583,25 @@ def make_profile_loaders(cfg: dict, profile: TrainingProfile) -> LoaderBundle:
         index_to_label_by_task=index_to_label_by_task,
         split_summary=split_summary,
         train_df=train_df,
+        val_df=val_df,
+        test_df=test_df,
         target_cols=target_cols,
         test_loader_context=context,
         data_holdout_loader=data_holdout_loader,
         data_holdout_loaders=data_holdout_loaders or None,
         data_holdout_audit=holdout.audit,
         sampler_summary=sampler_summary,
+        holdout_frames={
+            name: frame
+            for name, frame in (
+                ("development_withheld", development_cohort),
+                ("independent_test", test_cohort),
+            )
+            if frame is not None
+        },
+        multiview_evaluation_max_images=multiview_cfg.get(
+            "evaluation_max_images"
+        ),
     )
 
 

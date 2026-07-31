@@ -1,0 +1,4 @@
+extends: _base.yaml
+
+wandb: {group: performance-split-taxonomy-age, tags: [performance, split-taxonomy-age]}
+slurm: {planning: {run_name_prefix: split_taxonomy_age}}

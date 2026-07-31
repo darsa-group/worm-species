@@ -1,0 +1,10 @@
+extends: _base.yaml
+
+evaluation:
+  checkpoint_ensemble:
+    enabled: true
+    top_k: 3
+    aggregation: mean_probability
+
+wandb: {group: performance-checkpoint-ensemble, tags: [performance, checkpoint-ensemble]}
+slurm: {planning: {run_name_prefix: checkpoint_ensemble}}

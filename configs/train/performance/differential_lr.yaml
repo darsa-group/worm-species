@@ -1,0 +1,14 @@
+extends: _base.yaml
+
+optimizer:
+  type: adamw
+  learning_rates:
+    early_backbone: 1.0e-5
+    final_backbone_stage: 3.0e-5
+    task_specific_branches: 1.0e-4
+    classification_heads: 3.0e-4
+    projection_heads: 1.0e-4
+  weight_decay: 1.0e-4
+
+wandb: {group: performance-differential-lr, tags: [performance, differential-lr]}
+slurm: {planning: {run_name_prefix: differential_lr}}

@@ -16,6 +16,8 @@ import numpy as np
 import pandas as pd
 from sklearn.decomposition import PCA
 
+from .performance_report import build_performance_report
+
 
 TASKS = ("genus", "species", "age")
 TASK_LABELS = {
@@ -1382,6 +1384,7 @@ def build_generalisation_report(
         "formal_significance_testing": False,
         "embedding_interpretation": "descriptive only",
     }
+    manifest.update(build_performance_report(results_root, output_dir))
     (output_dir / "report_manifest.json").write_text(
         json.dumps(manifest, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",

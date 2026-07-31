@@ -201,6 +201,7 @@ def age_supervised_contrastive_loss(
     age_labels: torch.Tensor,
     *,
     species_labels: torch.Tensor | None = None,
+    individual_labels: torch.Tensor | None = None,
     temperature: float = 0.07,
     cross_species_positives: bool = True,
 ) -> tuple[torch.Tensor | None, dict[str, float | int]]:
@@ -213,11 +214,17 @@ def age_supervised_contrastive_loss(
     embeddings = embeddings[valid]
     ages = age_labels[valid]
     species = species_labels[valid] if species_labels is not None else None
+    individuals = (
+        individual_labels[valid] if individual_labels is not None else None
+    )
     valid_count = int(len(ages))
     empty_stats = {
         "valid_anchor_count": 0,
         "valid_anchor_proportion": 0.0,
         "candidate_anchor_count": valid_count,
+        "cross_species_positive_pairs": 0,
+        "same_species_positive_pairs": 0,
+        "invalid_anchor_count": valid_count,
     }
     if valid_count < 2:
         return None, empty_stats
@@ -227,7 +234,10 @@ def age_supervised_contrastive_loss(
     identity = torch.eye(valid_count, dtype=torch.bool, device=logits.device)
     logits_mask = ~identity
     same_age = ages[:, None].eq(ages[None, :]) & logits_mask
+    if individuals is not None:
+        same_age &= individuals[:, None].ne(individuals[None, :])
     positive_mask = same_age
+    cross_species = torch.zeros_like(same_age)
     if cross_species_positives and species is not None:
         cross_species = (
             same_age
@@ -249,11 +259,18 @@ def age_supervised_contrastive_loss(
             if valid_count else 0.0
         ),
         "candidate_anchor_count": valid_count,
+        "cross_species_positive_pairs": int(cross_species.sum().item()),
+        "same_species_positive_pairs": int(
+            (same_age & ~cross_species).sum().item()
+        ),
+        "invalid_anchor_count": int(valid_count - valid_anchor_count),
     }
     if valid_anchor_count == 0:
         return None, stats
 
-    masked_logits = logits.masked_fill(~logits_mask, -torch.inf)
+    negatives = ages[:, None].ne(ages[None, :])
+    denominator_mask = positive_mask | negatives
+    masked_logits = logits.masked_fill(~denominator_mask, -torch.inf)
     log_prob = masked_logits - torch.logsumexp(
         masked_logits, dim=1, keepdim=True
     )
@@ -263,3 +280,107 @@ def age_supervised_contrastive_loss(
         / positive_counts
     )
     return -mean_positive_log_prob[valid_anchors].mean(), stats
+
+
+def genus_supervised_contrastive_loss(
+    embeddings: torch.Tensor,
+    genus_labels: torch.Tensor,
+    species_labels: torch.Tensor,
+    individual_labels: torch.Tensor,
+    *,
+    temperature: float = 0.07,
+    cross_species_positives: bool = True,
+) -> tuple[torch.Tensor | None, dict[str, float | int]]:
+    """Contrast genera using different biological individuals as evidence."""
+    if temperature <= 0:
+        raise ValueError("Supervised-contrastive temperature must be positive")
+    valid = (
+        (genus_labels != MISSING_LABEL)
+        & (species_labels != MISSING_LABEL)
+        & (individual_labels != MISSING_LABEL)
+    )
+    embeddings = F.normalize(embeddings[valid].float(), dim=-1)
+    genera = genus_labels[valid]
+    species = species_labels[valid]
+    individuals = individual_labels[valid]
+    count = int(len(genera))
+    empty = {
+        "valid_anchor_count": 0,
+        "candidate_anchor_count": count,
+        "valid_anchor_fraction": 0.0,
+        "cross_species_positive_pairs": 0,
+    }
+    if count < 2:
+        return None, empty
+    identity = torch.eye(count, dtype=torch.bool, device=embeddings.device)
+    different_individual = individuals[:, None].ne(individuals[None, :])
+    same_genus = genera[:, None].eq(genera[None, :]) & ~identity & different_individual
+    cross_species = same_genus & species[:, None].ne(species[None, :])
+    if cross_species_positives:
+        positive = torch.where(
+            cross_species.any(dim=1, keepdim=True), cross_species, same_genus
+        )
+    else:
+        positive = same_genus
+    valid_anchor = positive.any(dim=1)
+    valid_count = int(valid_anchor.sum().item())
+    stats = {
+        "valid_anchor_count": valid_count,
+        "candidate_anchor_count": count,
+        "valid_anchor_fraction": float(valid_count / count) if count else 0.0,
+        "cross_species_positive_pairs": int(cross_species.sum().item()),
+    }
+    if not valid_count:
+        return None, stats
+    logits = embeddings @ embeddings.T / float(temperature)
+    negatives = genera[:, None].ne(genera[None, :])
+    denominator = positive | negatives
+    masked_logits = logits.masked_fill(~denominator, -torch.inf)
+    log_prob = masked_logits - torch.logsumexp(masked_logits, dim=1, keepdim=True)
+    positive_count = positive.sum(dim=1).clamp_min(1)
+    mean_positive = log_prob.masked_fill(~positive, 0.0).sum(dim=1) / positive_count
+    return -mean_positive[valid_anchor].mean(), stats
+
+
+def taxonomy_consistency_loss(
+    genus_logits: torch.Tensor,
+    species_logits: torch.Tensor,
+    species_to_genus_matrix: torch.Tensor,
+    valid_mask: torch.Tensor,
+    *,
+    direction: str = "symmetric",
+    eps: float = 1e-8,
+) -> tuple[torch.Tensor | None, float]:
+    """Compare direct genus probabilities with species-implied probabilities."""
+    if not torch.any(valid_mask):
+        return None, float("nan")
+    with torch.autocast(device_type=genus_logits.device.type, enabled=False):
+        direct = torch.softmax(genus_logits[valid_mask].float(), dim=1)
+        species = torch.softmax(species_logits[valid_mask].float(), dim=1)
+        implied = species @ species_to_genus_matrix.float().to(species.device)
+        direct = direct.clamp_min(eps)
+        implied = implied.clamp_min(eps)
+        direct = direct / direct.sum(dim=1, keepdim=True)
+        implied = implied / implied.sum(dim=1, keepdim=True)
+        direct_to_implied = (direct * (direct.log() - implied.log())).sum(dim=1).mean()
+        implied_to_direct = (implied * (implied.log() - direct.log())).sum(dim=1).mean()
+        normalized = direction.lower().replace("-", "_")
+        if normalized in {"kl", "direct", "direct_genus_to_implied"}:
+            loss = direct_to_implied
+        elif normalized in {"symmetric", "symmetric_kl"}:
+            loss = 0.5 * (direct_to_implied + implied_to_direct)
+        elif normalized in {"jensen_shannon", "js"}:
+            midpoint = 0.5 * (direct + implied)
+            loss = 0.5 * (
+                (direct * (direct.log() - midpoint.log())).sum(dim=1).mean()
+                + (implied * (implied.log() - midpoint.log())).sum(dim=1).mean()
+            )
+        else:
+            raise ValueError(
+                "taxonomy consistency direction must be direct, symmetric, or "
+                "jensen_shannon"
+            )
+        agreement = float(
+            direct.argmax(dim=1).eq(implied.argmax(dim=1)).float().mean().item()
+        )
+        return loss, agreement

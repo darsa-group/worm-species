@@ -177,6 +177,16 @@ def _array_context(
         index = command.index("--config")
         del command[index : index + 2]
     command = [item for item in command if item != "--single-run"]
+    repository_root = Path(__file__).resolve().parents[3]
+    try:
+        expected_git_commit = subprocess.run(
+            ["git", "-C", str(repository_root), "rev-parse", "HEAD"],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+    except (OSError, subprocess.CalledProcessError) as exc:
+        raise RenderError("Could not resolve the submission source Git commit") from exc
     return {
         "ARTIFACT_ROOT": shell_quote(artifact_root),
         "CACHE_ROOT": shell_quote(runtime_cache),
@@ -187,6 +197,7 @@ def _array_context(
         ),
         "CONDA_ENV": shell_quote(environment.get("conda_env", "wormspecies")),
         "CONDA_SH": shell_quote(environment.get("conda_sh", "")),
+        "EXPECTED_GIT_COMMIT": shell_quote(expected_git_commit),
         "COPY_CACHE_TO_TMP": shell_quote(
             _normalise_copy_mode(scratch.get("copy_cache_to_tmp", 0))
         ),

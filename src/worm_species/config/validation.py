@@ -705,7 +705,12 @@ def _validate_tasks(config: dict[str, Any], issues: list[ValidationIssue]) -> No
                 "at least one selected task weight must be greater than zero",
             ))
     selection = multi.get("selection_metric", "mean_macro_f1")
-    allowed_metrics = {"mean_macro_f1", *(f"{task}_macro_f1" for task in target_cols)}
+    allowed_metrics = {
+        "mean_macro_f1",
+        "individual_mean_macro_f1",
+        *(f"{task}_macro_f1" for task in target_cols),
+        *(f"{task}_individual_macro_f1" for task in target_cols),
+    }
     if isinstance(selection, str) and selection not in allowed_metrics:
         issues.append(ValidationIssue(
             "multi_task.selection_metric", f"must be one of {sorted(allowed_metrics)!r}"
@@ -772,12 +777,14 @@ def _validate_generalisation_features(
     sampler = data.get("sampler", {}) or {}
     if not isinstance(sampler, dict):
         issues.append(ValidationIssue("data.sampler", "must be a mapping"))
-    elif sampler.get("type", "default") == "joint_species_stage":
+    elif sampler.get("type", "default") in {
+        "joint_species_stage", "cross_species_stage_contrastive"
+    }:
         missing = {"species", "age"} - set(target_cols)
         if missing:
             issues.append(ValidationIssue(
                 "data.sampler.type",
-                "joint_species_stage requires species and age target columns",
+                "the configured sampler requires species and age target columns",
             ))
 
     strategy = training.get("gradient_strategy", {}) or {}
@@ -821,6 +828,55 @@ def _validate_generalisation_features(
             "model.age_species_adversary.enabled",
             "is supported only by split_taxonomy_age",
         ))
+    genus_supcon = loss.get("genus_supervised_contrastive", {}) or {}
+    if isinstance(genus_supcon, dict) and genus_supcon.get("enabled", False):
+        missing = {"genus", "species"} - set(target_cols)
+        if missing:
+            issues.append(ValidationIssue(
+                "loss.genus_supervised_contrastive.enabled",
+                f"requires genus and species targets; missing {sorted(missing)}",
+            ))
+    taxonomy = loss.get("taxonomy_consistency", {}) or {}
+    if isinstance(taxonomy, dict) and taxonomy.get("enabled", False):
+        missing = {"genus", "species"} - set(target_cols)
+        if missing:
+            issues.append(ValidationIssue(
+                "loss.taxonomy_consistency.enabled",
+                f"requires genus and species targets; missing {sorted(missing)}",
+            ))
+    staged = training.get("staged_unfreezing", {}) or {}
+    if isinstance(staged, dict) and staged.get("enabled", False):
+        heads = staged.get("heads_only_epochs", 5)
+        branches = staged.get("task_branches_epoch", 5)
+        full = staged.get("full_backbone_epoch", 15)
+        if all(isinstance(value, int) for value in (heads, branches, full)):
+            if branches < heads or full < branches:
+                issues.append(ValidationIssue(
+                    "training.staged_unfreezing",
+                    "requires heads_only_epochs <= task_branches_epoch <= "
+                    "full_backbone_epoch",
+                ))
+    optimizer = config.get("optimizer", {}) or {}
+    rates = optimizer.get("learning_rates") if isinstance(optimizer, dict) else None
+    if rates is not None:
+        expected = {
+            "early_backbone", "final_backbone_stage", "task_specific_branches",
+            "classification_heads", "projection_heads",
+        }
+        if not isinstance(rates, dict) or set(rates) != expected:
+            issues.append(ValidationIssue(
+                "optimizer.learning_rates",
+                f"must contain exactly {sorted(expected)}",
+            ))
+        elif any(
+            not isinstance(value, (int, float)) or isinstance(value, bool)
+            or not math.isfinite(float(value)) or float(value) <= 0
+            for value in rates.values()
+        ):
+            issues.append(ValidationIssue(
+                "optimizer.learning_rates",
+                "all learning rates must be finite and positive",
+            ))
 
 
 def _validate_paths(config: dict[str, Any], issues: list[ValidationIssue]) -> None:
@@ -1198,6 +1254,7 @@ def validate_config(
         "test_cue_suppression", "condition_matrix_evaluation",
         "matched_condition_training", "sweep", "input_condition",
         "preprocessing", "augmentation", "evaluation", "data_holdout", "loss",
+        "optimizer",
     ):
         value = config.get(section, _ABSENT)
         if value is not _ABSENT and value is not None and not isinstance(value, dict):
@@ -1249,6 +1306,20 @@ def validate_config(
         ("loss.age_supervised_contrastive.weight", 0, None, False),
         ("loss.age_supervised_contrastive.temperature", 0, None, True),
         ("training.gradient_diagnostics.interval_steps", 0, None, True),
+        ("data.sampler.species_per_stage", 0, None, True),
+        ("data.sampler.individuals_per_species_stage", 0, None, True),
+        ("data.sampler.images_per_individual", 0, None, True),
+        ("data.multiview.images_per_individual", 0, None, True),
+        ("data.multiview.evaluation_max_images", 0, None, True),
+        ("loss.genus_supervised_contrastive.weight", 0, None, False),
+        ("loss.genus_supervised_contrastive.temperature", 0, None, True),
+        ("loss.genus_supervised_contrastive.projection_dim", 0, None, True),
+        ("loss.taxonomy_consistency.weight", 0, None, False),
+        ("training.staged_unfreezing.heads_only_epochs", 0, None, False),
+        ("training.staged_unfreezing.task_branches_epoch", 0, None, False),
+        ("training.staged_unfreezing.full_backbone_epoch", 0, None, False),
+        ("optimizer.weight_decay", 0, None, False),
+        ("evaluation.checkpoint_ensemble.top_k", 0, None, True),
     ):
         value = _get(config, path)
         if value is not _ABSENT and _is_type(value, (int, float)):

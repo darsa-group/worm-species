@@ -13,6 +13,7 @@ COPY_CACHE_TO_TMP=@@COPY_CACHE_TO_TMP@@
 DATA_ROOT=@@DATA_ROOT@@
 METADATA_CSV=@@METADATA_CSV@@
 PROJECT_ROOT=@@PROJECT_ROOT@@
+EXPECTED_GIT_COMMIT=@@EXPECTED_GIT_COMMIT@@
 RESOLVED_CONFIG_DIR=@@RESOLVED_CONFIG_DIR@@
 RESULTS_ROOT=@@RESULTS_ROOT@@
 RUN_INDEX_FILE=@@RUN_INDEX_FILE@@
@@ -160,6 +161,15 @@ copy_results_back() {
 trap copy_results_back EXIT
 
 cd "$PROJECT_ROOT"
+ACTUAL_GIT_COMMIT=$(git rev-parse HEAD)
+if [[ "$ACTUAL_GIT_COMMIT" != "$EXPECTED_GIT_COMMIT" ]]; then
+    echo "Source checkout mismatch: expected $EXPECTED_GIT_COMMIT, got $ACTUAL_GIT_COMMIT" >&2
+    exit 86
+fi
+if [[ -n "$(git status --porcelain --untracked-files=no)" ]]; then
+    echo "Source checkout has tracked modifications; refusing non-reproducible training" >&2
+    exit 87
+fi
 export PYTHONPATH="$PROJECT_ROOT/src${PYTHONPATH:+:$PYTHONPATH}"
 export WANDB_NAME="$RUN_ID"
 CACHE_PARENT=$(dirname "$NODE_CACHE")

@@ -1,0 +1,8 @@
+extends: _base.yaml
+
+model:
+  multitask_architecture: shared_heads
+  pooling: {type: global_average, dropout: 0.1}
+
+wandb: {group: performance-shared-heads, tags: [performance, shared-heads]}
+slurm: {planning: {run_name_prefix: shared_heads}}

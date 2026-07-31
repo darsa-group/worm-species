@@ -26,6 +26,7 @@ STANDARD_OUTPUT_KEYS = (
     "taxonomy_features",
     "age_features",
     "age_embedding",
+    "genus_embedding",
     "species_adversary_logits",
 )
 
@@ -45,6 +46,7 @@ def _standard_outputs(
     taxonomy_features: torch.Tensor | None,
     age_features: torch.Tensor | None,
     age_embedding: torch.Tensor | None = None,
+    genus_embedding: torch.Tensor | None = None,
     species_adversary_logits: torch.Tensor | None = None,
 ) -> dict[str, torch.Tensor | None]:
     outputs: dict[str, torch.Tensor | None] = {
@@ -54,6 +56,7 @@ def _standard_outputs(
         "taxonomy_features": taxonomy_features,
         "age_features": age_features,
         "age_embedding": age_embedding,
+        "genus_embedding": genus_embedding,
         "species_adversary_logits": species_adversary_logits,
     }
     # Historical callers indexed outputs by task name. Keep these aliases while
@@ -84,6 +87,30 @@ def _unwrap_features(features: Any) -> torch.Tensor:
             "is a tensor."
         )
     return features
+
+
+def _flatten_views(
+    inputs: torch.Tensor,
+) -> tuple[torch.Tensor, tuple[int, int] | None]:
+    if inputs.ndim != 5:
+        return inputs, None
+    batch, views = inputs.shape[:2]
+    return inputs.reshape(batch * views, *inputs.shape[2:]), (batch, views)
+
+
+def _mean_pool_views(
+    features: torch.Tensor,
+    view_shape: tuple[int, int] | None,
+    view_mask: torch.Tensor | None,
+) -> torch.Tensor:
+    if view_shape is None:
+        return features
+    batch, views = view_shape
+    features = features.reshape(batch, views, -1)
+    if view_mask is None:
+        return features.mean(dim=1)
+    mask = view_mask.to(features.device, dtype=features.dtype).unsqueeze(-1)
+    return (features * mask).sum(dim=1) / mask.sum(dim=1).clamp_min(1.0)
 
 
 class TaskAttentionPooling(nn.Module):
@@ -239,6 +266,7 @@ class MultiTaskClassifier(_FeatureModel):
         *,
         pooling_type: str = "global_average",
         pooling_dropout: float = 0.1,
+        genus_projection_dim: int | None = None,
     ):
         super().__init__()
         self.backbone = base_model
@@ -250,6 +278,15 @@ class MultiTaskClassifier(_FeatureModel):
             for task, num_classes in num_classes_by_task.items()
         })
         self.pooling_type = pooling_type
+        self.genus_projection = (
+            nn.Sequential(
+                nn.Linear(self.feature_dim, 256),
+                nn.GELU(),
+                nn.Linear(256, int(genus_projection_dim)),
+            )
+            if genus_projection_dim is not None
+            else None
+        )
         self._attention_fallback_logged = False
         if pooling_type == "task_attention":
             self.taxonomy_pool = TaskAttentionPooling(
@@ -262,7 +299,9 @@ class MultiTaskClassifier(_FeatureModel):
     def forward(
         self,
         inputs: torch.Tensor,
+        view_mask: torch.Tensor | None = None,
     ) -> dict[str, torch.Tensor | None]:
+        inputs, view_shape = _flatten_views(inputs)
         if self.pooling_type == "task_attention":
             spatial = self._spatial_features(self.backbone, inputs)
             if spatial is not None and spatial.ndim in {3, 4}:
@@ -287,6 +326,12 @@ class MultiTaskClassifier(_FeatureModel):
             )
             taxonomy_features = vector
             age_features = vector
+        taxonomy_image_features = taxonomy_features
+        age_image_features = age_features
+        taxonomy_features = _mean_pool_views(
+            taxonomy_features, view_shape, view_mask
+        )
+        age_features = _mean_pool_views(age_features, view_shape, view_mask)
 
         logits_by_task = {
             task: head(
@@ -294,11 +339,25 @@ class MultiTaskClassifier(_FeatureModel):
             )
             for task, head in self.heads.items()
         }
-        return _standard_outputs(
+        outputs = _standard_outputs(
             logits_by_task=logits_by_task,
             taxonomy_features=taxonomy_features,
             age_features=age_features,
+            genus_embedding=(
+                F.normalize(self.genus_projection(taxonomy_features), dim=-1)
+                if self.genus_projection is not None
+                else None
+            ),
         )
+        if view_shape is not None:
+            batch, views = view_shape
+            outputs["image_logits_by_task"] = {
+                task: head(
+                    age_image_features if task == "age" else taxonomy_image_features
+                ).reshape(batch, views, -1)
+                for task, head in self.heads.items()
+            }
+        return outputs
 
     def shared_parameters(self) -> Iterable[nn.Parameter]:
         return self.backbone.parameters()
@@ -315,6 +374,7 @@ class SingleTaskClassifier(MultiTaskClassifier):
         *,
         pooling_type: str = "global_average",
         pooling_dropout: float = 0.1,
+        genus_projection_dim: int | None = None,
     ) -> None:
         if target_task not in TASKS:
             raise ValueError(
@@ -329,6 +389,7 @@ class SingleTaskClassifier(MultiTaskClassifier):
             {target_task: num_classes_by_task[target_task]},
             pooling_type=pooling_type,
             pooling_dropout=pooling_dropout,
+            genus_projection_dim=genus_projection_dim,
         )
         self.target_task = target_task
 
@@ -349,6 +410,7 @@ class SplitTaxonomyAgeClassifier(_FeatureModel):
         pooling_dropout: float,
         age_projection_enabled: bool,
         adversary_enabled: bool,
+        genus_projection_dim: int | None = None,
     ) -> None:
         super().__init__()
         self.model_name = model_name
@@ -407,6 +469,15 @@ class SplitTaxonomyAgeClassifier(_FeatureModel):
                 nn.Linear(256, 128),
             )
             if age_projection_enabled
+            else None
+        )
+        self.genus_projection = (
+            nn.Sequential(
+                nn.Linear(self.feature_dim, 256),
+                nn.GELU(),
+                nn.Linear(256, int(genus_projection_dim)),
+            )
+            if genus_projection_dim is not None
             else None
         )
         self.species_adversary = (
@@ -499,8 +570,16 @@ class SplitTaxonomyAgeClassifier(_FeatureModel):
     def forward(
         self,
         inputs: torch.Tensor,
+        view_mask: torch.Tensor | None = None,
     ) -> dict[str, torch.Tensor | None]:
+        inputs, view_shape = _flatten_views(inputs)
         taxonomy_features, age_features = self._branch_features(inputs)
+        taxonomy_image_features = taxonomy_features
+        age_image_features = age_features
+        taxonomy_features = _mean_pool_views(
+            taxonomy_features, view_shape, view_mask
+        )
+        age_features = _mean_pool_views(age_features, view_shape, view_mask)
         logits_by_task = {
             task: head(
                 age_features if task == "age" else taxonomy_features
@@ -522,13 +601,27 @@ class SplitTaxonomyAgeClassifier(_FeatureModel):
             if self.species_adversary is not None
             else None
         )
-        return _standard_outputs(
+        outputs = _standard_outputs(
             logits_by_task=logits_by_task,
             taxonomy_features=taxonomy_features,
             age_features=age_features,
             age_embedding=age_embedding,
+            genus_embedding=(
+                F.normalize(self.genus_projection(taxonomy_features), dim=-1)
+                if self.genus_projection is not None
+                else None
+            ),
             species_adversary_logits=species_adversary_logits,
         )
+        if view_shape is not None:
+            batch, views = view_shape
+            outputs["image_logits_by_task"] = {
+                task: head(
+                    age_image_features if task == "age" else taxonomy_image_features
+                ).reshape(batch, views, -1)
+                for task, head in self.heads.items()
+            }
+        return outputs
 
     def shared_parameters(self) -> Iterable[nn.Parameter]:
         if self.branch_mode_used == "duplicated_final_stage":
@@ -552,6 +645,17 @@ def build_multitask_model(
     )
     pooling_type, pooling_dropout = _pooling_config(cfg)
     temporary_num_classes = max(num_classes_by_task.values())
+    genus_supcon = (
+        (cfg.get("loss", {}) or {}).get(
+            "genus_supervised_contrastive", {}
+        )
+        or {}
+    )
+    genus_projection_dim = (
+        int(genus_supcon.get("projection_dim", 128))
+        if bool(genus_supcon.get("enabled", False))
+        else None
+    )
     base_model = build_model(
         name=model_cfg["name"],
         num_classes=temporary_num_classes,
@@ -564,6 +668,7 @@ def build_multitask_model(
             num_classes_by_task=num_classes_by_task,
             pooling_type=pooling_type,
             pooling_dropout=pooling_dropout,
+            genus_projection_dim=genus_projection_dim,
         )
     if architecture == "single_task":
         return SingleTaskClassifier(
@@ -572,6 +677,7 @@ def build_multitask_model(
             target_task=str(model_cfg.get("target_task", "")),
             pooling_type=pooling_type,
             pooling_dropout=pooling_dropout,
+            genus_projection_dim=genus_projection_dim,
         )
     if architecture == "split_taxonomy_age":
         supcon = (
@@ -594,6 +700,7 @@ def build_multitask_model(
             pooling_dropout=pooling_dropout,
             age_projection_enabled=bool(supcon.get("enabled", False)),
             adversary_enabled=bool(adversary.get("enabled", False)),
+            genus_projection_dim=genus_projection_dim,
         )
     raise ValueError(
         "model.multitask_architecture must be shared_heads, single_task, "

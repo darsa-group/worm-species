@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import hashlib
+import subprocess
 from pathlib import Path
 
 import numpy as np
@@ -14,6 +16,12 @@ from sklearn.metrics import confusion_matrix
 from ..evaluation.condition_matrix import evaluate_condition_matrix
 from ..evaluation.cue_suppression import evaluate_test_cue_suppression
 from ..evaluation.data_holdout import evaluate_data_holdout
+from ..evaluation.predictions import collect_probability_predictions
+from ..evaluation.predictions import ensemble_prediction_frames
+from ..evaluation.predictions import aggregate_individual_probabilities
+from ..evaluation.predictions import prediction_metrics
+from ..evaluation.predictions import public_prediction_frame
+from ..evaluation.predictions import structured_target_metrics
 from ..evaluation.holdout_controls import evaluate_holdout_controls
 from ..logging import create_wandb_logger
 from ..models.multitask import build_multitask_model
@@ -26,11 +34,61 @@ from .loaders import get_input_condition
 from .loaders import make_profile_loaders
 from .losses import build_child_to_parent_matrix
 from .losses import build_criteria
+from .optimizers import StagedUnfreezer
+from .optimizers import build_optimizer
 from .metrics import score_for_selection
 from .modes import TrainingProfile
 from .modes import resolved_run_name
 from .modes import stress_evaluation_enabled
 from .reproducibility import set_seed
+
+
+def _stable_json_hash(value) -> str:
+    payload = json.dumps(value, sort_keys=True, separators=(",", ":"), default=str)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _frame_hash(frame: pd.DataFrame) -> str:
+    columns = sorted(frame.columns)
+    payload = frame.loc[:, columns].fillna("<NA>").astype(str).sort_values(
+        columns, kind="stable"
+    ).to_csv(index=False)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _file_hash(path: Path) -> str | None:
+    if not path.exists():
+        return None
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _git_value(*args: str) -> str | None:
+    try:
+        return subprocess.run(
+            ["git", *args], check=True, capture_output=True, text=True
+        ).stdout.strip()
+    except (OSError, subprocess.CalledProcessError):
+        return None
+
+
+def _validate_checkpoint_contract(checkpoint: dict, bundle, cfg: dict) -> None:
+    if checkpoint.get("label_to_index_by_task") != bundle.label_to_index_by_task:
+        raise RuntimeError(
+            "Checkpoint label-to-index mappings do not match this run directory"
+        )
+    checkpoint_tasks = set((checkpoint.get("label_to_index_by_task") or {}).keys())
+    if checkpoint_tasks != set(bundle.target_cols):
+        raise RuntimeError(
+            "Checkpoint task heads do not match the resolved active tasks"
+        )
+    if _stable_json_hash(checkpoint.get("cfg")) != _stable_json_hash(cfg):
+        raise RuntimeError(
+            "Checkpoint resolved configuration does not match the current run"
+        )
 
 def initialise_wandb_run(
     cfg: dict,
@@ -57,6 +115,7 @@ def make_experiment_run_name(cfg: dict, profile: TrainingProfile) -> str:
 
 def run_test_evaluation(
     *,
+    cfg: dict,
     checkpoint_name: str,
     checkpoint_path: Path,
     write_legacy_outputs: bool,
@@ -76,9 +135,13 @@ def run_test_evaluation(
     input_condition: dict,
     age_supcon_cfg: dict,
     age_species_adversary_cfg: dict,
+    genus_supcon_cfg: dict,
+    taxonomy_consistency_cfg: dict,
+    species_to_genus_matrix: torch.Tensor | None,
 ) -> tuple[dict, dict[str, list[int]], dict[str, list[int]]]:
     """Evaluate one checkpoint on the test split and save its outputs."""
     checkpoint = load_checkpoint(checkpoint_path, map_location=device)
+    _validate_checkpoint_contract(checkpoint, bundle, cfg)
     model.load_state_dict(checkpoint["model_state"])
 
     test_metrics, true, pred = run_hierarchy_epoch(
@@ -97,6 +160,32 @@ def run_test_evaluation(
         profile.masked_labels,
         age_supcon_cfg=age_supcon_cfg,
         age_species_adversary_cfg=age_species_adversary_cfg,
+        genus_supcon_cfg=genus_supcon_cfg,
+        taxonomy_consistency_cfg=taxonomy_consistency_cfg,
+        species_to_genus_matrix=species_to_genus_matrix,
+    )
+    image_predictions, individual_predictions, probability_metrics = (
+        collect_probability_predictions(
+            models=[model],
+            loader=bundle.test_loader,
+            tasks=bundle.target_cols,
+            index_to_label_by_task=bundle.index_to_label_by_task,
+            device=device,
+            use_amp=use_amp,
+            run_id=run_name,
+            checkpoint=checkpoint_name,
+            split="test",
+            maximum_images_per_individual=(
+                bundle.multiview_evaluation_max_images
+            ),
+        )
+    )
+    test_metrics.update(probability_metrics)
+    public_prediction_frame(image_predictions).to_csv(
+        out_dir / f"predictions_{checkpoint_name}.csv", index=False
+    )
+    public_prediction_frame(individual_predictions).to_csv(
+        out_dir / f"individual_predictions_{checkpoint_name}.csv", index=False
     )
 
     wandb_condition = (
@@ -295,6 +384,14 @@ def run_one(cfg: dict, profile: TrainingProfile) -> dict:
     run_name = make_experiment_run_name(cfg, profile)
     out_dir = Path(cfg["output"]["out_dir"]) / run_name
     out_dir.mkdir(parents=True, exist_ok=True)
+    config_hash = _stable_json_hash(cfg)
+    existing_config_path = out_dir / "config.json"
+    if existing_config_path.exists():
+        existing_config = json.loads(existing_config_path.read_text())
+        if _stable_json_hash(existing_config) != config_hash:
+            raise RuntimeError(
+                f"Refusing to reuse {out_dir} for a different resolved config"
+            )
     save_json(cfg, out_dir / "config.json")
 
     wandb_logger = create_wandb_logger(cfg, run_name, out_dir, profile)
@@ -319,6 +416,8 @@ def run_one(cfg: dict, profile: TrainingProfile) -> dict:
         cfg,
         num_classes_by_task,
     ).to(device)
+    staged_unfreezer = StagedUnfreezer.from_config(cfg)
+    initial_trainable_parameters = staged_unfreezer.initialise(model)
     if hasattr(model, "branch_mode_used"):
         print(
             "Split taxonomy-age branch mode: "
@@ -337,6 +436,24 @@ def run_one(cfg: dict, profile: TrainingProfile) -> dict:
         ),
     }
     save_json(model_parameter_counts, out_dir / "model_parameters.json")
+    runtime_provenance = {
+        "run_id": run_name,
+        "git_commit": _git_value("rev-parse", "HEAD"),
+        "git_branch": _git_value("branch", "--show-current"),
+        "git_status": _git_value("status", "--short"),
+        "resolved_config_hash": config_hash,
+        "split_hashes": {
+            "train": _frame_hash(bundle.train_df),
+            "validation": _frame_hash(bundle.val_df),
+            "test": _frame_hash(bundle.test_df),
+        },
+        "model_class": type(model).__name__,
+        "active_tasks": list(bundle.target_cols),
+        "head_names": list(getattr(model, "heads", {}).keys()),
+        "parameter_count": model_parameter_counts["total_parameters"],
+        "sampler_class": type(bundle.train_loader.batch_sampler).__name__,
+    }
+    save_json(runtime_provenance, out_dir / "runtime_provenance.json")
     print("Model built and moved to device.")
 
     criteria = build_criteria(
@@ -375,11 +492,31 @@ def run_one(cfg: dict, profile: TrainingProfile) -> dict:
             f"{hierarchy_cfg.get('weight', weights.get('hierarchy', 0.1))}"
         )
 
-    optimizer = torch.optim.AdamW(
-        filter(lambda parameter: parameter.requires_grad, model.parameters()),
-        lr=cfg["training"]["lr"],
-        weight_decay=cfg["training"]["weight_decay"],
+    taxonomy_consistency_cfg = (
+        (cfg.get("loss", {}) or {}).get("taxonomy_consistency", {}) or {}
     )
+    genus_supcon_cfg = (
+        (cfg.get("loss", {}) or {}).get(
+            "genus_supervised_contrastive", {}
+        ) or {}
+    )
+    species_to_genus_matrix = None
+    if bool(taxonomy_consistency_cfg.get("enabled", False)):
+        species_to_genus_matrix = build_child_to_parent_matrix(
+            bundle.label_to_index_by_task,
+            "genus",
+            "species",
+            device,
+        )
+
+    optimizer, optimizer_group_summary = build_optimizer(model, cfg)
+    save_json(optimizer_group_summary, out_dir / "optimizer_parameter_groups.json")
+    for group in optimizer_group_summary:
+        print(
+            "Optimizer group "
+            f"{group['group_name']}: {group['number_of_parameters']} parameters, "
+            f"lr={group['learning_rate']}, weight_decay={group['weight_decay']}"
+        )
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
         optimizer,
         T_max=cfg["training"]["epochs"],
@@ -415,12 +552,45 @@ def run_one(cfg: dict, profile: TrainingProfile) -> dict:
     )
     gradient_diagnostics_records: list[dict] = []
     global_step = 0
+    ensemble_cfg = (
+        (cfg.get("evaluation", {}) or {}).get("checkpoint_ensemble", {}) or {}
+    )
+    ensemble_enabled = bool(ensemble_cfg.get("enabled", False))
+    ensemble_top_k = int(ensemble_cfg.get("top_k", 3))
+    top_checkpoints: list[tuple[float, int, Path]] = []
+    unfreezing_transitions = [{
+        "epoch": 0,
+        "trainable_parameters": int(initial_trainable_parameters),
+    }]
 
     print(
         f"Training for {cfg['training']['epochs']} epochs with early stopping: "
         f"{early_enabled}, patience: {patience}, min_delta: {min_delta}"
     )
     for epoch in range(1, cfg["training"]["epochs"] + 1):
+        changed, trainable_count = staged_unfreezer.transition(
+            model,
+            optimizer,
+            cfg,
+            epoch - 1,
+            scheduler=scheduler,
+        )
+        if changed:
+            unfreezing_transitions.append({
+                "epoch": epoch - 1,
+                "trainable_parameters": trainable_count,
+            })
+            print(
+                f"[{run_name}] Staged unfreezing epoch {epoch - 1}: "
+                f"{trainable_count} trainable parameters"
+            )
+            for group in optimizer.param_groups:
+                print(
+                    f"    optimizer group {group.get('name', 'unnamed')}: "
+                    f"{sum(parameter.numel() for parameter in group['params'])} "
+                    f"parameters, lr={group['lr']}, "
+                    f"weight_decay={group['weight_decay']}"
+                )
         train_metrics, _, _ = run_hierarchy_epoch(
             model,
             bundle.train_loader,
@@ -442,6 +612,9 @@ def run_one(cfg: dict, profile: TrainingProfile) -> dict:
             gradient_diagnostics_records=gradient_diagnostics_records,
             age_supcon_cfg=age_supcon_cfg,
             age_species_adversary_cfg=age_species_adversary_cfg,
+            genus_supcon_cfg=genus_supcon_cfg,
+            taxonomy_consistency_cfg=taxonomy_consistency_cfg,
+            species_to_genus_matrix=species_to_genus_matrix,
         )
         global_step += len(bundle.train_loader)
         validate = (
@@ -467,7 +640,31 @@ def run_one(cfg: dict, profile: TrainingProfile) -> dict:
                 epoch=epoch,
                 age_supcon_cfg=age_supcon_cfg,
                 age_species_adversary_cfg=age_species_adversary_cfg,
+                genus_supcon_cfg=genus_supcon_cfg,
+                taxonomy_consistency_cfg=taxonomy_consistency_cfg,
+                species_to_genus_matrix=species_to_genus_matrix,
             )[0]
+            individual_evaluation_enabled = bool(
+                ((cfg.get("evaluation", {}) or {}).get(
+                    "individual_level", {}
+                ) or {}).get("enabled", False)
+            )
+            if individual_evaluation_enabled:
+                _, _, val_probability_metrics = collect_probability_predictions(
+                    models=[model],
+                    loader=bundle.val_loader,
+                    tasks=bundle.target_cols,
+                    index_to_label_by_task=bundle.index_to_label_by_task,
+                    device=device,
+                    use_amp=use_amp,
+                    run_id=run_name,
+                    checkpoint=f"validation_epoch_{epoch:03d}",
+                    split="validation",
+                    maximum_images_per_individual=(
+                        bundle.multiview_evaluation_max_images
+                    ),
+                )
+                val_metrics.update(val_probability_metrics)
         else:
             val_metrics = {}
 
@@ -515,6 +712,30 @@ def run_one(cfg: dict, profile: TrainingProfile) -> dict:
                 f"{val_metrics[f'{task}_balanced_accuracy']:.4f} | "
                 f"n={val_metrics[f'{task}_n']}"
             )
+
+        if ensemble_enabled:
+            candidate_dir = out_dir / "validation_checkpoints"
+            candidate_dir.mkdir(parents=True, exist_ok=True)
+            candidate_path = candidate_dir / f"epoch_{epoch:03d}.pt"
+            candidate_payload = build_checkpoint_payload(
+                profile=profile,
+                model_state=model.state_dict(),
+                cfg=cfg,
+                label_to_index_by_task=bundle.label_to_index_by_task,
+                index_to_label_by_task=bundle.index_to_label_by_task,
+                best_val_score=score,
+                selection_metric=selection,
+                best_epoch=epoch,
+                colour_retention=colour_retention,
+                colour_percent=colour_percent,
+                training_condition=input_condition,
+            )
+            save_checkpoint(candidate_payload, candidate_path)
+            top_checkpoints.append((float(score), int(epoch), candidate_path))
+            top_checkpoints.sort(key=lambda item: (-item[0], item[1]))
+            while len(top_checkpoints) > ensemble_top_k:
+                _, _, rejected_path = top_checkpoints.pop()
+                rejected_path.unlink(missing_ok=True)
 
         improved = score > best + min_delta
         if improved or epoch == 1:
@@ -598,6 +819,7 @@ def run_one(cfg: dict, profile: TrainingProfile) -> dict:
     # Evaluate the final checkpoint first, then the best checkpoint. This leaves
     # ``model`` loaded with the best weights for stress and condition evaluation.
     last_test_metrics, _, _ = run_test_evaluation(
+        cfg=cfg,
         checkpoint_name="last",
         checkpoint_path=out_dir / "last_model.pt",
         write_legacy_outputs=False,
@@ -617,8 +839,12 @@ def run_one(cfg: dict, profile: TrainingProfile) -> dict:
         input_condition=input_condition,
         age_supcon_cfg=age_supcon_cfg,
         age_species_adversary_cfg=age_species_adversary_cfg,
+        genus_supcon_cfg=genus_supcon_cfg,
+        taxonomy_consistency_cfg=taxonomy_consistency_cfg,
+        species_to_genus_matrix=species_to_genus_matrix,
     )
     test_metrics, true, pred = run_test_evaluation(
+        cfg=cfg,
         checkpoint_name="best",
         checkpoint_path=out_dir / "best_model.pt",
         write_legacy_outputs=True,
@@ -638,7 +864,99 @@ def run_one(cfg: dict, profile: TrainingProfile) -> dict:
         input_condition=input_condition,
         age_supcon_cfg=age_supcon_cfg,
         age_species_adversary_cfg=age_species_adversary_cfg,
+        genus_supcon_cfg=genus_supcon_cfg,
+        taxonomy_consistency_cfg=taxonomy_consistency_cfg,
+        species_to_genus_matrix=species_to_genus_matrix,
     )
+
+    ensemble_metrics = None
+    if ensemble_enabled:
+        checkpoint_frames = []
+        for _, checkpoint_epoch, checkpoint_path in top_checkpoints:
+            checkpoint = load_checkpoint(checkpoint_path, map_location=device)
+            _validate_checkpoint_contract(checkpoint, bundle, cfg)
+            model.load_state_dict(checkpoint["model_state"])
+            frame, _, _ = collect_probability_predictions(
+                models=[model],
+                loader=bundle.test_loader,
+                tasks=bundle.target_cols,
+                index_to_label_by_task=bundle.index_to_label_by_task,
+                device=device,
+                use_amp=use_amp,
+                run_id=run_name,
+                checkpoint=f"epoch_{checkpoint_epoch:03d}",
+                split="test",
+                maximum_images_per_individual=(
+                    bundle.multiview_evaluation_max_images
+                ),
+            )
+            checkpoint_frames.append(frame)
+        ensemble_image = ensemble_prediction_frames(checkpoint_frames)
+        ensemble_individual = aggregate_individual_probabilities(
+            ensemble_image,
+            maximum_images=bundle.multiview_evaluation_max_images,
+        )
+        ensemble_metrics = prediction_metrics(ensemble_image, ensemble_individual)
+        ensemble_metrics["checkpoint_epochs"] = [
+            epoch for _, epoch, _ in top_checkpoints
+        ]
+        ensemble_metrics["selection_scores"] = [
+            score for score, _, _ in top_checkpoints
+        ]
+        save_json(ensemble_metrics, out_dir / "test_metrics_ensemble.json")
+        public_prediction_frame(ensemble_image).to_csv(
+            out_dir / "predictions_ensemble.csv", index=False
+        )
+        public_prediction_frame(ensemble_individual).to_csv(
+            out_dir / "individual_predictions_ensemble.csv", index=False
+        )
+
+        holdout_ensemble_rows = []
+        for cohort_name, loader in (bundle.data_holdout_loaders or {}).items():
+            cohort_frames = []
+            for _, checkpoint_epoch, checkpoint_path in top_checkpoints:
+                checkpoint = load_checkpoint(checkpoint_path, map_location=device)
+                _validate_checkpoint_contract(checkpoint, bundle, cfg)
+                model.load_state_dict(checkpoint["model_state"])
+                frame, _, _ = collect_probability_predictions(
+                    models=[model], loader=loader, tasks=bundle.target_cols,
+                    index_to_label_by_task=bundle.index_to_label_by_task,
+                    device=device, use_amp=use_amp, run_id=run_name,
+                    checkpoint=f"epoch_{checkpoint_epoch:03d}",
+                    split="structured_holdout", holdout=cohort_name,
+                    maximum_images_per_individual=(
+                        bundle.multiview_evaluation_max_images
+                    ),
+                )
+                cohort_frames.append(frame)
+            image_frame = ensemble_prediction_frames(cohort_frames)
+            individual_frame = aggregate_individual_probabilities(
+                image_frame,
+                maximum_images=bundle.multiview_evaluation_max_images,
+            )
+            for task in (cfg.get("data_holdout", {}) or {}).get("primary_tasks", []):
+                task_image = image_frame[image_frame["task"] == task]
+                task_individual = individual_frame[individual_frame["task"] == task]
+                target = (
+                    (cfg.get("data_holdout", {}) or {}).get("evaluation_where")
+                    or (cfg.get("data_holdout", {}) or {}).get("where")
+                    or {}
+                ).get(task)
+                holdout_ensemble_rows.append({
+                    "holdout": (cfg.get("data_holdout", {}) or {}).get("name"),
+                    "cohort": cohort_name,
+                    "task": task,
+                    "target_label": target,
+                    **structured_target_metrics(
+                        task_image, task_individual, target_label=target
+                    ),
+                })
+        pd.DataFrame(holdout_ensemble_rows).to_csv(
+            out_dir / "data_holdout_metrics_ensemble.csv", index=False
+        )
+        best_checkpoint = load_checkpoint(out_dir / "best_model.pt", map_location=device)
+        _validate_checkpoint_contract(best_checkpoint, bundle, cfg)
+        model.load_state_dict(best_checkpoint["model_state"])
     age_embedding_artifacts = save_age_embedding_diagnostics(
         model=model,
         loader=bundle.test_loader,
@@ -860,8 +1178,43 @@ def run_one(cfg: dict, profile: TrainingProfile) -> dict:
         "species_adversary_enabled": bool(
             age_species_adversary_cfg.get("enabled", False)
         ),
+        "genus_supervised_contrastive_enabled": bool(
+            genus_supcon_cfg.get("enabled", False)
+        ),
+        "taxonomy_consistency_enabled": bool(
+            taxonomy_consistency_cfg.get("enabled", False)
+        ),
+        "multiview_training_enabled": bool(
+            (cfg.get("data", {}).get("multiview", {}) or {}).get("enabled", False)
+        ),
+        "resolved_config_hash": config_hash,
+        "split_hashes": runtime_provenance["split_hashes"],
+        "optimizer_parameter_groups": optimizer_group_summary,
+        "staged_unfreezing_schedule": staged_unfreezer.resolved_schedule(),
+        "staged_unfreezing_transitions": unfreezing_transitions,
+        "checkpoint_ensemble_enabled": ensemble_enabled,
+        "checkpoint_ensemble_epochs": (
+            [epoch for _, epoch, _ in top_checkpoints]
+            if ensemble_enabled else []
+        ),
     })
     result.update(model_parameter_counts)
+    final_optimizer_group_summary = [
+        {
+            "group_name": group.get("name", "unnamed"),
+            "number_of_parameters": int(sum(
+                parameter.numel() for parameter in group["params"]
+            )),
+            "learning_rate": float(group["lr"]),
+            "weight_decay": float(group["weight_decay"]),
+        }
+        for group in optimizer.param_groups
+    ]
+    result["optimizer_parameter_groups_final"] = final_optimizer_group_summary
+    save_json(
+        final_optimizer_group_summary,
+        out_dir / "optimizer_parameter_groups_final.json",
+    )
 
     if profile.run_summary:
         save_json(result, out_dir / "run_summary.json")
@@ -901,12 +1254,23 @@ def run_one(cfg: dict, profile: TrainingProfile) -> dict:
         out_dir / "split_summary.json",
         out_dir / "label_to_index_by_task.json",
         out_dir / "model_parameters.json",
+        out_dir / "runtime_provenance.json",
+        out_dir / "optimizer_parameter_groups.json",
+        out_dir / "optimizer_parameter_groups_final.json",
         out_dir / "run_summary.json",
         out_dir / "best_model.pt",
         out_dir / "gradient_diagnostics.csv",
         out_dir / "joint_species_stage_sampler.csv",
         out_dir / "age_embeddings_best.npz",
         out_dir / "age_embeddings_best_metadata.csv",
+        out_dir / "predictions_best.csv",
+        out_dir / "predictions_last.csv",
+        out_dir / "individual_predictions_best.csv",
+        out_dir / "individual_predictions_last.csv",
+        out_dir / "test_metrics_ensemble.json",
+        out_dir / "predictions_ensemble.csv",
+        out_dir / "individual_predictions_ensemble.csv",
+        out_dir / "data_holdout_metrics_ensemble.csv",
         *sorted(out_dir.glob("classification_report_*.csv")),
         *sorted(out_dir.glob("confusion_matrix_*.csv")),
         out_dir / "data_holdout_evaluation" / "summary.json",
@@ -924,6 +1288,15 @@ def run_one(cfg: dict, profile: TrainingProfile) -> dict:
         },
     )
     wandb_logger.finalise_run(status="completed", summary=summary)
+    completion = {
+        "status": "completed",
+        "run_id": run_name,
+        "resolved_config_hash": config_hash,
+        "checkpoint_hash": _file_hash(out_dir / "best_model.pt"),
+        "prediction_hash": _file_hash(out_dir / "predictions_best.csv"),
+        "metric_hash": _file_hash(out_dir / "test_metrics_best.json"),
+    }
+    save_json(completion, out_dir / "completion_manifest.json")
 
     print("\nBest-checkpoint test metrics:")
     print(test_metrics)

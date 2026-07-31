@@ -1,0 +1,10 @@
+extends: _base.yaml
+
+loss:
+  taxonomy_consistency:
+    enabled: true
+    weight: 0.05
+    direction: symmetric
+
+wandb: {group: performance-taxonomy-consistency, tags: [performance, taxonomy-consistency]}
+slurm: {planning: {run_name_prefix: taxonomy_consistency}}

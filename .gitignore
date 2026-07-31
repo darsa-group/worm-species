@@ -112,6 +112,7 @@ coverage.xml
 cover/
 
 # Repository-local generated operational artefacts
+/local_slurm_simulation*/
 /logs/**/*.out
 /logs/**/*.err
 /logs/**/*.log
@@ -284,3 +285,6 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Local reproducibility audit (requested; intentionally not committed)
+answers.md

@@ -1,0 +1,12 @@
+extends: _base.yaml
+
+data:
+  multiview:
+    enabled: true
+    images_per_individual: 3
+    image_sampling: random
+    pooling: mean
+    evaluation_max_images: null
+
+wandb: {group: performance-multiview-training, tags: [performance, multiview-training]}
+slurm: {planning: {run_name_prefix: multiview_training}}

@@ -1,0 +1,38 @@
+extends: _base.yaml
+
+model:
+  multitask_architecture: split_taxonomy_age
+  age_species_adversary: {enabled: false, weight: 0.05, warmup_epochs: 10, max_weight: 0.1}
+
+data:
+  multiview: {enabled: true, images_per_individual: 3, image_sampling: random, pooling: mean, evaluation_max_images: null}
+  sampler:
+    type: cross_species_stage_contrastive
+    species_per_stage: 3
+    individuals_per_species_stage: 2
+    images_per_individual: 1
+    replacement: true
+
+optimizer:
+  type: adamw
+  learning_rates:
+    early_backbone: 1.0e-5
+    final_backbone_stage: 3.0e-5
+    task_specific_branches: 1.0e-4
+    classification_heads: 3.0e-4
+    projection_heads: 1.0e-4
+  weight_decay: 1.0e-4
+
+training:
+  staged_unfreezing: {enabled: true, heads_only_epochs: 5, task_branches_epoch: 5, full_backbone_epoch: 15}
+
+loss:
+  age_supervised_contrastive: {enabled: true, weight: 0.1, temperature: 0.07, cross_species_positives: true}
+  genus_supervised_contrastive: {enabled: true, weight: 0.05, temperature: 0.07, cross_species_positives: true, projection_dim: 128}
+  taxonomy_consistency: {enabled: true, weight: 0.05, direction: symmetric}
+
+evaluation:
+  checkpoint_ensemble: {enabled: true, top_k: 3, aggregation: mean_probability}
+
+wandb: {group: performance-full, tags: [performance, performance-full]}
+slurm: {planning: {run_name_prefix: performance_full}}

@@ -1,0 +1,11 @@
+extends: _base.yaml
+
+training:
+  staged_unfreezing:
+    enabled: true
+    heads_only_epochs: 5
+    task_branches_epoch: 5
+    full_backbone_epoch: 15
+
+wandb: {group: performance-staged-unfreezing, tags: [performance, staged-unfreezing]}
+slurm: {planning: {run_name_prefix: staged_unfreezing}}

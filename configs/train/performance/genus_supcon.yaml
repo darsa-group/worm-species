@@ -1,0 +1,12 @@
+extends: _base.yaml
+
+loss:
+  genus_supervised_contrastive:
+    enabled: true
+    weight: 0.05
+    temperature: 0.07
+    cross_species_positives: true
+    projection_dim: 128
+
+wandb: {group: performance-genus-supcon, tags: [performance, genus-supcon]}
+slurm: {planning: {run_name_prefix: genus_supcon}}

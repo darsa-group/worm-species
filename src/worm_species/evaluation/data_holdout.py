@@ -9,6 +9,9 @@ import pandas as pd
 
 from ..results.writing import save_json
 from ..training.epochs import run_hierarchy_epoch
+from .predictions import collect_probability_predictions
+from .predictions import public_prediction_frame
+from .predictions import structured_target_metrics
 
 
 def evaluate_data_holdout(
@@ -43,6 +46,8 @@ def evaluate_data_holdout(
     )
     task_rows = []
     metrics_by_cohort = {}
+    image_prediction_frames = []
+    individual_prediction_frames = []
     for cohort_name, loader in loaders.items():
         metrics, true, pred = run_hierarchy_epoch(
             model=model,
@@ -60,6 +65,26 @@ def evaluate_data_holdout(
             use_masked_labels=use_masked_labels,
         )
         metrics_by_cohort[cohort_name] = metrics
+        image_predictions, individual_predictions, probability_metrics = (
+            collect_probability_predictions(
+                models=[model],
+                loader=loader,
+                tasks=bundle.target_cols,
+                index_to_label_by_task=bundle.index_to_label_by_task,
+                device=device,
+                use_amp=use_amp,
+                run_id=Path(out_dir).name,
+                checkpoint="best",
+                split="structured_holdout",
+                holdout=cohort_name,
+                maximum_images_per_individual=(
+                    bundle.multiview_evaluation_max_images
+                ),
+            )
+        )
+        metrics.update(probability_metrics)
+        image_prediction_frames.append(image_predictions)
+        individual_prediction_frames.append(individual_predictions)
         for task in holdout["primary_tasks"]:
             if task not in criteria or task not in bundle.label_to_index_by_task:
                 continue
@@ -78,6 +103,13 @@ def evaluate_data_holdout(
                     target_recall = float(
                         (y_pred[target_mask] == target_index).mean()
                     )
+            task_image = image_predictions[image_predictions["task"] == task]
+            task_individual = individual_predictions[
+                individual_predictions["task"] == task
+            ]
+            biological = structured_target_metrics(
+                task_image, task_individual, target_label=label if supported else None
+            )
             task_rows.append({
                 "holdout": holdout["name"],
                 "question": holdout["question"],
@@ -91,11 +123,19 @@ def evaluate_data_holdout(
                 "macro_f1": metrics.get(f"{task}_macro_f1"),
                 "target_n": target_n,
                 "target_recall": target_recall,
+                **biological,
             })
 
     root = Path(out_dir) / "data_holdout_evaluation"
     root.mkdir(parents=True, exist_ok=True)
     task_path = root / "task_metrics.csv"
+    if image_prediction_frames:
+        public_prediction_frame(pd.concat(image_prediction_frames, ignore_index=True)).to_csv(
+            root / "predictions_best.csv", index=False
+        )
+        public_prediction_frame(pd.concat(individual_prediction_frames, ignore_index=True)).to_csv(
+            root / "individual_predictions_best.csv", index=False
+        )
     pd.DataFrame(
         task_rows,
         columns=[
@@ -111,6 +151,10 @@ def evaluate_data_holdout(
             "macro_f1",
             "target_n",
             "target_recall",
+            "target_n_images",
+            "target_n_individuals",
+            "target_recall_image",
+            "target_recall_individual",
         ],
     ).to_csv(task_path, index=False)
     result = {

@@ -8,6 +8,7 @@ from collections.abc import Iterator
 import pandas as pd
 import torch
 from torch.utils.data import Sampler
+from torch.utils.data import BatchSampler
 
 
 class JointSpeciesStageSampler(Sampler[int]):
@@ -143,4 +144,140 @@ class JointSpeciesStageSampler(Sampler[int]):
         yield from (int(index) for index in selected.tolist())
 
 
-__all__ = ["JointSpeciesStageSampler"]
+class CrossSpeciesStageContrastiveBatchSampler(BatchSampler):
+    """Construct stage-balanced batches with cross-species positive pairs."""
+
+    def __init__(
+        self,
+        frame: pd.DataFrame,
+        *,
+        species_col: str,
+        stage_col: str,
+        group_col: str,
+        species_per_stage: int = 3,
+        individuals_per_species_stage: int = 2,
+        images_per_individual: int = 1,
+        replacement: bool = True,
+        samples_per_epoch: int | None = None,
+        seed: int = 0,
+        individual_dataset: bool = False,
+    ) -> None:
+        self.frame = frame.reset_index(drop=True)
+        self.species_per_stage = int(species_per_stage)
+        self.individuals_per_species_stage = int(
+            individuals_per_species_stage
+        )
+        self.images_per_individual = int(images_per_individual)
+        self.replacement = bool(replacement)
+        self.seed = int(seed)
+        self.epoch = 0
+        self.individual_dataset = bool(individual_dataset)
+        if min(
+            self.species_per_stage,
+            self.individuals_per_species_stage,
+            self.images_per_individual,
+        ) <= 0:
+            raise ValueError("Cross-species sampler counts must be positive")
+
+        nested: dict[str, dict[str, dict[str, list[int]]]] = defaultdict(
+            lambda: defaultdict(lambda: defaultdict(list))
+        )
+        for image_index, row in self.frame.iterrows():
+            if any(pd.isna(row[column]) for column in (stage_col, species_col, group_col)):
+                continue
+            nested[str(row[stage_col])][str(row[species_col])][
+                str(row[group_col])
+            ].append(int(image_index))
+        self.groups = {
+            stage: {
+                species: dict(individuals)
+                for species, individuals in species_groups.items()
+            }
+            for stage, species_groups in nested.items()
+            if len(species_groups) >= 2
+        }
+        if not self.groups:
+            raise ValueError(
+                "Cross-species stage batches require at least one stage with "
+                "two observed species"
+            )
+        self._stages = tuple(sorted(self.groups))
+        self.batch_size = sum(
+            min(self.species_per_stage, len(self.groups[stage]))
+            * self.individuals_per_species_stage
+            * (1 if self.individual_dataset else self.images_per_individual)
+            for stage in self._stages
+        )
+        requested = len(self.frame) if samples_per_epoch is None else int(samples_per_epoch)
+        self.num_batches = max(1, (requested + self.batch_size - 1) // self.batch_size)
+        all_barcodes = sorted(
+            {str(value) for value in self.frame[group_col].dropna().unique()}
+        )
+        self._individual_index = {
+            barcode: index for index, barcode in enumerate(all_barcodes)
+        }
+        self.summary = pd.DataFrame([
+            {
+                "developmental_stage": stage,
+                "species": species,
+                "individuals": len(individuals),
+                "images": sum(len(indices) for indices in individuals.values()),
+            }
+            for stage, species_groups in self.groups.items()
+            for species, individuals in species_groups.items()
+        ])
+
+    def set_epoch(self, epoch: int) -> None:
+        self.epoch = int(epoch)
+
+    def __len__(self) -> int:
+        return self.num_batches
+
+    @staticmethod
+    def _draw(values: list, count: int, generator: torch.Generator, replacement: bool) -> list:
+        if not values:
+            return []
+        if replacement and len(values) < count:
+            indices = torch.randint(len(values), (count,), generator=generator)
+        else:
+            indices = torch.randperm(len(values), generator=generator)[:min(count, len(values))]
+        return [values[int(index)] for index in indices.tolist()]
+
+    def __iter__(self) -> Iterator[list[int]]:
+        generator = torch.Generator().manual_seed(self.seed + self.epoch)
+        for _ in range(self.num_batches):
+            batch: list[int] = []
+            for stage in self._stages:
+                species_values = sorted(self.groups[stage])
+                selected_species = self._draw(
+                    species_values,
+                    self.species_per_stage,
+                    generator,
+                    self.replacement,
+                )
+                for species in selected_species:
+                    individuals = sorted(self.groups[stage][species])
+                    selected_individuals = self._draw(
+                        individuals,
+                        self.individuals_per_species_stage,
+                        generator,
+                        self.replacement,
+                    )
+                    for individual in selected_individuals:
+                        if self.individual_dataset:
+                            batch.append(self._individual_index[individual])
+                        else:
+                            batch.extend(self._draw(
+                                self.groups[stage][species][individual],
+                                self.images_per_individual,
+                                generator,
+                                self.replacement,
+                            ))
+            if batch:
+                yield batch
+
+
+__all__ = [
+    "CrossSpeciesStageContrastiveBatchSampler",
+    "JointSpeciesStageSampler",
+]

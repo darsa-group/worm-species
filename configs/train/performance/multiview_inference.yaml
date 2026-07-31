@@ -1,0 +1,15 @@
+extends: _base.yaml
+
+data:
+  multiview:
+    enabled: false
+    images_per_individual: 3
+    image_sampling: random
+    pooling: mean
+    evaluation_max_images: null
+
+evaluation:
+  individual_level: {enabled: true, aggregation: mean_probability, maximum_images: null}
+
+wandb: {group: performance-multiview-inference, tags: [performance, multiview-inference]}
+slurm: {planning: {run_name_prefix: multiview_inference}}
