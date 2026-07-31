@@ -14,6 +14,8 @@ GENERALISATION_CLUSTER ?= configs/clusters/genome.yaml
 PERFORMANCE_CONFIG ?= configs/train/performance/performance_full.yaml
 PERFORMANCE_RESULTS ?= outputs/performance
 PERFORMANCE_REPORT ?= outputs/performance_report
+PERFORMANCE_CLUSTER ?= configs/clusters/genome.yaml
+PERFORMANCE_ARTIFACTS ?= submissions/performance_full
 LOCAL_SMOKE_ROOT ?= local_slurm_simulation
 
 PAPER_TESTS := \
@@ -30,7 +32,7 @@ PAPER_TESTS := \
 	tests.test_generalisation_report \
 	tests.test_performance_features
 
-.PHONY: help ablation-pipeline paper-report generalisation-validate generalisation-report performance-validate performance-report performance-local-smoke test
+.PHONY: help ablation-pipeline paper-report generalisation-validate generalisation-report performance-validate performance-genome-dry-run performance-genome-submit performance-report performance-local-smoke test
 
 help: ## Show the paper-pipeline commands.
 	@echo "Worm Species paper pipeline"
@@ -42,6 +44,8 @@ help: ## Show the paper-pipeline commands.
 	@echo "  make generalisation-validate              Validate one diagnostic run matrix."
 	@echo "  make generalisation-report                Build completed-run diagnostic outputs."
 	@echo "  make performance-validate                 Validate the 3-backbone performance matrix."
+	@echo "  make performance-genome-dry-run           Render the Genome jobs without submitting."
+	@echo "  make performance-genome-submit            Validate and submit the Genome jobs."
 	@echo "  make performance-report                   Build individual-level performance outputs."
 	@echo "  make performance-local-smoke              Render and run a synthetic 5-epoch local simulation."
 	@echo "  make test                                 Run the focused paper-pipeline tests."
@@ -74,7 +78,21 @@ generalisation-report: ## Aggregate completed task-specific generalisation runs.
 performance-validate: ## Validate one 3-backbone performance matrix.
 	PYTHONPATH=.:src $(PYTHON) -m worm_species.slurm validate \
 		--config "$(PERFORMANCE_CONFIG)" \
-		--cluster-config "$(GENERALISATION_CLUSTER)"
+		--cluster-config "$(PERFORMANCE_CLUSTER)"
+
+performance-genome-dry-run: performance-validate ## Render the Genome performance jobs without submitting.
+	PYTHONPATH=.:src $(PYTHON) -m worm_species.slurm launch \
+		--config "$(PERFORMANCE_CONFIG)" \
+		--cluster-config "$(PERFORMANCE_CLUSTER)" \
+		--artifacts-dir "$(PERFORMANCE_ARTIFACTS)" \
+		--dry-run
+
+performance-genome-submit: performance-validate ## Validate and submit the Genome performance jobs.
+	PYTHONPATH=.:src $(PYTHON) -m worm_species.slurm launch \
+		--config "$(PERFORMANCE_CONFIG)" \
+		--cluster-config "$(PERFORMANCE_CLUSTER)" \
+		--artifacts-dir "$(PERFORMANCE_ARTIFACTS)" \
+		--submit
 
 performance-report: ## Aggregate completed performance runs.
 	MPLCONFIGDIR=/tmp/mplconfig PYTHONPATH=.:src $(PYTHON) \
