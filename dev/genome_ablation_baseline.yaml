@@ -46,7 +46,7 @@ cache:
 
 wandb:
   enabled: true
-  project: worm-species-paper
+  project: worm-species-paper-hloss
   group: paper-baseline
   name: null
   mode: online
@@ -64,8 +64,6 @@ sweep:
       - resnet50
       - convnext_base
       - vit_b_16
-      - dinov3_vitb16
-      - dinov3_convnext_base
     # Each mapping is one complete recipe, not a Cartesian product.
     multi_task.loss_weights:
       - {genus: 1.0, species: 1.0, age: 1.0}

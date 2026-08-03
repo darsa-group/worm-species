@@ -9,7 +9,7 @@ base_cache:
   source_stage: baseline
   directory_name: image_cache_paper_v1
   cpus_per_task: 128
-  memory: 16G
+  memory: 64G
   time_limit: "04:00:00"
 
 condition_cache:
@@ -18,10 +18,10 @@ condition_cache:
   consumer_stages: [baseline, visual_ablation, visual_interactions]
   directory_name: image_condition_cache_paper_v1
   transforms: [gaussian_blur_percent, patch_shuffle, resolution_loss, composed]
-  cpus_per_task: 8
-  memory: 16G
+  cpus_per_task: 128
+  memory: 64G
   time_limit: "04:00:00"
-  max_active: 8
+  max_active: 12
 
 stages:
   - name: baseline
@@ -37,6 +37,6 @@ report:
   enabled: true
   script: ../scripts/build_paper_results.py
   style: paper_report_style.yaml
-  cpus_per_task: 4
-  memory: 16G
+  cpus_per_task: 8
+  memory: 64G
   time_limit: "01:00:00"
