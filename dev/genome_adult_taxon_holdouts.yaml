@@ -1,4 +1,5 @@
-# 3 backbones x 8 Adult combinations x 3 seeds x 2 hierarchy settings = 144 fits.
+# 5 backbones x 11 Adult/Juvenile combinations x 3 seeds x 2 hierarchy
+# settings = 330 fits.
 extends: genome_adult_taxon_baseline.yaml
 
 wandb:
@@ -63,6 +64,27 @@ sweep:
         remove_from: [train, validation]
         where: &adult_lumbricus_terrestris_herculeus {genus: Lumbricus, species: Lumbricus_terrestris_herculeus, age: Adult}
         evaluation_where: *adult_lumbricus_terrestris_herculeus
+        primary_tasks: [genus, species, age]
+      - enabled: true
+        name: juvenile_allolobophora_chlorotica
+        question: What is lost when Juvenile Allolobophora_chlorotica is absent from model development?
+        remove_from: [train, validation]
+        where: &juvenile_allolobophora_chlorotica {genus: Allolobophora, species: Allolobophora_chlorotica, age: Juvenile}
+        evaluation_where: *juvenile_allolobophora_chlorotica
+        primary_tasks: [genus, species, age]
+      - enabled: true
+        name: juvenile_aporrectodea_longa
+        question: What is lost when Juvenile Aporrectodea_longa is absent from model development?
+        remove_from: [train, validation]
+        where: &juvenile_aporrectodea_longa {genus: Aporrectodea, species: Aporrectodea_longa, age: Juvenile}
+        evaluation_where: *juvenile_aporrectodea_longa
+        primary_tasks: [genus, species, age]
+      - enabled: true
+        name: juvenile_aporrectodea_rosea
+        question: What is lost when Juvenile Aporrectodea_rosea is absent from model development?
+        remove_from: [train, validation]
+        where: &juvenile_aporrectodea_rosea {genus: Aporrectodea, species: Aporrectodea_rosea, age: Juvenile}
+        evaluation_where: *juvenile_aporrectodea_rosea
         primary_tasks: [genus, species, age]
 
 evaluation:

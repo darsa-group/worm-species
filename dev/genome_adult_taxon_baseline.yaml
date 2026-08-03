@@ -1,5 +1,6 @@
-# Full-data controls for every observed Adult genus-species combination.
-# 3 backbones x 3 seeds x 2 hierarchy settings = 18 fits.
+# Full-data controls for every observed Adult and Juvenile genus-species-stage
+# combination. Adding control cohorts does not add model fits.
+# 5 backbones x 3 seeds x 2 hierarchy settings = 30 fits.
 extends: genome_ablation_baseline.yaml
 
 multi_task:
@@ -17,7 +18,12 @@ wandb:
 sweep:
   parameters:
     seed: [40, 41, 42]
-    model.name: [resnet50, convnext_base, vit_b_16]
+    model.name:
+      - resnet50
+      - convnext_base
+      - vit_b_16
+      - dinov3_vitb16
+      - dinov3_convnext_base
     multi_task.loss_weights:
       - {genus: 1.0, species: 0.5, age: 2.0}
     multi_task.hierarchy_loss:
@@ -69,6 +75,21 @@ evaluation:
         question: What is lost when Adult Lumbricus_terrestris_herculeus is absent from model development?
         where: &adult_lumbricus_terrestris_herculeus {genus: Lumbricus, species: Lumbricus_terrestris_herculeus, age: Adult}
         evaluation_where: *adult_lumbricus_terrestris_herculeus
+        primary_tasks: [genus, species, age]
+      - name: juvenile_allolobophora_chlorotica
+        question: What is lost when Juvenile Allolobophora_chlorotica is absent from model development?
+        where: &juvenile_allolobophora_chlorotica {genus: Allolobophora, species: Allolobophora_chlorotica, age: Juvenile}
+        evaluation_where: *juvenile_allolobophora_chlorotica
+        primary_tasks: [genus, species, age]
+      - name: juvenile_aporrectodea_longa
+        question: What is lost when Juvenile Aporrectodea_longa is absent from model development?
+        where: &juvenile_aporrectodea_longa {genus: Aporrectodea, species: Aporrectodea_longa, age: Juvenile}
+        evaluation_where: *juvenile_aporrectodea_longa
+        primary_tasks: [genus, species, age]
+      - name: juvenile_aporrectodea_rosea
+        question: What is lost when Juvenile Aporrectodea_rosea is absent from model development?
+        where: &juvenile_aporrectodea_rosea {genus: Aporrectodea, species: Aporrectodea_rosea, age: Juvenile}
+        evaluation_where: *juvenile_aporrectodea_rosea
         primary_tasks: [genus, species, age]
 
 output:

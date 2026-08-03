@@ -1,5 +1,5 @@
-# Standalone exhaustive Adult genus-species data-ablation pipeline.
-name: genome_adult_taxon_ablation
+# Exhaustive Adult and Juvenile genus-species-stage data-ablation pipeline.
+name: genome_taxon_stage_ablation
 cluster_config: ../configs/clusters/genome.yaml
 paper_result_dir: ../adult_taxon_ablation_result
 dependency: afterok

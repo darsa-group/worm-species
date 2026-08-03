@@ -32,13 +32,14 @@ Explicit submission:
 make ablation-pipeline PIPELINE_MODE=submit
 ```
 
-The full plan is 175 fits: 45 baseline, 110 visual ablation, and 20 data
-holdout. It also contains a shared base-cache job, a 21-task deterministic
-condition-cache array, completed-result collectors, and a final paper-report
-job.
+The full plan is 1,470 fits: 90 baseline, 660 visual ablation, 600 visual
+interaction, and 120 data-holdout fits. It also contains a shared base-cache
+job, a deterministic condition-cache array, completed-result collectors, and
+a final paper-report job.
 
-The standalone Adult taxon plan contains 162 fits: 18 matching full-data
-controls plus 144 holdouts spanning all eight observed Adult genus-species
-combinations, three backbones, seeds 40/41/42, and hierarchy loss 0 and 0.2.
+The standalone taxon-stage plan contains 360 fits: 30 matching full-data
+controls plus 330 holdouts spanning eight Adult and three Juvenile
+genus-species-stage combinations, five backbones, seeds 40/41/42, and
+hierarchy loss 0 and 0.2.
 Render it with `make adult-taxon-ablation-pipeline`; submit explicitly with
 `ADULT_TAXON_PIPELINE_MODE=submit`.

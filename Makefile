@@ -30,10 +30,10 @@ help: ## Show the paper-pipeline commands.
 	@echo "  make ablation-pipeline PIPELINE_MODE=submit"
 	@echo "                                             Submit its dependency chain."
 	@echo "  make paper-report                         Rebuild completed-run paper outputs."
-	@echo "  make adult-taxon-ablation-pipeline        Dry-run the Adult combination pipeline."
+	@echo "  make adult-taxon-ablation-pipeline        Dry-run Adult/Juvenile combinations."
 	@echo "  make adult-taxon-ablation-pipeline ADULT_TAXON_PIPELINE_MODE=submit"
-	@echo "                                             Submit its 162-fit dependency chain."
-	@echo "  make adult-taxon-report                   Rebuild Adult ablation figures."
+	@echo "                                             Submit its 360-fit dependency chain."
+	@echo "  make adult-taxon-report                   Rebuild taxon-stage ablation figures."
 	@echo "  make test                                 Run the focused paper-pipeline tests."
 	@echo
 	@echo "Dry-run is the default; scheduler submission is always explicit."
@@ -50,12 +50,12 @@ paper-report: ## Rebuild tables and figures from completed runs only.
 		--data-root "$(DATA_ROOT)" \
 		--style "$(REPORT_STYLE)"
 
-adult-taxon-ablation-pipeline: ## Render or submit exhaustive Adult combination ablations.
+adult-taxon-ablation-pipeline: ## Render or submit Adult/Juvenile combination ablations.
 	PYTHONPATH=.:src $(PYTHON) scripts/run_ablation_pipeline.py \
 		--pipeline "$(ADULT_TAXON_PIPELINE_CONFIG)" \
 		--mode "$(ADULT_TAXON_PIPELINE_MODE)"
 
-adult-taxon-report: ## Rebuild Adult combination figures and source tables.
+adult-taxon-report: ## Rebuild Adult/Juvenile combination figures and source tables.
 	MPLCONFIGDIR=/tmp/mplconfig PYTHONPATH=.:src $(PYTHON) \
 		scripts/build_adult_taxon_ablation_results.py \
 		--paper-result "$(ADULT_TAXON_RESULT)" \

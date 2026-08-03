@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Aggregate Adult taxon holdouts and render hierarchy-loss comparisons."""
+"""Aggregate Adult/Juvenile taxon holdouts and render comparisons."""
 
 from __future__ import annotations
 
@@ -25,7 +25,7 @@ COHORTS = ("development_withheld", "independent_test")
 TASK_LABELS = {
     "genus": "Genus recall",
     "species": "Species recall",
-    "age": "Adult-stage recall",
+    "age": "Developmental-stage recall",
 }
 COHORT_LABELS = {
     "development_withheld": "Removed development cohort",
@@ -137,9 +137,10 @@ def _collect_stage(
             frame.at[index, "species"] = where.get("species")
             frame.at[index, "stage"] = where.get("age")
         frame["combo_label"] = (
-            frame["species"].fillna(frame["holdout"])
-            .astype(str)
-            .str.replace("_", " ", regex=False)
+            frame["stage"].fillna("Unknown").astype(str)
+            + ": "
+            + frame["species"].fillna(frame["holdout"])
+            .astype(str).str.replace("_", " ", regex=False)
         )
         frame["chance"] = frame["task"].map({
             task: 1.0 / len(labels)
@@ -177,7 +178,9 @@ def collect_adult_taxon_metrics(paper_root: Path) -> pd.DataFrame:
     return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
 
 
-def observed_adult_combinations(split_root: Path | None) -> pd.DataFrame:
+def observed_taxon_stage_combinations(
+    split_root: Path | None,
+) -> pd.DataFrame:
     columns = [
         "genus", "species", "stage", "holdout",
         "training_images", "training_individuals",
@@ -205,13 +208,13 @@ def observed_adult_combinations(split_root: Path | None) -> pd.DataFrame:
         ("test", "test_split.csv"),
     ):
         frame = pd.read_csv(split_dir / filename)
-        adult = frame[
-            frame["life_stage"].astype(str).eq("Adult")
+        selected = frame[
+            frame["life_stage"].astype(str).isin(("Adult", "Juvenile"))
             & frame["genus"].notna()
             & frame["species_label"].notna()
         ]
         counts = (
-            adult.groupby(
+            selected.groupby(
                 ["genus", "species_label", "life_stage"], as_index=False
             )
             .agg(**{
@@ -233,8 +236,18 @@ def observed_adult_combinations(split_root: Path | None) -> pd.DataFrame:
         "species_label": "species",
         "life_stage": "stage",
     })
-    result["holdout"] = "adult_" + result["species"].map(_slug)
-    return result[columns].sort_values(["genus", "species"])
+    result["holdout"] = (
+        result["stage"].astype(str).str.lower()
+        + "_"
+        + result["species"].map(_slug)
+    )
+    return result[columns].sort_values(["stage", "genus", "species"])
+
+
+def observed_adult_combinations(split_root: Path | None) -> pd.DataFrame:
+    """Backward-compatible Adult-only view of the combined inventory."""
+    frame = observed_taxon_stage_combinations(split_root)
+    return frame[frame["stage"].eq("Adult")].reset_index(drop=True)
 
 
 def paired_ablation_differences(metrics: pd.DataFrame) -> pd.DataFrame:
@@ -388,9 +401,9 @@ def _plot_matrix(
     ]
     summary = seed_summary(selected, groups=groups, value=value)
     combinations = (
-        selected[["genus", "species", "combo_label"]]
+        selected[["stage", "genus", "species", "combo_label"]]
         .drop_duplicates()
-        .sort_values(["genus", "species"])["combo_label"]
+        .sort_values(["stage", "genus", "species"])["combo_label"]
         .tolist()
     )
     models = sorted(selected["model"].dropna().astype(str).unique())
@@ -499,8 +512,8 @@ def _plot_matrix(
         frameon=False,
     )
     title = (
-        "Adult-combination ablation effect"
-        if difference else "Adult genus-species combination holdouts"
+        "Taxon-stage combination ablation effect"
+        if difference else "Adult and Juvenile taxon-stage holdouts"
     )
     title += ": hierarchy loss 0 versus 0.2" if compare_hloss else " (h=0)"
     fig.suptitle(title, fontsize=15)
@@ -532,7 +545,7 @@ def build_adult_taxon_report(
         directory.mkdir(parents=True, exist_ok=True)
     metrics = collect_adult_taxon_metrics(paper_root)
     paired = paired_ablation_differences(metrics)
-    inventory = observed_adult_combinations(split_root)
+    inventory = observed_taxon_stage_combinations(split_root)
     metrics.to_csv(
         directories["tables"] / "all_adult_taxon_metrics.csv", index=False
     )

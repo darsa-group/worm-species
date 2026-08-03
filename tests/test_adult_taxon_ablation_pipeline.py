@@ -9,7 +9,7 @@ import pandas as pd
 
 from scripts.build_adult_taxon_ablation_results import (
     build_adult_taxon_report,
-    observed_adult_combinations,
+    observed_taxon_stage_combinations,
 )
 from scripts.build_paper_results import (
     _original_test_condition_summary,
@@ -30,13 +30,17 @@ EXPECTED_HOLDOUTS = {
     "adult_lumbricus_castaneus",
     "adult_lumbricus_festivus",
     "adult_lumbricus_terrestris_herculeus",
+    "juvenile_allolobophora_chlorotica",
+    "juvenile_aporrectodea_longa",
+    "juvenile_aporrectodea_rosea",
 }
 
 
 class AdultTaxonConfigTests(unittest.TestCase):
-    def test_plans_cover_every_observed_adult_combination(self) -> None:
-        inventory = observed_adult_combinations(ROOT)
+    def test_plans_cover_every_observed_taxon_stage_combination(self) -> None:
+        inventory = observed_taxon_stage_combinations(ROOT)
         self.assertEqual(set(inventory["holdout"]), EXPECTED_HOLDOUTS)
+        self.assertEqual(set(inventory["stage"]), {"Adult", "Juvenile"})
         baseline = load_submission_config(
             ROOT / "dev" / "genome_adult_taxon_baseline.yaml",
             cluster_config=CLUSTER,
@@ -47,8 +51,8 @@ class AdultTaxonConfigTests(unittest.TestCase):
         )
         baseline_plan = plan_submission(baseline)
         holdout_plan = plan_submission(holdout)
-        self.assertEqual(baseline_plan.array_size, 18)
-        self.assertEqual(holdout_plan.array_size, 144)
+        self.assertEqual(baseline_plan.array_size, 30)
+        self.assertEqual(holdout_plan.array_size, 330)
         for plan in (baseline_plan, holdout_plan):
             self.assertEqual(
                 {spec.resolved_config["seed"] for spec in plan.run_specs},
