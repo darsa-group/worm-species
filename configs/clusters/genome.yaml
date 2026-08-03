@@ -2,7 +2,7 @@ slurm:
   enabled: true
   cluster_profile: genome
   account: worm-species
-  partition: gpu-short
+  partition: gpu-short,gpu-l40s,gpu-h200
   nodes: 1
   ntasks: 1
   cpus_per_task: 8
