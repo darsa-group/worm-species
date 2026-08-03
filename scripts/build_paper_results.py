@@ -558,6 +558,7 @@ def _original_test_condition_summary(cross: pd.DataFrame) -> pd.DataFrame:
     return (
         selected.groupby(
             [
+                "run_dir",
                 "run_name",
                 "model",
                 "seed",
@@ -2732,15 +2733,20 @@ def build_report(
         runs[runs["stage"].eq("visual_interactions")]
         if not runs.empty else runs
     )
-    baseline = baseline_all[
-        baseline_all["hierarchy_loss_weight"].eq(0.0)
-    ]
-    visual = visual_all[
-        visual_all["hierarchy_loss_weight"].eq(0.0)
-    ]
-    interactions = interactions_all[
-        interactions_all["hierarchy_loss_weight"].eq(0.0)
-    ]
+    baseline = (
+        baseline_all[baseline_all["hierarchy_loss_weight"].eq(0.0)]
+        if not baseline_all.empty else baseline_all
+    )
+    visual = (
+        visual_all[visual_all["hierarchy_loss_weight"].eq(0.0)]
+        if not visual_all.empty else visual_all
+    )
+    interactions = (
+        interactions_all[
+            interactions_all["hierarchy_loss_weight"].eq(0.0)
+        ]
+        if not interactions_all.empty else interactions_all
+    )
     holdouts_all = holdouts
     holdouts = (
         holdouts_all[holdouts_all["hierarchy_loss_weight"].eq(0.0)]
@@ -3258,12 +3264,15 @@ def build_report(
         best_baseline_runs,
         figures / "figure_04_validation_selected_confusion_matrices.png",
     )
-    comparison_baseline_runs = baseline_all[
-        baseline_all["model"].eq(best_baseline.get("model"))
-        & baseline_all["loss_recipe"].eq(
-            best_baseline.get("loss_recipe")
-        )
-    ].copy()
+    comparison_baseline_runs = (
+        baseline_all[
+            baseline_all["model"].eq(best_baseline.get("model"))
+            & baseline_all["loss_recipe"].eq(
+                best_baseline.get("loss_recipe")
+            )
+        ].copy()
+        if not baseline_all.empty else baseline_all.copy()
+    )
     confusion_hloss_created = _save_hloss_confusion_comparison(
         comparison_baseline_runs,
         figures

@@ -120,6 +120,31 @@ evaluated on the exact same cohorts. Resolution plots likewise compare matched
 resolution training/testing, resolution-trained models on original images, and
 original-trained baselines on the same transformed test images.
 
+## Exhaustive Adult taxon ablations
+
+[`dev/genome_adult_taxon_ablation_pipeline.yaml`](dev/genome_adult_taxon_ablation_pipeline.yaml)
+tests every observed `genus × species × Adult` combination. It contains 18
+full-data controls and 144 combination holdouts: the three backbones retained
+on this branch, seeds 40/41/42, eight combinations, and hierarchy loss `h=0`
+and `h=0.2`.
+
+```bash
+# Render only; does not contact SLURM.
+make adult-taxon-ablation-pipeline
+
+# Explicit submission after inspecting the render.
+make adult-taxon-ablation-pipeline ADULT_TAXON_PIPELINE_MODE=submit
+
+# Rebuild the report from completed runs.
+make adult-taxon-report
+```
+
+The report evaluates the removed development cohort and the matching fixed
+test cohort. It exports raw target recall and paired withheld-minus-full-data
+effects, both as retained `h=0` figures and hierarchy-loss comparisons. Every
+figure is saved as PNG, PDF, and SVG with seed observations, seed-level 95%
+confidence intervals, chance or zero references, and its exact source CSVs.
+
 ## Verification
 
 ```bash
