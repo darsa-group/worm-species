@@ -1,0 +1,30 @@
+# Standalone exhaustive Adult genus-species data-ablation pipeline.
+name: genome_adult_taxon_ablation
+cluster_config: ../configs/clusters/genome.yaml
+paper_result_dir: ../adult_taxon_ablation_result
+dependency: afterok
+
+base_cache:
+  enabled: true
+  source_stage: adult_taxon_baseline
+  directory_name: image_cache_adult_taxon_v1
+  cpus_per_task: 128
+  memory: 16G
+  time_limit: "04:00:00"
+
+condition_cache:
+  enabled: false
+
+stages:
+  - name: adult_taxon_baseline
+    config: genome_adult_taxon_baseline.yaml
+  - name: adult_taxon_holdouts
+    config: genome_adult_taxon_holdouts.yaml
+
+report:
+  enabled: true
+  script: ../scripts/build_adult_taxon_ablation_results.py
+  style: paper_report_style.yaml
+  cpus_per_task: 4
+  memory: 16G
+  time_limit: "01:00:00"

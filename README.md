@@ -116,6 +116,41 @@ evaluated on the exact same cohorts. Resolution plots likewise compare matched
 resolution training/testing, resolution-trained models on original images, and
 original-trained baselines on the same transformed test images.
 
+## Exhaustive Adult taxon data ablations
+
+The standalone Adult taxon pipeline removes every fully labelled
+`genus × species × Adult` combination observed in the predefined train,
+validation, and test splits. It currently covers eight combinations. Each is
+removed from train and validation while the predefined test split remains
+unchanged. A matching full-data model evaluates the same development and test
+cohorts, so the report can show both raw recall and the paired effect of
+withholding the combination.
+
+Render the 270-fit plan (30 full-data controls plus 240 holdouts):
+
+```bash
+make adult-taxon-ablation-pipeline
+```
+
+Submit explicitly after inspecting the generated plan:
+
+```bash
+make adult-taxon-ablation-pipeline ADULT_TAXON_PIPELINE_MODE=submit
+```
+
+Rebuild its report from completed runs:
+
+```bash
+make adult-taxon-report
+```
+
+The report writes separate `h=0` and `h=0` versus `h=0.2` figures, seed-level
+points, 95% seed-level t-confidence intervals, chance or zero references, and
+PNG/PDF/SVG exports. Plot rows and seed summaries are retained under
+`adult_taxon_ablation_result/figure_sources/`. Sparse combinations can leave a
+species absent from the training head; these unsupported values remain missing
+and are not converted into zero recall.
+
 ## Verification
 
 ```bash

@@ -15,6 +15,13 @@ dev/genome_ablation_pipeline.yaml
 │   └── dev/genome_ablation_baseline.yaml
 └── dev/paper_report_style.yaml
 
+dev/genome_adult_taxon_ablation_pipeline.yaml
+├── dev/genome_adult_taxon_baseline.yaml
+│   └── dev/genome_ablation_baseline.yaml
+├── dev/genome_adult_taxon_holdouts.yaml
+│   └── dev/genome_adult_taxon_baseline.yaml
+└── dev/paper_report_style.yaml
+
 configs/train/generalisation/_base.yaml
 ├── shared_heads.yaml
 ├── single_task_genus.yaml
@@ -47,6 +54,12 @@ Cartesian expansion. The five principal matrices each contain 15 runs: three
 seeds across the original split and four structured holdouts. Isolated
 mechanism and exploratory matrices contain five seed-42 runs unless explicitly
 promoted.
+
+The standalone Adult taxon-ablation pipeline contains 270 fits: five
+backbones, seeds 40/41/42, hierarchy loss 0 and 0.2, 30 full-data controls,
+and 240 fits spanning the eight observed Adult genus-species combinations.
+Render it with `make adult-taxon-ablation-pipeline`; submission requires
+`ADULT_TAXON_PIPELINE_MODE=submit`.
 
 Validate one diagnostic matrix with:
 

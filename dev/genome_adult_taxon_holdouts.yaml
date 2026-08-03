@@ -1,0 +1,82 @@
+# Exhaustive Adult genus-species-stage cohort ablations.
+# 5 backbones x 8 combinations x 3 seeds x 2 hierarchy settings = 240 fits.
+extends: genome_adult_taxon_baseline.yaml
+
+wandb:
+  group: adult-taxon-combination-holdouts
+  tags: [paper, data-ablation, adult-taxon, combination-holdout]
+
+sweep:
+  parameters:
+    data_holdout:
+      - enabled: true
+        name: adult_allolobophora_chlorotica
+        question: What is lost when Adult Allolobophora_chlorotica is absent from model development?
+        remove_from: [train, validation]
+        where: {genus: Allolobophora, species: Allolobophora_chlorotica, age: Adult}
+        evaluation_where: {genus: Allolobophora, species: Allolobophora_chlorotica, age: Adult}
+        primary_tasks: [genus, species, age]
+      - enabled: true
+        name: adult_aporrectodea_caliginosa
+        question: What is lost when Adult Aporrectodea_caliginosa is absent from model development?
+        remove_from: [train, validation]
+        where: {genus: Aporrectodea, species: Aporrectodea_caliginosa, age: Adult}
+        evaluation_where: {genus: Aporrectodea, species: Aporrectodea_caliginosa, age: Adult}
+        primary_tasks: [genus, species, age]
+      - enabled: true
+        name: adult_aporrectodea_longa
+        question: What is lost when Adult Aporrectodea_longa is absent from model development?
+        remove_from: [train, validation]
+        where: {genus: Aporrectodea, species: Aporrectodea_longa, age: Adult}
+        evaluation_where: {genus: Aporrectodea, species: Aporrectodea_longa, age: Adult}
+        primary_tasks: [genus, species, age]
+      - enabled: true
+        name: adult_aporrectodea_rosea
+        question: What is lost when Adult Aporrectodea_rosea is absent from model development?
+        remove_from: [train, validation]
+        where: {genus: Aporrectodea, species: Aporrectodea_rosea, age: Adult}
+        evaluation_where: {genus: Aporrectodea, species: Aporrectodea_rosea, age: Adult}
+        primary_tasks: [genus, species, age]
+      - enabled: true
+        name: adult_aporrectodea_tuberculata
+        question: What is lost when Adult Aporrectodea_tuberculata is absent from model development?
+        remove_from: [train, validation]
+        where: {genus: Aporrectodea, species: Aporrectodea_tuberculata, age: Adult}
+        evaluation_where: {genus: Aporrectodea, species: Aporrectodea_tuberculata, age: Adult}
+        primary_tasks: [genus, species, age]
+      - enabled: true
+        name: adult_lumbricus_castaneus
+        question: What is lost when Adult Lumbricus_castaneus is absent from model development?
+        remove_from: [train, validation]
+        where: {genus: Lumbricus, species: Lumbricus_castaneus, age: Adult}
+        evaluation_where: {genus: Lumbricus, species: Lumbricus_castaneus, age: Adult}
+        primary_tasks: [genus, species, age]
+      - enabled: true
+        name: adult_lumbricus_festivus
+        question: What is lost when Adult Lumbricus_festivus is absent from model development?
+        remove_from: [train, validation]
+        where: {genus: Lumbricus, species: Lumbricus_festivus, age: Adult}
+        evaluation_where: {genus: Lumbricus, species: Lumbricus_festivus, age: Adult}
+        primary_tasks: [genus, species, age]
+      - enabled: true
+        name: adult_lumbricus_terrestris_herculeus
+        question: What is lost when Adult Lumbricus_terrestris_herculeus is absent from model development?
+        remove_from: [train, validation]
+        where: {genus: Lumbricus, species: Lumbricus_terrestris_herculeus, age: Adult}
+        evaluation_where: {genus: Lumbricus, species: Lumbricus_terrestris_herculeus, age: Adult}
+        primary_tasks: [genus, species, age]
+
+evaluation:
+  test_conditions: {enabled: false, conditions: [], evaluate_original_training: false}
+  condition_matrix: {enabled: false, conditions: [], write_reports: false}
+  data_holdout_controls: {enabled: false, definitions: []}
+
+output:
+  out_dir: adult_taxon_ablation_result/runs/adult_taxon_holdouts
+
+slurm:
+  planning:
+    experiment_type: genome_adult_taxon_holdouts
+    external_expansion: sweep
+    clear_run_names: true
+
