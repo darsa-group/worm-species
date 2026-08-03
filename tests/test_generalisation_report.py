@@ -10,6 +10,7 @@ import pandas as pd
 
 from src.worm_species.analysis.generalisation_report import (
     HOLDOUT_LABELS,
+    architecture_name,
     build_generalisation_report,
 )
 
@@ -54,6 +55,24 @@ def _mechanism_config(architecture: str) -> tuple[dict, dict, dict, dict]:
 
 
 class GeneralisationReportTests(unittest.TestCase):
+    def test_performance_full_is_not_mislabelled_as_age_supcon(self) -> None:
+        config = {
+            "model": {"multitask_architecture": "split_taxonomy_age"},
+            "data": {
+                "multiview": {"enabled": True},
+                "sampler": {"type": "cross_species_stage_contrastive"},
+            },
+            "optimizer": {"learning_rates": {"early_backbone": 1e-5}},
+            "training": {"staged_unfreezing": {"enabled": True}},
+            "loss": {
+                "age_supervised_contrastive": {"enabled": True},
+                "genus_supervised_contrastive": {"enabled": True},
+                "taxonomy_consistency": {"enabled": True},
+            },
+            "evaluation": {"checkpoint_ensemble": {"enabled": True}},
+        }
+        self.assertEqual(architecture_name(config), "performance_full")
+
     def _write_run(
         self,
         root: Path,

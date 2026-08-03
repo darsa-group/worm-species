@@ -16,7 +16,10 @@ from src.worm_species.data.samplers import CrossSpeciesStageContrastiveBatchSamp
 from src.worm_species.evaluation.predictions import aggregate_individual_probabilities
 from src.worm_species.evaluation.predictions import ensemble_prediction_frames
 from src.worm_species.evaluation.predictions import prediction_metrics
-from src.worm_species.analysis.performance_report import discover_performance_runs
+from src.worm_species.analysis.performance_report import (
+    build_performance_report,
+    discover_performance_runs,
+)
 from src.worm_species.models.multitask import MultiTaskClassifier
 from src.worm_species.models.multitask import SingleTaskClassifier
 from src.worm_species.models.multitask import SplitTaxonomyAgeClassifier
@@ -55,6 +58,26 @@ def _prediction_frame(probabilities):
 
 
 class PerformanceFeatureTests(unittest.TestCase):
+    def test_report_does_not_export_blank_performance_figures(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            manifest = build_performance_report(
+                root / "no-runs",
+                root / "report",
+            )
+            self.assertEqual(
+                manifest["performance_architectures"], []
+            )
+            self.assertFalse(
+                any(manifest["performance_figure_availability"].values())
+            )
+            self.assertTrue(
+                all(
+                    paths == []
+                    for paths in manifest["performance_figures"].values()
+                )
+            )
+
     def test_report_rejects_non_target_predictions_from_single_task_run(self):
         with tempfile.TemporaryDirectory() as directory:
             run = Path(directory) / "bad_single_task"

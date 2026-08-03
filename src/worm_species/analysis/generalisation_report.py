@@ -16,7 +16,10 @@ import numpy as np
 import pandas as pd
 from sklearn.decomposition import PCA
 
-from .performance_report import build_performance_report
+from .performance_report import (
+    build_performance_report,
+    performance_family_name,
+)
 
 
 TASKS = ("genus", "species", "age")
@@ -87,6 +90,9 @@ def _read_json(path: Path) -> dict[str, Any]:
 
 
 def architecture_name(config: dict[str, Any]) -> str:
+    performance_family = performance_family_name(config)
+    if performance_family is not None:
+        return performance_family
     model = config.get("model", {}) or {}
     data = config.get("data", {}) or {}
     training = config.get("training", {}) or {}

@@ -36,10 +36,8 @@ def _stable_signature(value: dict) -> str:
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
-def _family(config: dict) -> str:
-    architecture = (config.get("model", {}) or {}).get(
-        "multitask_architecture", "shared_heads"
-    )
+def performance_family_name(config: dict) -> str | None:
+    """Return a performance mechanism family, or None for core architectures."""
     multiview = bool(((config.get("data", {}) or {}).get("multiview", {}) or {}).get("enabled", False))
     differential = bool((config.get("optimizer", {}) or {}).get("learning_rates"))
     staged = bool(((config.get("training", {}) or {}).get("staged_unfreezing", {}) or {}).get("enabled", False))
@@ -70,7 +68,15 @@ def _family(config: dict) -> str:
         return "cross_species_age_batches"
     if ensemble:
         return "checkpoint_ensemble"
-    return str(architecture)
+    return None
+
+
+def _family(config: dict) -> str:
+    return performance_family_name(config) or str(
+        (config.get("model", {}) or {}).get(
+            "multitask_architecture", "shared_heads"
+        )
+    )
 
 
 def _validate_task_contract(config: dict, predictions: pd.DataFrame, run_dir: Path) -> None:
@@ -195,6 +201,8 @@ def _save_figure(fig, base: Path) -> list[str]:
 
 
 def _plot_ordinary(frame: pd.DataFrame, base: Path) -> list[str]:
+    if frame.empty:
+        return []
     fig, axes = plt.subplots(1, 3, figsize=(15, 4.5), sharey=True)
     frame = frame.copy()
     if not frame.empty:
@@ -221,6 +229,8 @@ def _plot_ordinary(frame: pd.DataFrame, base: Path) -> list[str]:
 
 
 def _plot_holdouts(frame: pd.DataFrame, base: Path) -> list[str]:
+    if frame.empty:
+        return []
     fig, axis = plt.subplots(figsize=(10, 6))
     endpoints = list(STRUCTURED_ENDPOINTS.values())
     frame = frame.copy()
@@ -270,6 +280,8 @@ def paired_differences(holdouts: pd.DataFrame) -> pd.DataFrame:
 
 
 def _plot_paired(frame: pd.DataFrame, base: Path) -> list[str]:
+    if frame.empty:
+        return []
     fig, axis = plt.subplots(figsize=(10, 7))
     axis.axvline(0, color="black", linewidth=1)
     if not frame.empty:
@@ -394,6 +406,7 @@ def _write_latex_tables(
 
 
 def build_performance_report(results_root: Path, output_dir: Path) -> dict:
+    output_dir.mkdir(parents=True, exist_ok=True)
     ordinary, holdouts, verification = discover_performance_runs(results_root)
     paired = paired_differences(holdouts)
     ensemble_rows = []
@@ -463,6 +476,25 @@ def build_performance_report(results_root: Path, output_dir: Path) -> dict:
         "structured_generalisation": _plot_holdouts(holdouts, figures_dir / "figure_2_structured_generalisation"),
         "paired_improvement": _plot_paired(paired, figures_dir / "figure_3_paired_improvement"),
     }
+    figure_availability = {
+        "ordinary_test": not ordinary.empty,
+        "structured_generalisation": not holdouts.empty,
+        "paired_improvement": not paired.empty,
+    }
+    figure_reasons = {
+        "ordinary_test": (
+            "available" if figure_availability["ordinary_test"]
+            else "no completed original-baseline performance rows"
+        ),
+        "structured_generalisation": (
+            "available" if figure_availability["structured_generalisation"]
+            else "no supported structured-holdout endpoints"
+        ),
+        "paired_improvement": (
+            "available" if figure_availability["paired_improvement"]
+            else "requires matched shared_heads and candidate runs"
+        ),
+    }
     if not ensemble.empty and not ordinary.empty:
         best = ordinary[ordinary["level"] == "individual"][
             ["run_name", "task", "macro_f1"]
@@ -479,11 +511,22 @@ def build_performance_report(results_root: Path, output_dir: Path) -> dict:
     _write_summary(ordinary, holdouts, paired, ensemble, output_dir)
     return {
         "completed_performance_runs": int(len(verification)),
+        "performance_architectures": (
+            sorted(verification["architecture"].dropna().unique().tolist())
+            if not verification.empty else []
+        ),
         "performance_figures": figures,
+        "performance_figure_availability": figure_availability,
+        "performance_figure_reasons": figure_reasons,
         "family_assignment": "resolved_configuration",
         "single_task_contract": "fail_closed",
         "comparison_audit": str(output_dir / "comparison_support.csv"),
     }
 
 
-__all__ = ["build_performance_report", "discover_performance_runs", "paired_differences"]
+__all__ = [
+    "build_performance_report",
+    "discover_performance_runs",
+    "paired_differences",
+    "performance_family_name",
+]
