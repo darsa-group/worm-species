@@ -28,6 +28,7 @@ from src.worm_species.training.losses import taxonomy_consistency_loss
 from src.worm_species.training.optimizers import StagedUnfreezer
 from src.worm_species.training.optimizers import build_optimizer
 from src.worm_species.training.optimizers import validate_optimizer_coverage
+from src.worm_species.training.runner import save_age_embedding_diagnostics
 from src.worm_species.slurm.config import load_submission_config
 from src.worm_species.slurm.planning import plan_submission
 
@@ -58,6 +59,43 @@ def _prediction_frame(probabilities):
 
 
 class PerformanceFeatureTests(unittest.TestCase):
+    def test_representation_export_falls_back_to_age_features_with_metadata(self):
+        class FeatureModel(nn.Module):
+            def forward(self, images):
+                features = images.mean(dim=(2, 3))
+                return {
+                    "age_embedding": None,
+                    "age_features": features,
+                    "age_logits": features[:, :2],
+                }
+
+        loader = [{
+            "image": torch.randn(3, 3, 4, 4),
+            "label_names": {"age": ["Adult"] * 3},
+            "metadata_label_names": {
+                "age": ["Adult", "Juvenile", "Adult"],
+                "species": ["one", "two", "three"],
+            },
+            "path": ["a.png", "b.png", "c.png"],
+        }]
+        with tempfile.TemporaryDirectory() as directory:
+            artifacts = save_age_embedding_diagnostics(
+                model=FeatureModel(),
+                loader=loader,
+                device=torch.device("cpu"),
+                use_amp=False,
+                out_dir=Path(directory),
+            )
+            self.assertIsNotNone(artifacts)
+            manifest = json.loads(
+                Path(artifacts["manifest"]).read_text(encoding="utf-8")
+            )
+            self.assertEqual(
+                manifest["representation_type"], "age_branch_features"
+            )
+            metadata = pd.read_csv(artifacts["metadata"])
+            self.assertEqual(metadata["species"].tolist(), ["one", "two", "three"])
+
     def test_report_does_not_export_blank_performance_figures(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -106,6 +144,8 @@ class PerformanceFeatureTests(unittest.TestCase):
             "taxonomy_consistency.yaml", "checkpoint_ensemble.yaml",
             "performance_full.yaml", "shared_heads.yaml",
             "split_taxonomy_age.yaml",
+            "single_task_genus.yaml", "single_task_species.yaml",
+            "single_task_age.yaml",
         }
         for filename in required:
             plan = plan_submission(load_submission_config(
@@ -130,6 +170,7 @@ class PerformanceFeatureTests(unittest.TestCase):
             dataset = MultiTaskWormImageDataset(
                 frame, directory, "image", target_cols={"age": "age"},
                 label_to_index_by_task={"age": {"Juvenile": 0, "Adult": 1}},
+                metadata_cols={"age": "age"},
                 image_is_tensor=True, crop_to_foreground=False,
             )
             self.assertEqual(dataset[0]["barcode"], "A")
@@ -142,6 +183,10 @@ class PerformanceFeatureTests(unittest.TestCase):
             batch = multiview_collate([first, second])
             self.assertEqual(tuple(batch["image"].shape[:2]), (2, 2))
             self.assertEqual(batch["view_mask"].sum(dim=1).tolist(), [2, 1])
+            self.assertEqual(
+                batch["metadata_label_names"]["age"],
+                ["Juvenile", "Adult"],
+            )
 
     def test_individual_probability_aggregation_and_metric_levels(self):
         images = _prediction_frame([[0.9, 0.1], [0.2, 0.8]])

@@ -41,6 +41,7 @@ class MultiTaskWormImageDataset(Dataset):
         missing_label_index: int = MISSING_LABEL_INDEX,
         image_is_tensor: bool = False,
         barcode_col: str = "barcode",
+        metadata_cols: dict[str, str] | None = None,
     ):
         self.df = df.reset_index(drop=True)
         self.root_dir = Path(root_dir)
@@ -53,6 +54,7 @@ class MultiTaskWormImageDataset(Dataset):
         self.missing_label_index = missing_label_index
         self.image_is_tensor = image_is_tensor
         self.barcode_col = barcode_col
+        self.metadata_cols = metadata_cols or {}
         self.transform = transform
         self.crop_to_foreground = crop_to_foreground
         self.crop_pad = crop_pad
@@ -137,10 +139,19 @@ class MultiTaskWormImageDataset(Dataset):
                     )
                     label_names[task] = label_name
                 labels[task] = torch.tensor(encoded, dtype=torch.long)
+            metadata_label_names = {
+                task: (
+                    "<MISSING>"
+                    if column not in row or is_missing_label(row[column])
+                    else str(row[column])
+                )
+                for task, column in self.metadata_cols.items()
+            }
             return {
                 "image": image,
                 "labels": labels,
                 "label_names": label_names,
+                "metadata_label_names": metadata_label_names,
                 "path": str(image_path),
                 "barcode": barcode,
             }
@@ -230,6 +241,9 @@ class MultiViewWormImageDataset(Dataset):
             "view_mask": torch.ones(len(views), dtype=torch.bool),
             "labels": first["labels"],
             "label_names": first["label_names"],
+            "metadata_label_names": first.get(
+                "metadata_label_names", first["label_names"]
+            ),
             "path": [view["path"] for view in views],
             "barcode": barcode,
         }
@@ -258,6 +272,15 @@ def multiview_collate(batch: list[dict]) -> dict:
         "label_names": {
             task: [item["label_names"][task] for item in batch]
             for task in tasks
+        },
+        "metadata_label_names": {
+            task: [
+                item.get("metadata_label_names", item["label_names"])[task]
+                for item in batch
+            ]
+            for task in batch[0].get(
+                "metadata_label_names", batch[0]["label_names"]
+            )
         },
         "path": [item["path"] for item in batch],
         "barcode": [item["barcode"] for item in batch],

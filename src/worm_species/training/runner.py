@@ -282,10 +282,16 @@ def save_age_embedding_diagnostics(
     use_amp: bool,
     out_dir: Path,
 ) -> dict[str, str] | None:
-    """Save best-checkpoint age embeddings and their descriptive labels."""
+    """Save a comparable best-checkpoint representation and its provenance.
+
+    Prefer the normalised age projection when one exists. Otherwise retain the
+    pre-classifier age feature. The manifest makes that distinction explicit,
+    including models that do not have an age head.
+    """
     model.eval()
     embedding_batches = []
     rows = []
+    representation_type = None
     with torch.no_grad():
         for batch in loader:
             images = batch["image"].to(device, non_blocking=True)
@@ -295,12 +301,28 @@ def save_age_embedding_diagnostics(
             ):
                 outputs = model(images)
             embeddings = outputs.get("age_embedding")
+            current_representation = "age_projection"
+            if embeddings is None:
+                embeddings = outputs.get("age_features")
+                current_representation = (
+                    "age_branch_features"
+                    if outputs.get("age_logits") is not None
+                    else "backbone_features_no_age_head"
+                )
             if embeddings is None:
                 return None
+            if representation_type is None:
+                representation_type = current_representation
+            elif representation_type != current_representation:
+                raise RuntimeError(
+                    "Representation type changed while exporting embeddings"
+                )
             embedding_batches.append(
                 embeddings.detach().float().cpu().numpy()
             )
-            label_names = batch.get("label_names", {})
+            label_names = batch.get(
+                "metadata_label_names", batch.get("label_names", {})
+            )
             paths = batch.get("path", [""] * len(images))
             for index in range(len(images)):
                 rows.append({
@@ -321,14 +343,31 @@ def save_age_embedding_diagnostics(
         return None
     embedding_path = out_dir / "age_embeddings_best.npz"
     metadata_path = out_dir / "age_embeddings_best_metadata.csv"
+    manifest_path = out_dir / "age_embeddings_best_manifest.json"
+    all_embeddings = np.concatenate(embedding_batches, axis=0)
     np.savez_compressed(
         embedding_path,
-        embeddings=np.concatenate(embedding_batches, axis=0),
+        embeddings=all_embeddings,
+        representation_type=np.asarray(representation_type),
     )
     pd.DataFrame(rows).to_csv(metadata_path, index=False)
+    save_json({
+        "representation_type": representation_type,
+        "normalised": representation_type == "age_projection",
+        "feature_dimension": int(all_embeddings.shape[1]),
+        "number_of_rows": int(all_embeddings.shape[0]),
+        "source_output": (
+            "age_embedding"
+            if representation_type == "age_projection"
+            else "age_features"
+        ),
+        "interpretation": "descriptive only",
+    }, manifest_path)
     return {
         "embeddings": str(embedding_path),
         "metadata": str(metadata_path),
+        "manifest": str(manifest_path),
+        "representation_type": str(representation_type),
     }
 
 
@@ -1263,6 +1302,7 @@ def run_one(cfg: dict, profile: TrainingProfile) -> dict:
         out_dir / "joint_species_stage_sampler.csv",
         out_dir / "age_embeddings_best.npz",
         out_dir / "age_embeddings_best_metadata.csv",
+        out_dir / "age_embeddings_best_manifest.json",
         out_dir / "predictions_best.csv",
         out_dir / "predictions_last.csv",
         out_dir / "individual_predictions_best.csv",

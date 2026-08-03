@@ -155,7 +155,7 @@ class GeneralisationReportTests(unittest.TestCase):
                 "species_age_cosine": [-0.1, 0.0, 0.05],
             }).to_csv(run_dir / "gradient_diagnostics.csv", index=False)
         if (
-            architecture == "split_full"
+            architecture in {"shared_heads", "single_task_age", "split_full"}
             and seed == 40
             and holdout == "original_baseline"
         ):
@@ -163,6 +163,11 @@ class GeneralisationReportTests(unittest.TestCase):
             np.savez_compressed(
                 run_dir / "age_embeddings_best.npz",
                 embeddings=rng.normal(size=(12, 8)),
+                representation_type=np.asarray(
+                    "age_projection"
+                    if architecture == "split_full"
+                    else "age_branch_features"
+                ),
             )
             pd.DataFrame({
                 "developmental_stage": ["adult", "juvenile"] * 6,
@@ -237,6 +242,13 @@ class GeneralisationReportTests(unittest.TestCase):
                     self.assertTrue(
                         (output / "figures" / f"{figure}.{extension}").is_file()
                     )
+            embedding_source = pd.read_csv(
+                output / "figures" / "figure_e_embedding_diagnostics_source.csv"
+            )
+            self.assertEqual(
+                set(embedding_source["architecture"]),
+                {"shared_heads", "single_task_age", "split_full"},
+            )
             summary = (output / "results_summary.md").read_text(
                 encoding="utf-8"
             )

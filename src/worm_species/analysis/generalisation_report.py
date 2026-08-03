@@ -784,72 +784,148 @@ def plot_embedding_diagnostics(
     candidates = candidates[
         candidates["embedding_path"].map(lambda value: Path(value).is_file())
     ]
+    if "holdout" in candidates:
+        candidates = candidates[
+            candidates["holdout"].eq("original_baseline")
+        ]
     if candidates.empty:
         return False
-    candidates["_priority"] = candidates["architecture"].map(
-        lambda value: 0 if value == "split_full" else 1
+
+    # Select the backbone/seed pair with the broadest matched architecture
+    # coverage. Prefer the established ConvNeXt/seed-40 paper comparison when
+    # coverage ties, then show every architecture available for that pair.
+    coverage = (
+        candidates.groupby(["model", "seed"], dropna=False)
+        ["architecture"].nunique().reset_index(name="architecture_count")
     )
-    row = candidates.sort_values(
-        ["_priority", "architecture", "seed"]
+    coverage["_model_priority"] = coverage["model"].map(
+        lambda value: 0 if value == "convnext_base" else 1
+    )
+    coverage["_seed_priority"] = coverage["seed"].map(
+        lambda value: 0 if value == 40 else 1
+    )
+    selected = coverage.sort_values(
+        ["architecture_count", "_model_priority", "_seed_priority", "model", "seed"],
+        ascending=[False, True, True, True, True],
     ).iloc[0]
-    run_dir = Path(row["run_dir"])
-    metadata_path = run_dir / "age_embeddings_best_metadata.csv"
-    if not metadata_path.is_file():
-        return False
-    embeddings = np.load(
-        run_dir / "age_embeddings_best.npz"
-    )["embeddings"]
-    metadata = pd.read_csv(metadata_path)
-    if len(embeddings) != len(metadata) or len(embeddings) < 3:
-        return False
-    reducer = PCA(
-        n_components=2,
-        svd_solver="randomized",
-        random_state=2026,
+    candidates = candidates[
+        candidates["model"].eq(selected["model"])
+        & candidates["seed"].eq(selected["seed"])
+    ].copy()
+    order = {name: index for index, name in enumerate(ARCHITECTURE_ORDER)}
+    candidates["_architecture_order"] = candidates["architecture"].map(
+        lambda value: order.get(value, len(order))
     )
-    coordinates = reducer.fit_transform(embeddings)
-    fig, axes = plt.subplots(1, 2, figsize=(15, 6))
-    for ax, column, title in (
-        (axes[0], "developmental_stage", "Developmental stage"),
-        (axes[1], "species", "Species"),
-    ):
-        values = metadata[column].fillna("<MISSING>").astype(str)
-        for index, value in enumerate(sorted(values.unique())):
-            mask = values.eq(value).to_numpy()
-            ax.scatter(
-                coordinates[mask, 0],
-                coordinates[mask, 1],
-                s=16,
-                alpha=0.65,
-                color=PALETTE[index % len(PALETTE)],
-                label=value,
-            )
-        ax.set_title(title)
-        ax.set_xlabel("PCA component 1")
-        ax.set_ylabel("PCA component 2")
-        ax.legend(fontsize=6, frameon=False)
+    candidates = (
+        candidates.sort_values(["_architecture_order", "architecture", "run_dir"])
+        .drop_duplicates("architecture", keep="first")
+    )
+
+    valid_rows = []
+    source_frames = []
+    parameters = []
+    for _, row in candidates.iterrows():
+        run_dir = Path(row["run_dir"])
+        metadata_path = run_dir / "age_embeddings_best_metadata.csv"
+        if not metadata_path.is_file():
+            continue
+        archive = np.load(run_dir / "age_embeddings_best.npz")
+        embeddings = archive["embeddings"]
+        metadata = pd.read_csv(metadata_path)
+        if len(embeddings) != len(metadata) or len(embeddings) < 3:
+            continue
+        representation_type = (
+            str(archive["representation_type"].item())
+            if "representation_type" in archive.files
+            else "age_projection_legacy"
+        )
+        reducer = PCA(
+            n_components=2,
+            svd_solver="randomized",
+            random_state=2026,
+        )
+        coordinates = reducer.fit_transform(embeddings)
+        valid_rows.append((row, metadata, coordinates, representation_type))
+        source = metadata.copy()
+        source["pca_component_1"] = coordinates[:, 0]
+        source["pca_component_2"] = coordinates[:, 1]
+        source["architecture"] = row["architecture"]
+        source["model"] = row["model"]
+        source["seed"] = int(row["seed"])
+        source["representation_type"] = representation_type
+        source_frames.append(source)
+        parameters.append({
+            "architecture": row["architecture"],
+            "model": row["model"],
+            "seed": int(row["seed"]),
+            "representation_type": representation_type,
+            "explained_variance_ratio": (
+                reducer.explained_variance_ratio_.tolist()
+            ),
+        })
+    if not valid_rows:
+        return False
+
+    fig, axes = plt.subplots(
+        len(valid_rows), 2,
+        figsize=(15, max(6, 4.2 * len(valid_rows))),
+        squeeze=False,
+    )
+    for row_index, (row, metadata, coordinates, representation_type) in enumerate(valid_rows):
+        for column_index, (column, title) in enumerate((
+            ("developmental_stage", "Developmental stage"),
+            ("species", "Species"),
+        )):
+            ax = axes[row_index, column_index]
+            values = metadata[column].fillna("<MISSING>").astype(str)
+            for value_index, value in enumerate(sorted(values.unique())):
+                mask = values.eq(value).to_numpy()
+                ax.scatter(
+                    coordinates[mask, 0],
+                    coordinates[mask, 1],
+                    s=16,
+                    alpha=0.65,
+                    color=PALETTE[value_index % len(PALETTE)],
+                    label=value,
+                )
+            if row_index == 0:
+                ax.set_title(title)
+            ax.set_xlabel("PCA component 1")
+            ax.set_ylabel("PCA component 2")
+            ax.legend(fontsize=5, frameon=False, ncol=2)
+        axes[row_index, 0].text(
+            -0.14, 0.5,
+            f"{row['architecture']}\n{representation_type}",
+            transform=axes[row_index, 0].transAxes,
+            rotation=90,
+            ha="center",
+            va="center",
+            fontsize=8,
+        )
     fig.suptitle(
-        f"Descriptive age-embedding projection: "
-        f"{row['architecture']}, seed {row['seed']}\n"
+        "Descriptive representation comparison: "
+        f"{selected['model']}, seed {int(selected['seed'])}\n"
         "PCA randomized solver, n_components=2, random_state=2026; "
-        "visual separation is not formal evidence"
+        "each row is fitted separately and visual separation is not formal evidence"
     )
     fig.tight_layout()
     _save_figure(fig, path)
-    parameters = {
+    pd.concat(source_frames, ignore_index=True).to_csv(
+        path.with_name(path.name + "_source.csv"), index=False
+    )
+    parameter_payload = {
         "method": "PCA",
         "n_components": 2,
         "svd_solver": "randomized",
         "random_state": 2026,
-        "architecture": row["architecture"],
-        "seed": int(row["seed"]),
-        "explained_variance_ratio": (
-            reducer.explained_variance_ratio_.tolist()
-        ),
+        "selection": "maximum matched architecture coverage; prefer convnext_base and seed 40 on ties",
+        "selected_model": selected["model"],
+        "selected_seed": int(selected["seed"]),
+        "architectures": parameters,
         "interpretation": "descriptive only",
     }
     path.with_name(path.name + "_parameters.json").write_text(
-        json.dumps(parameters, indent=2) + "\n",
+        json.dumps(parameter_payload, indent=2) + "\n",
         encoding="utf-8",
     )
     return True

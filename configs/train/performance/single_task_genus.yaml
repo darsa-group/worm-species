@@ -1,0 +1,15 @@
+extends: _base.yaml
+
+model:
+  multitask_architecture: single_task
+  target_task: genus
+  pooling: {type: global_average, dropout: 0.1}
+
+multi_task:
+  selection_metric: genus_individual_macro_f1
+
+training:
+  gradient_diagnostics: {enabled: false, interval_steps: 100}
+
+wandb: {group: performance-single-task-genus, tags: [performance, single-task, genus]}
+slurm: {planning: {run_name_prefix: single_task_genus}}

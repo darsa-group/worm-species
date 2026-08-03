@@ -1,0 +1,15 @@
+extends: _base.yaml
+
+model:
+  multitask_architecture: single_task
+  target_task: species
+  pooling: {type: global_average, dropout: 0.1}
+
+multi_task:
+  selection_metric: species_individual_macro_f1
+
+training:
+  gradient_diagnostics: {enabled: false, interval_steps: 100}
+
+wandb: {group: performance-single-task-species, tags: [performance, single-task, species]}
+slurm: {planning: {run_name_prefix: single_task_species}}

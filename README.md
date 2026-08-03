@@ -181,3 +181,32 @@ make generalisation-report
 
 Ordinary random splits primarily measure interpolation. The structured
 holdouts are the relevant evidence for biological generalisation.
+
+## Complete Genome performance comparison
+
+The complete performance launcher includes matched shared-head, single-task
+genus/species/age, split taxonomy-age, isolated mechanism, and full-model
+configurations. Every configuration uses the three paper seeds, three
+backbones, the original split, and four structured holdouts. Render and inspect
+all 630 run specifications without submitting:
+
+```bash
+make performance-genome-all-dry-run
+```
+
+Submit only after the dry run and runtime-checkout validation succeed:
+
+```bash
+make performance-genome-all-submit
+```
+
+The list can be restricted without editing the Makefile, for example
+`PERFORMANCE_ALL_CONFIGS="shared_heads single_task_age split_taxonomy_age"`.
+Each completed run saves its best-checkpoint representation, labels, and a
+manifest distinguishing projected age embeddings, age-branch features, and
+backbone features from models without an age head. Generate the tables,
+performance plots, and matched multi-architecture embedding figure with:
+
+```bash
+make performance-genome-report
+```

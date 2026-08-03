@@ -19,6 +19,8 @@ PERFORMANCE_RESULTS ?= outputs/performance
 PERFORMANCE_REPORT ?= outputs/performance_report
 PERFORMANCE_CLUSTER ?= configs/clusters/genome.yaml
 PERFORMANCE_ARTIFACTS ?= submissions/performance_full
+PERFORMANCE_ALL_ARTIFACTS ?= submissions/performance_all
+PERFORMANCE_ALL_CONFIGS ?= shared_heads single_task_genus single_task_species single_task_age split_taxonomy_age differential_lr staged_unfreezing multiview_inference multiview_training cross_species_age_batches genus_supcon taxonomy_consistency checkpoint_ensemble performance_full
 PERFORMANCE_GENOME_SOURCE ?= /home/devd/worm-species/wormsource2
 PERFORMANCE_GENOME_RESULTS ?= outputs_slurm
 PERFORMANCE_GENOME_REPORT ?= outputs/performance_genome_report
@@ -39,7 +41,7 @@ PAPER_TESTS := \
 	tests.test_generalisation_report \
 	tests.test_performance_features
 
-.PHONY: help ablation-pipeline paper-report adult-taxon-ablation-pipeline adult-taxon-report generalisation-validate generalisation-report performance-validate performance-genome-source-check performance-genome-dry-run performance-genome-submit performance-genome-report performance-report performance-local-smoke test
+.PHONY: help ablation-pipeline paper-report adult-taxon-ablation-pipeline adult-taxon-report generalisation-validate generalisation-report performance-validate performance-genome-source-check performance-genome-dry-run performance-genome-submit performance-genome-all-validate performance-genome-all-dry-run performance-genome-all-submit performance-genome-report performance-report performance-local-smoke test
 
 help: ## Show the paper-pipeline commands.
 	@echo "Worm Species paper pipeline"
@@ -57,6 +59,8 @@ help: ## Show the paper-pipeline commands.
 	@echo "  make performance-validate                 Validate the 3-backbone performance matrix."
 	@echo "  make performance-genome-dry-run           Render the Genome jobs without submitting."
 	@echo "  make performance-genome-submit            Validate and submit the Genome jobs."
+	@echo "  make performance-genome-all-dry-run       Render every performance family without submitting."
+	@echo "  make performance-genome-all-submit        Validate all families, then submit all of them."
 	@echo "  make performance-genome-report            Report completed Genome jobs from outputs_slurm."
 	@echo "  make performance-report                   Build individual-level performance outputs."
 	@echo "  make performance-local-smoke              Render and run a synthetic 5-epoch local simulation."
@@ -135,6 +139,57 @@ performance-genome-submit: performance-validate performance-genome-source-check 
 		--override slurm.paths.project_root="$(PERFORMANCE_GENOME_SOURCE)" \
 		--artifacts-dir "$(PERFORMANCE_ARTIFACTS)" \
 		--submit
+
+performance-genome-all-validate: ## Validate every performance family before any submission.
+	@failed=""; \
+	for name in $(PERFORMANCE_ALL_CONFIGS); do \
+		echo "Validating performance config: $$name"; \
+		if ! $(MAKE) --no-print-directory performance-validate \
+			PERFORMANCE_CONFIG="configs/train/performance/$$name.yaml"; then \
+			failed="$$failed $$name"; \
+		fi; \
+	done; \
+	if [ -n "$$failed" ]; then \
+		echo "Performance validation failed for:$$failed" >&2; \
+		exit 1; \
+	fi
+
+performance-genome-all-dry-run: performance-genome-all-validate ## Render all performance jobs without submitting.
+	@failed=""; \
+	for name in $(PERFORMANCE_ALL_CONFIGS); do \
+		echo "Rendering performance config: $$name"; \
+		if ! PYTHONPATH=.:src $(PYTHON) -m worm_species.slurm launch \
+			--config "configs/train/performance/$$name.yaml" \
+			--cluster-config "$(PERFORMANCE_CLUSTER)" \
+			--override slurm.paths.project_root="$(PERFORMANCE_GENOME_SOURCE)" \
+			--artifacts-dir "$(PERFORMANCE_ALL_ARTIFACTS)/$$name" \
+			--dry-run; then \
+			failed="$$failed $$name"; \
+		fi; \
+	done; \
+	if [ -n "$$failed" ]; then \
+		echo "Performance rendering failed for:$$failed" >&2; \
+		exit 1; \
+	fi
+
+performance-genome-all-submit: performance-genome-all-validate performance-genome-source-check ## Submit every validated performance family.
+	@failed=""; \
+	for name in $(PERFORMANCE_ALL_CONFIGS); do \
+		echo "Submitting performance config: $$name"; \
+		if ! PYTHONPATH=.:src $(PYTHON) -m worm_species.slurm launch \
+			--config "configs/train/performance/$$name.yaml" \
+			--cluster-config "$(PERFORMANCE_CLUSTER)" \
+			--override slurm.paths.project_root="$(PERFORMANCE_GENOME_SOURCE)" \
+			--artifacts-dir "$(PERFORMANCE_ALL_ARTIFACTS)/$$name" \
+			--submit; then \
+			failed="$$failed $$name"; \
+			echo "Inspect $(PERFORMANCE_ALL_ARTIFACTS)/$$name/submission_receipt.json and submitted_jobs.tsv" >&2; \
+		fi; \
+	done; \
+	if [ -n "$$failed" ]; then \
+		echo "Performance submission failed for:$$failed" >&2; \
+		exit 1; \
+	fi
 
 performance-genome-report: ## Aggregate completed Genome performance runs.
 	MPLCONFIGDIR=/tmp/mplconfig PYTHONPATH=.:src $(PYTHON) \

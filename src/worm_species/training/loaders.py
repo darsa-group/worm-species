@@ -354,6 +354,7 @@ def make_profile_loaders(cfg: dict, profile: TrainingProfile) -> LoaderBundle:
             else cfg["data"]["image_col"]
         ),
         "target_cols": target_cols,
+        "metadata_cols": all_target_cols,
         "label_to_index_by_task": label_to_index_by_task,
         "mask_col": cfg["data"].get("mask_col"),
         "crop_to_foreground": (
@@ -372,6 +373,7 @@ def make_profile_loaders(cfg: dict, profile: TrainingProfile) -> LoaderBundle:
             else image_col_for_dataset
         ),
         "target_cols": target_cols,
+        "metadata_cols": all_target_cols,
         "label_to_index_by_task": label_to_index_by_task,
         "mask_col": cfg["data"].get("mask_col"),
         "crop_to_foreground": (
