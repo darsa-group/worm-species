@@ -40,6 +40,7 @@ DEFAULT_TRANSFORMS = frozenset(
         "gaussian_blur_percent",
         "patch_shuffle",
         "resolution_loss",
+        "binary_mask",
         "composed",
     }
 )
@@ -81,6 +82,7 @@ def _canonical_condition(condition: dict[str, Any]) -> dict[str, Any]:
         "seed",
         "percent",
         "max_sigma",
+        "threshold",
         "operations",
     ):
         if key in raw:
@@ -93,6 +95,7 @@ def _canonical_condition(condition: dict[str, Any]) -> dict[str, Any]:
         "sigma",
         "percent",
         "max_sigma",
+        "threshold",
     }
     integer_parameters = {"diameter", "grid_size", "seed"}
     for key in float_parameters:

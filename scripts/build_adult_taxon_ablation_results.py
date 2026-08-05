@@ -79,6 +79,21 @@ def _hierarchy_weight(config: dict[str, Any]) -> float:
     return float(hierarchy.get("weight", 0.0))
 
 
+def _loss_recipe(config: dict[str, Any]) -> tuple[str, dict[str, float]]:
+    weights = dict(
+        ((config.get("multi_task", {}) or {}).get("loss_weights", {}) or {})
+    )
+    numeric = {
+        task: float(weights.get(task, 0.0))
+        for task in ("genus", "species", "age")
+    }
+    label = "_".join(
+        f"{task}-{numeric[task]:g}"
+        for task in ("genus", "species", "age")
+    )
+    return label, numeric
+
+
 def _control_definitions(
     config: dict[str, Any],
 ) -> dict[str, dict[str, Any]]:
@@ -115,11 +130,16 @@ def _collect_stage(
         controls = _control_definitions(config)
         configured_holdout = config.get("data_holdout", {}) or {}
         weight = _hierarchy_weight(config)
+        loss_recipe, loss_weights = _loss_recipe(config)
         frame = frame.copy()
         frame["model"] = (config.get("model", {}) or {}).get("name")
         frame["seed"] = config.get("seed")
         frame["hierarchy_loss_weight"] = weight
         frame["hierarchy_loss_label"] = f"h={weight:g}"
+        frame["loss_recipe"] = loss_recipe
+        frame["genus_weight"] = loss_weights["genus"]
+        frame["species_weight"] = loss_weights["species"]
+        frame["age_weight"] = loss_weights["age"]
         frame["training_regime"] = training_regime
         frame["run_dir"] = str(run_dir)
         for index, row in frame.iterrows():

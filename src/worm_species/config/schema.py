@@ -127,6 +127,8 @@ CONFIG_FIELDS: tuple[ConfigField, ...] = (
     _field("multi_task.loss_weights.*", int, float, range_description=">= 0", consumers=("losses",)),
     _field("multi_task.normalize_loss_by_active_tasks", bool, default=True, consumers=("losses",)),
     _field("multi_task.selection_metric", str, default="mean_macro_f1", consumers=("checkpoints",)),
+    _field("checkpointing.save_last", bool, default=True, consumers=("checkpoints", "evaluation")),
+    _field("wandb.focused_metrics", bool, default=False, consumers=("W&B epoch and test logging",)),
     _field("multi_task.hierarchy_loss.enabled", bool, default=False, consumers=("losses",)),
     _field("multi_task.hierarchy_loss.parent_task", str, default="genus", consumers=("losses",)),
     _field("multi_task.hierarchy_loss.child_task", str, default="species", consumers=("losses",)),

@@ -1,0 +1,52 @@
+# Publication baseline: 3 models x 30 seeds = 90 fits.
+extends: genome_ablation_baseline.yaml
+
+training:
+  val_interval: 1
+
+early_stopping:
+  enabled: true
+  mode: min
+  patience: 6
+  min_delta: 0.0001
+
+checkpointing:
+  save_last: false
+
+multi_task:
+  loss_weights: {genus: 1.0, species: 0.5, age: 2.0}
+  selection_metric: loss
+  hierarchy_loss: {enabled: false, parent_task: genus, child_task: species, weight: 0.0}
+
+wandb:
+  group: publication-30seed-baseline
+  tags: [publication, baseline, 30-seed, h0]
+  compact: true
+  focused_metrics: true
+  save_code: false
+  log_model: false
+
+sweep:
+  parameters:
+    seed: [40, 140, 240, 340, 440, 540, 640, 740, 840, 940, 1040, 1140, 1240, 1340, 1440, 1540, 1640, 1740, 1840, 1940, 2040, 2140, 2240, 2340, 2440, 2540, 2640, 2740, 2840, 2940]
+    model.name: [convnext_base, vit_b_16, resnet50]
+    multi_task.loss_weights:
+      - {genus: 1.0, species: 0.5, age: 2.0}
+    multi_task.hierarchy_loss:
+      - {enabled: false, parent_task: genus, child_task: species, weight: 0.0}
+  conditions:
+    - {name: original, feature: baseline, transform: original, strength: 0.0, parameters: {}}
+
+evaluation:
+  test_conditions: {enabled: false, conditions: [], evaluate_original_training: false}
+  condition_matrix: {enabled: false, conditions: [], write_reports: false}
+  data_holdout_controls: {enabled: false, definitions: []}
+
+output:
+  out_dir: publication_30seed_result/runs/baseline
+
+slurm:
+  planning:
+    experiment_type: genome_publication_30seed_baseline
+    external_expansion: sweep
+    clear_run_names: true

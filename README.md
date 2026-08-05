@@ -114,6 +114,72 @@ source images, transformed level images, hashes, and manifests are saved below
 `paper_result/figure_sources/`. The reproducible notebook is
 [`notebooks/worm_species_figures_tables_confusion_matrices.ipynb`](notebooks/worm_species_figures_tables_confusion_matrices.ipynb).
 
+For the seven requested model and ablation figures, use
+[`notebooks/holdouts_and_visual_combinations.ipynb`](notebooks/holdouts_and_visual_combinations.ipynb)
+or run:
+
+```bash
+make holdout-visual-report
+```
+
+The output contains: (1) test macro-F1 for every model and task; (2) a
+five-panel ConvNeXt visual-ablation figure, including Gaussian × colour/patch
+interactions; (3) a detailed ConvNeXt-Base species-ablation figure with Adult
+and Juvenile labeled separately; and (4) a ConvNeXt-Base per-species-stage
+overview of all data ablations. Figures 3–6 show target recall only. Figures
+3–4 use the normal model's sample seed SD as one shared unit. Chance is plotted at zero,
+the ablated point is `d_retained`, the normal point is `d_total`, and the gap is
+`d_ablation`, with `d_total = d_ablation + d_retained`. Figures 5–6 provide the
+matching raw-margin plots: `M_total = normal - chance`,
+`M_lost = normal - ablated`, and `M_retained = ablated - chance`, with
+`M_total = M_lost + M_retained`. Chance is derived as `1/K` from each task's
+saved class map under uniform random prediction, not hard-coded. They are polished plots,
+not metric tables; the underlying seed recalls and exact effects are saved as
+figure-source CSVs for reproducibility. The confirmed publication design uses
+30 seeds spaced from 40 through 2940. All
+seven figures are test-only: Figures 1–2
+read `test_*` metrics and Figures 3–6 require the independent test cohort.
+All seven also use only hierarchy loss `h=0` and loss weights
+`genus=1.0/species=0.5/age=2.0`. Figure 1 adds mean row-normalized
+ConvNeXt-Base genus/species/age confusion matrices, and Figure 7 shows the
+same ten transformations for five reproducibly sampled test worms.
+PNG/PDF/SVG outputs and exact
+plotted CSV inputs are written under
+`paper_result/notebook_holdout_visual_figures/`. Override the defaults with
+`HOLDOUT_VISUAL_MODEL=...` or `SPECIES_ABLATION=...` on the `make` command.
+
+## Confirmed 30-seed publication pipeline
+
+[`dev/genome_publication_30seed_pipeline.yaml`](dev/genome_publication_30seed_pipeline.yaml)
+is the single orchestration entry point for the confirmed design. It plans
+1,740 fits: 90 three-model baselines and ConvNeXt-Base-only visual,
+interaction, full-data control, and taxon-stage holdout stages. Every run uses
+validation total weighted loss for early stopping and best-checkpoint
+selection, retains only `best_model.pt`, and reports test results only.
+
+```bash
+# Safe default: render the full dependency chain without submitting.
+make publication-pipeline
+
+# Read filesystem completion state.
+make publication-status
+
+# Explicit initial submission.
+make publication-pipeline PUBLICATION_PIPELINE_MODE=submit
+
+# Explicit recovery submission; completed run IDs skip before cache staging.
+make publication-resume
+
+# Build Figures 1-7 and the auditable publication bundle.
+make publication-report
+```
+
+The bundle under `publication_30seed_result/publication_bundle/` contains
+PNG/PDF/SVG figures, figure-source CSVs, exact test predictions, and checksum
+inventories for best checkpoints, resolved configs, split files, label maps,
+metrics, and training histories. The implementation checklist is
+[`PUBLICATION_PIPELINE_TASKS.md`](PUBLICATION_PIPELINE_TASKS.md).
+
 Holdout runs report both the cohort removed from train/validation and the
 independent matching test cohort. Corresponding baseline checkpoints are
 evaluated on the exact same cohorts. Resolution plots likewise compare matched

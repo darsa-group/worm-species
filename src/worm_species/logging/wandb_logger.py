@@ -61,6 +61,10 @@ class WandbLogger:
             isinstance(wandb_cfg, Mapping)
             and wandb_cfg.get("compact", False)
         )
+        self.focused = bool(
+            isinstance(wandb_cfg, Mapping)
+            and wandb_cfg.get("focused_metrics", False)
+        )
 
     @property
     def enabled(self) -> bool:
@@ -110,8 +114,18 @@ class WandbLogger:
             "epoch": int(epoch),
             "learning_rate": float(learning_rate),
         }
-        payload.update(numeric_metrics("train", train_metrics))
-        payload.update(numeric_metrics("val", val_metrics))
+        if self.focused:
+            if "loss" in train_metrics:
+                payload["train/loss"] = float(train_metrics["loss"])
+            if "loss" in val_metrics:
+                payload["val/loss"] = float(val_metrics["loss"])
+            for task in ("genus", "species", "age"):
+                key = f"{task}_macro_f1"
+                if key in val_metrics:
+                    payload[f"val/{key}"] = float(val_metrics[key])
+        else:
+            payload.update(numeric_metrics("train", train_metrics))
+            payload.update(numeric_metrics("val", val_metrics))
         self._log(payload)
         return payload
 
@@ -147,16 +161,27 @@ class WandbLogger:
             train_name, test_name
         )
         self._test_conditions.add(test_name)
+        selected_metrics = metrics
+        if self.focused:
+            focused_keys = {
+                "loss", "mean_macro_f1",
+                *(f"{task}_{metric}" for task in ("genus", "species", "age")
+                  for metric in ("macro_f1", "recall")),
+            }
+            selected_metrics = {
+                key: value for key, value in metrics.items()
+                if key in focused_keys
+            }
         payload: dict[str, Any] = {
             "train_condition": train_name,
             "test_condition": test_name,
             "condition_relation": relation,
-            **numeric_metrics(f"test/{test_name}", metrics),
+            **numeric_metrics(f"test/{test_name}", selected_metrics),
         }
         if preserve_legacy_alias is None:
             preserve_legacy_alias = test_name == "original"
         if preserve_legacy_alias:
-            payload.update(numeric_metrics("test", metrics))
+            payload.update(numeric_metrics("test", selected_metrics))
         self._log(payload)
 
         if update_summary and test_name == "original":

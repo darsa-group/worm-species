@@ -237,7 +237,8 @@ def condition_overrides(condition: dict) -> list[str]:
     ]
     for key in (
         "retention", "order", "diameter", "sigma_colour", "sigma_space",
-        "sigma", "grid_size", "seed", "percent", "max_sigma", "operations",
+        "sigma", "grid_size", "seed", "percent", "max_sigma", "threshold",
+        "operations",
     ):
         if key in condition:
             lines.append(f"input_condition.{key}={format_override(condition[key])}")
