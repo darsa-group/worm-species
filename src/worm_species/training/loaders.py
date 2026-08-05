@@ -35,6 +35,8 @@ class LoaderBundle:
     split_summary: dict
     train_df: object
     target_cols: dict
+    test_df: object | None = None
+    group_col: str | None = None
     test_loader_context: dict | None = None
     data_holdout_loader: DataLoader | None = None
     data_holdout_loaders: dict[str, DataLoader] | None = None
@@ -95,6 +97,7 @@ def get_input_condition(cfg: dict) -> dict:
         "seed",
         "percent",
         "max_sigma",
+        "threshold",
         "operations",
     }
     for key in parameter_keys:
@@ -133,6 +136,10 @@ def get_input_condition(cfg: dict) -> dict:
         condition.update(
             grid_size=int(condition["grid_size"]),
             seed=int(condition.get("seed", cfg.get("seed", 0))),
+        )
+    elif transform_name == "binary_mask":
+        condition["threshold"] = float(
+            condition.get("threshold", 5.0 / 255.0)
         )
     elif transform_name == "composed":
         operations = condition.get("operations")
@@ -485,6 +492,8 @@ def make_profile_loaders(cfg: dict, profile: TrainingProfile) -> LoaderBundle:
         split_summary=split_summary,
         train_df=train_df,
         target_cols=target_cols,
+        test_df=test_df,
+        group_col=group_col,
         test_loader_context=context,
         data_holdout_loader=data_holdout_loader,
         data_holdout_loaders=data_holdout_loaders or None,

@@ -20,6 +20,7 @@ KNOWN_TRANSFORMS = frozenset({
     "gaussian_blur_percent",
     "patch_shuffle",
     "resolution_loss",
+    "binary_mask",
     "composed",
 })
 _ABSENT = object()
@@ -476,6 +477,11 @@ def _validate_condition_object(
             ))
         else:
             _number(issues, percent_path, percent, minimum=0, maximum=100)
+    elif transform == "binary_mask":
+        threshold, threshold_path = parameter("threshold", 5.0 / 255.0)
+        _number(
+            issues, threshold_path, threshold, minimum=0, maximum=1
+        )
     elif transform == "bilateral_filter":
         resolved: dict[str, tuple[Any, str]] = {}
         for key in ("diameter", "sigma_colour", "sigma_space"):
@@ -705,7 +711,11 @@ def _validate_tasks(config: dict[str, Any], issues: list[ValidationIssue]) -> No
                 "at least one selected task weight must be greater than zero",
             ))
     selection = multi.get("selection_metric", "mean_macro_f1")
-    allowed_metrics = {"mean_macro_f1", *(f"{task}_macro_f1" for task in target_cols)}
+    allowed_metrics = {
+        "loss",
+        "mean_macro_f1",
+        *(f"{task}_macro_f1" for task in target_cols),
+    }
     if isinstance(selection, str) and selection not in allowed_metrics:
         issues.append(ValidationIssue(
             "multi_task.selection_metric", f"must be one of {sorted(allowed_metrics)!r}"

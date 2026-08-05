@@ -67,6 +67,34 @@ class ChannelShuffle:
         return f"{self.__class__.__name__}(order={self.order})"
 
 
+class BinaryForegroundMask:
+    """Replace RGB values with a three-channel binary foreground silhouette."""
+
+    def __init__(self, threshold: float = 5.0 / 255.0):
+        self.threshold = float(threshold)
+        if not 0.0 <= self.threshold <= 1.0:
+            raise ValueError(
+                "Binary-mask threshold must be in [0, 1], got "
+                f"{self.threshold}."
+            )
+
+    def __call__(self, image: torch.Tensor) -> torch.Tensor:
+        if not torch.is_tensor(image):
+            raise TypeError(
+                "BinaryForegroundMask must be applied after transforms.ToTensor()."
+            )
+        if image.ndim != 3 or image.shape[0] != 3:
+            raise ValueError(
+                "Expected an RGB tensor with shape [3, H, W], got "
+                f"{tuple(image.shape)}."
+            )
+        foreground = image.amax(dim=0, keepdim=True).gt(self.threshold)
+        return foreground.to(dtype=image.dtype).expand_as(image).clone()
+
+    def __repr__(self) -> str:
+        return f"{self.__class__.__name__}(threshold={self.threshold:.6f})"
+
+
 class TensorGaussianBlur:
     """Gaussian smoothing applied before ImageNet normalisation."""
 
@@ -269,6 +297,7 @@ def _condition_parameters(condition: dict) -> dict:
         "seed",
         "percent",
         "max_sigma",
+        "threshold",
         "operations",
     ):
         if key in condition:
@@ -339,6 +368,10 @@ def build_condition_operations(
         operations.append(PatchShuffle(
             grid_size=int(parameters["grid_size"]),
             seed=int(parameters.get("seed", 0)),
+        ))
+    elif transform_name == "binary_mask":
+        operations.append(BinaryForegroundMask(
+            threshold=float(parameters.get("threshold", 5.0 / 255.0)),
         ))
     else:
         raise ValueError(f"Unsupported input transform: {transform_name!r}.")

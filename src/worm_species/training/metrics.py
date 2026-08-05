@@ -18,8 +18,14 @@ def safe_metric(
     return float(metric_fn(y_true, y_pred))
 
 
-def score_for_selection(metrics: dict, selection_metric: str) -> float:
+def score_for_selection(
+    metrics: dict,
+    selection_metric: str,
+    mode: str = "max",
+) -> float:
+    if mode not in {"min", "max"}:
+        raise ValueError("selection mode must be 'min' or 'max'")
     value = float(metrics.get(selection_metric, float("nan")))
     if math.isnan(value):
-        return -float("inf")
+        return -float("inf") if mode == "max" else float("inf")
     return value

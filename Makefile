@@ -7,9 +7,15 @@ PAPER_RESULT ?= paper_result
 SPLIT_ROOT ?= .
 DATA_ROOT ?= ../petridish-worm-images
 REPORT_STYLE ?= dev/paper_report_style.yaml
+HOLDOUT_VISUAL_RESULT ?= paper_result/notebook_holdout_visual_figures
+HOLDOUT_VISUAL_MODEL ?= convnext_base
+SPECIES_ABLATION ?= Aporrectodea_longa
 ADULT_TAXON_PIPELINE_CONFIG ?= dev/genome_adult_taxon_ablation_pipeline.yaml
 ADULT_TAXON_PIPELINE_MODE ?= dry-run
 ADULT_TAXON_RESULT ?= adult_taxon_ablation_result
+PUBLICATION_PIPELINE_CONFIG ?= dev/genome_publication_30seed_pipeline.yaml
+PUBLICATION_PIPELINE_MODE ?= dry-run
+PUBLICATION_RESULT ?= publication_30seed_result
 
 PAPER_TESTS := \
 	tests.test_paper_ablation_pipeline \
@@ -19,9 +25,11 @@ PAPER_TESTS := \
 	tests.test_data_transforms \
 	tests.test_config_validation \
 	tests.test_models \
-	tests.test_training_losses
+	tests.test_training_losses \
+	tests.test_holdout_visual_notebook \
+	tests.test_publication_30seed_pipeline
 
-.PHONY: help ablation-pipeline paper-report adult-taxon-ablation-pipeline adult-taxon-report test
+.PHONY: help ablation-pipeline paper-report holdout-visual-report adult-taxon-ablation-pipeline adult-taxon-report publication-pipeline publication-resume publication-status publication-report test
 
 help: ## Show the paper-pipeline commands.
 	@echo "Worm Species paper pipeline"
@@ -30,10 +38,17 @@ help: ## Show the paper-pipeline commands.
 	@echo "  make ablation-pipeline PIPELINE_MODE=submit"
 	@echo "                                             Submit its dependency chain."
 	@echo "  make paper-report                         Rebuild completed-run paper outputs."
+	@echo "  make holdout-visual-report                Build the seven model and ablation figures."
 	@echo "  make adult-taxon-ablation-pipeline        Dry-run Adult/Juvenile combinations."
 	@echo "  make adult-taxon-ablation-pipeline ADULT_TAXON_PIPELINE_MODE=submit"
 	@echo "                                             Submit its 360-fit dependency chain."
 	@echo "  make adult-taxon-report                   Rebuild taxon-stage ablation figures."
+	@echo "  make publication-pipeline                 Dry-run the confirmed 1,740-fit pipeline."
+	@echo "  make publication-pipeline PUBLICATION_PIPELINE_MODE=submit"
+	@echo "                                             Submit it explicitly."
+	@echo "  make publication-resume                   Explicitly resubmit; completed run IDs skip."
+	@echo "  make publication-status                   Read local completion state only."
+	@echo "  make publication-report                   Build Figures 1-7 and publication metadata."
 	@echo "  make test                                 Run the focused paper-pipeline tests."
 	@echo
 	@echo "Dry-run is the default; scheduler submission is always explicit."
@@ -50,6 +65,16 @@ paper-report: ## Rebuild tables and figures from completed runs only.
 		--data-root "$(DATA_ROOT)" \
 		--style "$(REPORT_STYLE)"
 
+holdout-visual-report: ## Build the seven notebook model and ablation figures.
+	MPLCONFIGDIR=/tmp/mplconfig PYTHONPATH=.:src $(PYTHON) \
+		scripts/build_holdout_visual_notebook.py \
+		--paper-result "$(PAPER_RESULT)" \
+		--taxon-stage-result "$(ADULT_TAXON_RESULT)" \
+		--output-dir "$(HOLDOUT_VISUAL_RESULT)" \
+		--visual-model "$(HOLDOUT_VISUAL_MODEL)" \
+		--species-ablation "$(SPECIES_ABLATION)" \
+		--split-root "$(SPLIT_ROOT)" --data-root "$(DATA_ROOT)"
+
 adult-taxon-ablation-pipeline: ## Render or submit Adult/Juvenile combination ablations.
 	PYTHONPATH=.:src $(PYTHON) scripts/run_ablation_pipeline.py \
 		--pipeline "$(ADULT_TAXON_PIPELINE_CONFIG)" \
@@ -61,6 +86,28 @@ adult-taxon-report: ## Rebuild Adult/Juvenile combination figures and source tab
 		--paper-result "$(ADULT_TAXON_RESULT)" \
 		--split-root "$(SPLIT_ROOT)" \
 		--data-root "$(DATA_ROOT)" \
+		--style "$(REPORT_STYLE)"
+
+publication-pipeline: ## Dry-run by default; submit only with an explicit mode.
+	PYTHONPATH=.:src $(PYTHON) scripts/run_ablation_pipeline.py \
+		--pipeline "$(PUBLICATION_PIPELINE_CONFIG)" \
+		--mode "$(PUBLICATION_PIPELINE_MODE)"
+
+publication-resume: ## Resubmit the pipeline; completed best-checkpoint runs skip safely.
+	PYTHONPATH=.:src $(PYTHON) scripts/run_ablation_pipeline.py \
+		--pipeline "$(PUBLICATION_PIPELINE_CONFIG)" --mode submit
+
+publication-status: ## Read completed/failed run state without querying Slurm.
+	@for stage in baseline visual_ablation visual_interactions adult_taxon_baseline adult_taxon_holdouts; do \
+		PYTHONPATH=.:src $(PYTHON) -m worm_species.slurm status \
+			--results-root "$(PUBLICATION_RESULT)/runs/$$stage" --no-scheduler; \
+	done
+
+publication-report: ## Build all seven test-only figures and publication records.
+	MPLCONFIGDIR=/tmp/mplconfig PYTHONPATH=.:src $(PYTHON) \
+		scripts/build_publication_bundle.py \
+		--paper-result "$(PUBLICATION_RESULT)" \
+		--split-root "$(SPLIT_ROOT)" --data-root "$(DATA_ROOT)" \
 		--style "$(REPORT_STYLE)"
 
 test: ## Run the retained paper-pipeline verification surface.

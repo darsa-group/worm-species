@@ -164,6 +164,48 @@ def run_test_evaluation(
             title=f"Confusion Matrix ({checkpoint_name}, {task})",
         )
 
+    prediction_rows = []
+    test_frame = getattr(bundle, "test_df", None)
+    if test_frame is None:
+        test_frame = getattr(bundle.test_loader.dataset, "df", None)
+    group_col = getattr(bundle, "group_col", None)
+    for task in bundle.target_cols:
+        names = bundle.index_to_label_by_task[task]
+        task_true = true.get(task, [])
+        task_pred = pred.get(task, [])
+        source_positions = list(range(len(task_true)))
+        if test_frame is not None:
+            label_column = bundle.target_cols[task]
+            valid_names = set(bundle.label_to_index_by_task[task])
+            source_positions = [
+                index
+                for index, value in enumerate(test_frame[label_column])
+                if pd.notna(value) and str(value) in valid_names
+            ]
+        for evaluation_index, (true_index, pred_index) in enumerate(
+            zip(task_true, task_pred)
+        ):
+            row = {
+                "checkpoint": checkpoint_name,
+                "task": task,
+                "evaluation_index": evaluation_index,
+                "true_index": int(true_index),
+                "predicted_index": int(pred_index),
+                "true_label": names[int(true_index)],
+                "predicted_label": names[int(pred_index)],
+            }
+            if test_frame is not None and evaluation_index < len(source_positions):
+                source = test_frame.iloc[source_positions[evaluation_index]]
+                if group_col and group_col in source:
+                    row["individual_id"] = source[group_col]
+                for candidate in ("filename", "rel_path_seg", "rel_path_raw"):
+                    if candidate in source:
+                        row[candidate] = source[candidate]
+            prediction_rows.append(row)
+    pd.DataFrame(prediction_rows).to_csv(
+        out_dir / f"test_predictions_{checkpoint_name}.csv", index=False
+    )
+
     metrics_path = out_dir / f"test_metrics_{checkpoint_name}.json"
     save_json(test_metrics, metrics_path)
     if write_legacy_outputs:
@@ -321,13 +363,18 @@ def run_one(cfg: dict, profile: TrainingProfile) -> dict:
     early_enabled = early.get("enabled", True)
     patience = early.get("patience", 3)
     min_delta = early.get("min_delta", 0.001)
-    best = -float("inf")
-    best_epoch = 0
-    stale = 0
-    history = []
     selection = cfg.get("multi_task", {}).get(
         "selection_metric", "mean_macro_f1"
     )
+    selection_mode = str(
+        early.get("mode") or ("min" if selection == "loss" else "max")
+    ).lower()
+    if selection_mode not in {"min", "max"}:
+        raise ValueError("early_stopping.mode must be 'min' or 'max'")
+    best = float("inf") if selection_mode == "min" else -float("inf")
+    best_epoch = 0
+    stale = 0
+    history = []
     interval = cfg["training"].get("val_interval", 3)
 
     print(
@@ -402,7 +449,7 @@ def run_one(cfg: dict, profile: TrainingProfile) -> dict:
                 f"multi_task.selection_metric={selection!r} is not available. "
                 f"Available validation metrics: {list(val_metrics)}"
             )
-        score = score_for_selection(val_metrics, selection)
+        score = score_for_selection(val_metrics, selection, selection_mode)
         print(
             f"[{run_name}] Epoch {epoch:03d}/{cfg['training']['epochs']} | "
             f"train loss {train_metrics['loss']:.4f} | "
@@ -419,7 +466,11 @@ def run_one(cfg: dict, profile: TrainingProfile) -> dict:
                 f"n={val_metrics[f'{task}_n']}"
             )
 
-        improved = score > best + min_delta
+        improved = (
+            score < best - min_delta
+            if selection_mode == "min"
+            else score > best + min_delta
+        )
         if improved or epoch == 1:
             best = score
             best_epoch = epoch
@@ -462,49 +513,50 @@ def run_one(cfg: dict, profile: TrainingProfile) -> dict:
             break
 
     pd.DataFrame(history).to_csv(out_dir / "history.csv", index=False)
-    payload = build_checkpoint_payload(
-        profile=profile,
-        model_state=model.state_dict(),
-        cfg=cfg,
-        label_to_index_by_task=bundle.label_to_index_by_task,
-        index_to_label_by_task=bundle.index_to_label_by_task,
-        best_val_score=best,
-        selection_metric=selection,
-        best_epoch=best_epoch,
-        colour_retention=colour_retention,
-        colour_percent=colour_percent,
-        training_condition=input_condition,
+    save_last = bool(
+        (cfg.get("checkpointing", {}) or {}).get("save_last", True)
     )
-    save_checkpoint(payload, out_dir / "last_model.pt")
     wandb_logger.update_best(
         best_epoch=best_epoch,
         best_val_score=best,
         selection_metric=selection,
     )
-    print(
-        f"[{run_name}] Last model saved"
-    )
-    # Evaluate the final checkpoint first, then the best checkpoint. This leaves
-    # ``model`` loaded with the best weights for stress and condition evaluation.
-    last_test_metrics, _, _ = run_test_evaluation(
-        checkpoint_name="last",
-        checkpoint_path=out_dir / "last_model.pt",
-        write_legacy_outputs=False,
-        run_name=run_name,
-        out_dir=out_dir,
-        model=model,
-        bundle=bundle,
-        criteria=criteria,
-        device=device,
-        use_amp=use_amp,
-        weights=weights,
-        normalize=normalize,
-        hierarchy_cfg=hierarchy_cfg,
-        matrix=matrix,
-        profile=profile,
-        wandb_logger=wandb_logger,
-        input_condition=input_condition,
-    )
+    last_test_metrics = {}
+    if save_last:
+        payload = build_checkpoint_payload(
+            profile=profile,
+            model_state=model.state_dict(),
+            cfg=cfg,
+            label_to_index_by_task=bundle.label_to_index_by_task,
+            index_to_label_by_task=bundle.index_to_label_by_task,
+            best_val_score=best,
+            selection_metric=selection,
+            best_epoch=best_epoch,
+            colour_retention=colour_retention,
+            colour_percent=colour_percent,
+            training_condition=input_condition,
+        )
+        save_checkpoint(payload, out_dir / "last_model.pt")
+        print(f"[{run_name}] Last model saved")
+        last_test_metrics, _, _ = run_test_evaluation(
+            checkpoint_name="last",
+            checkpoint_path=out_dir / "last_model.pt",
+            write_legacy_outputs=False,
+            run_name=run_name,
+            out_dir=out_dir,
+            model=model,
+            bundle=bundle,
+            criteria=criteria,
+            device=device,
+            use_amp=use_amp,
+            weights=weights,
+            normalize=normalize,
+            hierarchy_cfg=hierarchy_cfg,
+            matrix=matrix,
+            profile=profile,
+            wandb_logger=wandb_logger,
+            input_condition=input_condition,
+        )
     test_metrics, true, pred = run_test_evaluation(
         checkpoint_name="best",
         checkpoint_path=out_dir / "best_model.pt",
@@ -588,25 +640,26 @@ def run_one(cfg: dict, profile: TrainingProfile) -> dict:
             child_to_parent_matrix=matrix,
             wandb_logger=wandb_logger,
         )
-        stress = evaluate_test_cue_suppression(
-            cfg=cfg,
-            run_name=run_name,
-            out_dir=out_dir,
-            model=model,
-            checkpoint_name="last",
-            checkpoint_path=out_dir / "last_model.pt",
-            baseline_metrics=test_metrics,
-            test_loader_context=bundle.test_loader_context,
-            criteria=criteria,
-            target_cols=bundle.target_cols,
-            device=device,
-            use_amp=use_amp,
-            task_loss_weights=weights,
-            normalize_loss_by_active_tasks=normalize,
-            hierarchy_cfg=hierarchy_cfg,
-            child_to_parent_matrix=matrix,
-            wandb_logger=wandb_logger,
-        )
+        if save_last:
+            evaluate_test_cue_suppression(
+                cfg=cfg,
+                run_name=run_name,
+                out_dir=out_dir,
+                model=model,
+                checkpoint_name="last",
+                checkpoint_path=out_dir / "last_model.pt",
+                baseline_metrics=test_metrics,
+                test_loader_context=bundle.test_loader_context,
+                criteria=criteria,
+                target_cols=bundle.target_cols,
+                device=device,
+                use_amp=use_amp,
+                task_loss_weights=weights,
+                normalize_loss_by_active_tasks=normalize,
+                hierarchy_cfg=hierarchy_cfg,
+                child_to_parent_matrix=matrix,
+                wandb_logger=wandb_logger,
+            )
 
     condition_matrix = {"enabled": False, "n_conditions": 0, "n_task_rows": 0}
     evaluation = cfg.get("evaluation", {}) or {}
@@ -730,8 +783,9 @@ def run_one(cfg: dict, profile: TrainingProfile) -> dict:
         "best_val_score": best,
         "selection_metric": selection,
         f"best_test_{selection}": test_metrics.get(selection),
-        f"last_test_{selection}": last_test_metrics.get(selection),
     }
+    if save_last:
+        summary[f"last_test_{selection}"] = last_test_metrics.get(selection)
     if profile.loader_mode in {"colour", "condition"}:
         summary.update({
             "colour_retention": colour_retention,
@@ -782,6 +836,7 @@ def run_one(cfg: dict, profile: TrainingProfile) -> dict:
 
     print("\nBest-checkpoint test metrics:")
     print(test_metrics)
-    print("\nLast-checkpoint test metrics:")
-    print(last_test_metrics)
+    if save_last:
+        print("\nLast-checkpoint test metrics:")
+        print(last_test_metrics)
     return result

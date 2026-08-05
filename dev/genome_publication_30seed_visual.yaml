@@ -1,0 +1,56 @@
+# Matched train/validation/test visual ablations: 23 conditions x 30 seeds.
+extends: genome_visual_ablation.yaml
+
+training: {val_interval: 1}
+early_stopping: {enabled: true, mode: min, patience: 6, min_delta: 0.0001}
+checkpointing: {save_last: false}
+multi_task:
+  loss_weights: {genus: 1.0, species: 0.5, age: 2.0}
+  selection_metric: loss
+  hierarchy_loss: {enabled: false, parent_task: genus, child_task: species, weight: 0.0}
+wandb:
+  group: publication-30seed-visual
+  tags: [publication, visual-ablation, matched-train-test, 30-seed, h0]
+  compact: true
+  focused_metrics: true
+  save_code: false
+  log_model: false
+sweep:
+  parameters:
+    seed: [40, 140, 240, 340, 440, 540, 640, 740, 840, 940, 1040, 1140, 1240, 1340, 1440, 1540, 1640, 1740, 1840, 1940, 2040, 2140, 2240, 2340, 2440, 2540, 2640, 2740, 2840, 2940]
+    model.name: [convnext_base]
+    multi_task.loss_weights:
+      - {genus: 1.0, species: 0.5, age: 2.0}
+    multi_task.hierarchy_loss:
+      - {enabled: false, parent_task: genus, child_task: species, weight: 0.0}
+  conditions:
+    - {name: colour_000pct, feature: colour, transform: saturation, strength: 1.0, parameters: {retention: 0.0}}
+    - {name: binary_mask_only, feature: shape, transform: binary_mask, strength: 1.0, parameters: {threshold: 0.0196078431372549}}
+    - {name: patch_shuffle_2x2, feature: spatial_layout, transform: patch_shuffle, strength: 2, parameters: {grid_size: 2, seed: 2026}}
+    - {name: patch_shuffle_4x4, feature: spatial_layout, transform: patch_shuffle, strength: 4, parameters: {grid_size: 4, seed: 2026}}
+    - {name: patch_shuffle_8x8, feature: spatial_layout, transform: patch_shuffle, strength: 8, parameters: {grid_size: 8, seed: 2026}}
+    - {name: patch_shuffle_16x16, feature: spatial_layout, transform: patch_shuffle, strength: 16, parameters: {grid_size: 16, seed: 2026}}
+    - {name: gaussian_blur_002pct, feature: texture, transform: gaussian_blur_percent, strength: 2.0, parameters: {percent: 2, max_sigma: 64.0}}
+    - {name: gaussian_blur_005pct, feature: texture, transform: gaussian_blur_percent, strength: 5.0, parameters: {percent: 5, max_sigma: 64.0}}
+    - {name: gaussian_blur_010pct, feature: texture, transform: gaussian_blur_percent, strength: 10.0, parameters: {percent: 10, max_sigma: 64.0}}
+    - {name: gaussian_blur_025pct, feature: texture, transform: gaussian_blur_percent, strength: 25.0, parameters: {percent: 25, max_sigma: 64.0}}
+    - {name: gaussian_blur_040pct, feature: texture, transform: gaussian_blur_percent, strength: 40.0, parameters: {percent: 40, max_sigma: 64.0}}
+    - {name: gaussian_blur_050pct, feature: texture, transform: gaussian_blur_percent, strength: 50.0, parameters: {percent: 50, max_sigma: 64.0}}
+    - {name: gaussian_blur_060pct, feature: texture, transform: gaussian_blur_percent, strength: 60.0, parameters: {percent: 60, max_sigma: 64.0}}
+    - {name: gaussian_blur_075pct, feature: texture, transform: gaussian_blur_percent, strength: 75.0, parameters: {percent: 75, max_sigma: 64.0}}
+    - {name: gaussian_blur_090pct, feature: texture, transform: gaussian_blur_percent, strength: 90.0, parameters: {percent: 90, max_sigma: 64.0}}
+    - {name: gaussian_blur_100pct, feature: texture, transform: gaussian_blur_percent, strength: 100.0, parameters: {percent: 100, max_sigma: 64.0}}
+    - {name: resolution_loss_000pct, feature: spatial_detail, transform: resolution_loss, strength: 0.0, parameters: {percent: 0}}
+    - {name: resolution_loss_025pct, feature: spatial_detail, transform: resolution_loss, strength: 25.0, parameters: {percent: 25}}
+    - {name: resolution_loss_050pct, feature: spatial_detail, transform: resolution_loss, strength: 50.0, parameters: {percent: 50}}
+    - {name: resolution_loss_075pct, feature: spatial_detail, transform: resolution_loss, strength: 75.0, parameters: {percent: 75}}
+    - {name: resolution_loss_087.5pct, feature: spatial_detail, transform: resolution_loss, strength: 87.5, parameters: {percent: 87.5}}
+    - {name: resolution_loss_093.75pct, feature: spatial_detail, transform: resolution_loss, strength: 93.75, parameters: {percent: 93.75}}
+    - {name: resolution_loss_100pct, feature: spatial_detail, transform: resolution_loss, strength: 100.0, parameters: {percent: 100}}
+evaluation:
+  test_conditions: {enabled: false, conditions: [], evaluate_original_training: false}
+  condition_matrix: {enabled: false, conditions: [], write_reports: false}
+  data_holdout_controls: {enabled: false, definitions: []}
+output: {out_dir: publication_30seed_result/runs/visual_ablation}
+slurm:
+  planning: {experiment_type: genome_publication_30seed_visual, external_expansion: sweep, clear_run_names: true}

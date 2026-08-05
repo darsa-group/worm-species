@@ -563,9 +563,16 @@ def run_pipeline(pipeline_path: Path, mode: str) -> dict:
             )
             for spec in plan.run_specs
         })
-        if hierarchy_weights != [0.0, 0.2]:
+        required_hierarchy_weights = sorted(
+            float(value)
+            for value in pipeline.get(
+                "required_hierarchy_loss_weights", [0.0, 0.2]
+            )
+        )
+        if hierarchy_weights != required_hierarchy_weights:
             raise ValueError(
-                f"Stage {name!r} must resolve hierarchy weights [0.0, 0.2], "
+                f"Stage {name!r} must resolve hierarchy weights "
+                f"{required_hierarchy_weights}, "
                 f"got {hierarchy_weights}."
             )
         stage_artifacts = artifact_root / name

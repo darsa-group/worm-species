@@ -32,6 +32,15 @@ RESOLVED_CONFIG="${RESOLVED_CONFIG_DIR}/${RUN_ID}.yaml"
     exit 1
 }
 
+RUN_BACK_OUT="${RESULTS_ROOT}/${RUN_ID}"
+if [[ -f "$RUN_BACK_OUT/run_status.txt" ]] \
+    && [[ "$(<"$RUN_BACK_OUT/run_status.txt")" == "0" ]] \
+    && find "$RUN_BACK_OUT" -maxdepth 2 -type f -name best_model.pt -print -quit \
+        | grep -q .; then
+    echo "Run $RUN_ID is already complete with a best checkpoint; skipping."
+    exit 0
+fi
+
 if [[ -n "$CONDA_SH" ]]; then
     source "$CONDA_SH"
     conda activate "$CONDA_ENV"
@@ -148,7 +157,6 @@ fi
 
 JOB_TMP="${TMPDIR:-/tmp/${SLURM_JOB_ID}}"
 RUN_SCRATCH_OUT="${JOB_TMP}/worm_species/outputs/${RUN_ID}"
-RUN_BACK_OUT="${RESULTS_ROOT}/${RUN_ID}"
 mkdir -p "$RUN_SCRATCH_OUT" "$RUN_BACK_OUT"
 cp "$RUN_SPEC_FILE" "$RUN_SCRATCH_OUT/run_overrides.args"
 copy_results_back() {
