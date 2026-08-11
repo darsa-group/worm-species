@@ -2,7 +2,7 @@
 extends: genome_ablation_baseline.yaml
 
 training:
-  val_interval: 1
+  val_interval: 5
 
 early_stopping:
   enabled: true
