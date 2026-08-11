@@ -9,6 +9,7 @@ import pandas as pd
 
 from scripts.build_holdout_visual_notebook import (
     _model_only,
+    attach_taxon_individual_counts,
     build_holdout_visual_notebook_figures,
     pair_taxon_metrics,
     prepare_baseline_frame,
@@ -51,6 +52,32 @@ class HoldoutVisualNotebookTests(unittest.TestCase):
             ["Ablated training", "Full-data baseline"],
         )
         self.assertEqual(prepared["target_recall"].tolist(), [0.4, 0.6])
+
+    def test_taxon_counts_are_unique_individuals_overall_and_in_test(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            split_dir = root / "split_csv"
+            split_dir.mkdir()
+            for filename, barcodes in (
+                ("train_split.csv", ("train-1", "train-1", "train-2")),
+                ("val_split.csv", ("val-1",)),
+                ("test_split.csv", ("test-1", "test-1", "test-2")),
+            ):
+                pd.DataFrame({
+                    "barcode": list(barcodes),
+                    "genus": ["Aporrectodea"] * len(barcodes),
+                    "species_label": ["Aporrectodea_longa"] * len(barcodes),
+                    "life_stage": ["Adult"] * len(barcodes),
+                }).to_csv(split_dir / filename, index=False)
+            frame = pd.DataFrame({
+                "genus": ["Aporrectodea"],
+                "species": ["Aporrectodea_longa"],
+                "stage": ["Adult"],
+            })
+            counted, inventory = attach_taxon_individual_counts(frame, root)
+        self.assertEqual(counted.loc[0, "overall_individuals"], 5)
+        self.assertEqual(counted.loc[0, "test_individuals"], 2)
+        self.assertEqual(inventory.loc[0, "overall_individuals"], 5)
 
     def test_shared_variance_effects_are_additive(self) -> None:
         paired = pd.DataFrame({
@@ -271,6 +298,25 @@ class HoldoutVisualNotebookTests(unittest.TestCase):
                 metrics_dir.mkdir(parents=True)
                 pd.DataFrame(rows).to_csv(metrics_dir / "task_metrics.csv", index=False)
 
+    def _write_taxon_splits(self, root: Path) -> None:
+        split_dir = root / "split_csv"
+        split_dir.mkdir()
+        for split, filename in (
+            ("training", "train_split.csv"),
+            ("validation", "val_split.csv"),
+            ("test", "test_split.csv"),
+        ):
+            rows = []
+            for stage in ("Adult", "Juvenile"):
+                barcode = f"{split}-{stage.lower()}"
+                rows.extend({
+                    "barcode": barcode,
+                    "genus": "Aporrectodea",
+                    "species_label": "Aporrectodea_longa",
+                    "life_stage": stage,
+                } for _ in range(2))
+            pd.DataFrame(rows).to_csv(split_dir / filename, index=False)
+
     def test_pairing_keeps_f1_recall_and_paired_shift(self) -> None:
         metrics = pd.DataFrame({
             "training_regime": ["full_data_control", "adult_combo_withheld"],
@@ -342,9 +388,11 @@ class HoldoutVisualNotebookTests(unittest.TestCase):
             self._write_baseline_runs(paper_root)
             self._write_visual_runs(paper_root)
             self._write_taxon_runs(taxon_root)
+            self._write_taxon_splits(root)
 
             manifest = build_holdout_visual_notebook_figures(
-                paper_root, output_dir, taxon_root, visual_model="resnet18"
+                paper_root, output_dir, taxon_root, visual_model="resnet18",
+                split_root=root,
             )
             self.assertIn("representative_transformations", manifest["figures"])
 
@@ -380,6 +428,8 @@ class HoldoutVisualNotebookTests(unittest.TestCase):
             self.assertEqual(set(effect["task"]), {"genus", "species", "age"})
             self.assertEqual(set(effect["stage"]), {"Adult", "Juvenile"})
             self.assertEqual(set(effect["n_seeds"]), {3})
+            self.assertEqual(set(effect["overall_individuals"]), {3})
+            self.assertEqual(set(effect["test_individuals"]), {1})
             self.assertNotIn("macro_f1", taxon_plot_data)
             self.assertNotIn("mean_skill_retained", effect)
             self.assertTrue(effect[[
@@ -416,6 +466,15 @@ class HoldoutVisualNotebookTests(unittest.TestCase):
             ).read_text(encoding="utf-8"))
             self.assertEqual(figure_six_manifest["chance_formula"], "1/K")
             self.assertIn("label_to_index_by_task.json", figure_six_manifest["chance_source"])
+            self.assertEqual(figure_six_manifest["evaluation_unit"], "image")
+            self.assertEqual(
+                figure_six_manifest["reported_split"],
+                "independent test only",
+            )
+            self.assertEqual(
+                figure_six_manifest["individual_count_unit"],
+                "unique biological individual (barcode)",
+            )
 
     def test_notebook_is_valid_json_with_well_formed_code_cells(self) -> None:
         notebook = (
