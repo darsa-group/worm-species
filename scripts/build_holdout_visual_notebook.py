@@ -25,7 +25,12 @@ from matplotlib.ticker import PercentFormatter
 from PIL import Image
 
 from scripts.build_adult_taxon_ablation_results import collect_adult_taxon_metrics
-from scripts.build_paper_results import _loss_name, collect_runs
+from scripts.build_paper_results import (
+    _loss_name,
+    collect_runs,
+    dataset_composition_table,
+    load_split_frames,
+)
 from src.worm_species.data.transforms import build_split_transform
 
 
@@ -613,6 +618,38 @@ def prepare_taxon_stage_holdout_frame(metrics: pd.DataFrame) -> pd.DataFrame:
     return frame
 
 
+def attach_taxon_individual_counts(
+    frame: pd.DataFrame,
+    split_root: Path | None,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Attach unique-individual counts for each plotted species-stage cohort."""
+    inventory = dataset_composition_table(load_split_frames(split_root))
+    count_columns = [
+        "genus", "species", "stage", "individuals", "test_individuals",
+    ]
+    if inventory.empty:
+        empty_columns = [
+            "overall_individuals" if column == "individuals" else column
+            for column in count_columns
+        ]
+        return frame.copy(), pd.DataFrame(columns=empty_columns)
+    inventory = inventory[
+        inventory["stage"].astype(str).isin(("Adult", "Juvenile"))
+        & inventory["genus"].notna()
+        & inventory["species"].notna()
+    ][count_columns].copy()
+    inventory = inventory.rename(columns={"individuals": "overall_individuals"})
+    if frame.empty:
+        return frame.copy(), inventory
+    result = frame.merge(
+        inventory,
+        on=["genus", "species", "stage"],
+        how="left",
+        validate="many_to_one",
+    )
+    return result, inventory
+
+
 def pair_taxon_metrics(frame: pd.DataFrame, *, cohort: str = TEST_COHORT) -> pd.DataFrame:
     if frame.empty:
         return pd.DataFrame()
@@ -763,10 +800,44 @@ def shared_variance_effect_summary(
 def _recall_seed_data(paired: pd.DataFrame) -> pd.DataFrame:
     columns = [
         "model", "seed", "holdout", "cohort", "task", "genus", "species",
-        "stage", "combo_label", "chance", "baseline_target_recall",
-        "ablated_target_recall",
+        "stage", "combo_label", "overall_individuals", "test_individuals",
+        "chance", "baseline_target_recall", "ablated_target_recall",
     ]
     return paired[[column for column in columns if column in paired]].copy()
+
+
+def _individual_count_identity_columns(*columns: str) -> tuple[str, ...]:
+    return (*columns, "overall_individuals", "test_individuals")
+
+
+def _cohort_count_label(base: str, row: pd.Series) -> str:
+    overall = pd.to_numeric(row.get("overall_individuals"), errors="coerce")
+    test = pd.to_numeric(row.get("test_individuals"), errors="coerce")
+    if pd.isna(overall) or pd.isna(test):
+        return base
+    return (
+        f"{base}\n{int(overall):,} individuals overall; "
+        f"{int(test):,} in test"
+    )
+
+
+def _ablation_figure_details() -> dict[str, str]:
+    return {
+        "evaluation_unit": "image",
+        "reported_split": "independent test only",
+        "individual_count_unit": "unique biological individual (barcode)",
+        "individual_count_scope": "matching species-stage cohort",
+        "overall_individuals": "unique barcodes across training, validation, and test splits",
+        "test_individuals": "unique barcodes in the independent test split",
+    }
+
+
+def _ablation_figure_note(prefix: str) -> str:
+    return (
+        f"{prefix} Performance is image-level target recall on the independent "
+        "test split only; displayed counts are unique biological individuals "
+        "(barcodes) in each species-stage cohort."
+    )
 
 
 def _ordered_stages(values: Iterable[object]) -> list[str]:
@@ -839,7 +910,8 @@ def save_paired_estimation_figure(
     if paired.empty:
         return []
     effect_summary = shared_variance_effect_summary(
-        paired, identity_columns=("stage",)
+        paired,
+        identity_columns=_individual_count_identity_columns("stage"),
     )
     if effect_summary.empty:
         return []
@@ -859,7 +931,14 @@ def save_paired_estimation_figure(
         ax.set_title(TASK_LABELS[task], loc="left", fontweight="bold")
         ax.set_yticks(y)
         if task_index == 0:
-            ax.set_yticklabels(stages, fontsize=11, fontweight="bold")
+            stage_labels = []
+            for stage in stages:
+                rows = effect_summary[effect_summary["stage"].eq(stage)]
+                stage_labels.append(
+                    _cohort_count_label(stage, rows.iloc[0])
+                    if not rows.empty else stage
+                )
+            ax.set_yticklabels(stage_labels, fontsize=9.5, fontweight="bold")
             ax.set_ylabel("Life stage", labelpad=12)
         else:
             ax.tick_params(axis="y", labelleft=False)
@@ -882,8 +961,11 @@ def save_paired_estimation_figure(
     fig.suptitle(title, fontsize=16, fontweight="bold", y=0.99)
     fig.text(
         0.5, 0.018,
-        r"Target recall only. All positions use the normal model's sample SD: "
-        r"$d_{total}=d_{ablation}+d_{retained}$. The publication design uses 30 seeds per stage; guides mark $d=0.8$ and $d=2$.",
+        _ablation_figure_note(
+            r"All positions use the normal model's sample SD: "
+            r"$d_{total}=d_{ablation}+d_{retained}$. The publication design "
+            r"uses 30 seeds per stage; guides mark $d=0.8$ and $d=2$."
+        ),
         ha="center", fontsize=9,
     )
     fig.subplots_adjust(top=0.80, bottom=0.16, left=0.09, right=0.98, wspace=0.14)
@@ -904,6 +986,7 @@ def save_paired_estimation_figure(
             "inference": "descriptive effect sizes; no p-value or confidence interval",
             "cohort": TEST_COHORT,
             "split": "test",
+            **_ablation_figure_details(),
             **_paper_design_manifest(),
             **details,
         },
@@ -913,6 +996,7 @@ def save_paired_estimation_figure(
 def _raw_margin_summary(effect_summary: pd.DataFrame) -> pd.DataFrame:
     columns = [
         "combo_label", "genus", "species", "stage", "task", "n_seeds",
+        "overall_individuals", "test_individuals",
         "normal_mean_recall", "ablated_mean_recall", "chance",
         "number_of_classes", "chance_method", "m_total", "m_lost",
         "m_retained", "margin_additive_check_error",
@@ -986,6 +1070,7 @@ def _raw_margin_details() -> dict[str, object]:
         "inference": "descriptive margins; no p-value or confidence interval",
         "cohort": TEST_COHORT,
         "split": "test",
+        **_ablation_figure_details(),
         **_paper_design_manifest(),
     }
 
@@ -1000,7 +1085,8 @@ def save_species_margin_figure(
     if paired.empty:
         return []
     full_summary = shared_variance_effect_summary(
-        paired, identity_columns=("stage",)
+        paired,
+        identity_columns=_individual_count_identity_columns("stage"),
     )
     if full_summary.empty:
         return []
@@ -1022,7 +1108,14 @@ def save_species_margin_figure(
         ax.set_title(TASK_LABELS[task], loc="left", fontweight="bold")
         ax.set_yticks(y)
         if task_index == 0:
-            ax.set_yticklabels(stages, fontsize=11, fontweight="bold")
+            stage_labels = []
+            for stage in stages:
+                rows = summary[summary["stage"].eq(stage)]
+                stage_labels.append(
+                    _cohort_count_label(stage, rows.iloc[0])
+                    if not rows.empty else stage
+                )
+            ax.set_yticklabels(stage_labels, fontsize=9.5, fontweight="bold")
             ax.set_ylabel("Life stage", labelpad=12)
         else:
             ax.tick_params(axis="y", labelleft=False)
@@ -1048,7 +1141,10 @@ def save_species_margin_figure(
     )
     fig.text(
         0.5, 0.018,
-        r"ConvNeXt-Base target recall. $M_{total}=M_{lost}+M_{retained}$; chance is derived as $1/K$ from each task's saved class map.",
+        _ablation_figure_note(
+            r"$M_{total}=M_{lost}+M_{retained}$; chance is derived as $1/K$ "
+            r"from each task's saved class map."
+        ),
         ha="center", fontsize=9,
     )
     fig.subplots_adjust(top=0.80, bottom=0.16, left=0.09, right=0.98, wspace=0.14)
@@ -1073,7 +1169,9 @@ def species_effect_summary(
     """Shared-variance recall effects for every species-stage holdout."""
     return shared_variance_effect_summary(
         paired,
-        identity_columns=("combo_label", "genus", "species", "stage"),
+        identity_columns=_individual_count_identity_columns(
+            "combo_label", "genus", "species", "stage"
+        ),
     )
 
 
@@ -1120,7 +1218,14 @@ def save_all_species_effect_figure(
         ax.set_title(TASK_LABELS[task], loc="left", fontweight="bold")
         ax.set_yticks(y)
         if task_index == 0:
-            ax.set_yticklabels(combinations, fontsize=8.5)
+            labels = []
+            for combo in combinations:
+                rows = summary[summary["combo_label"].astype(str).eq(combo)]
+                labels.append(
+                    _cohort_count_label(combo, rows.iloc[0])
+                    if not rows.empty else combo
+                )
+            ax.set_yticklabels(labels, fontsize=7.6)
             ax.set_ylabel("Species-stage holdout", labelpad=12)
         else:
             ax.tick_params(axis="y", labelleft=False)
@@ -1147,7 +1252,11 @@ def save_all_species_effect_figure(
     )
     fig.text(
         0.5, 0.018,
-        r"Target recall only. Chance is 0; the ablated point is $d_{retained}$, the normal point is $d_{total}$, and their gap is $d_{ablation}$. All use the normal model's seed SD across the 30-seed publication design.",
+        _ablation_figure_note(
+            r"Chance is 0; the ablated point is $d_{retained}$, the normal "
+            r"point is $d_{total}$, and their gap is $d_{ablation}$. All use "
+            r"the normal model's seed SD across the 30-seed publication design."
+        ),
         ha="center", fontsize=9,
     )
     fig.subplots_adjust(top=0.87, bottom=0.08, left=0.18, right=0.98, wspace=0.12)
@@ -1171,6 +1280,7 @@ def save_all_species_effect_figure(
             "inference": "descriptive effect sizes; no p-value or confidence interval",
             "cohort": TEST_COHORT,
             "split": "test",
+            **_ablation_figure_details(),
             **_paper_design_manifest(),
             "holdouts": sorted(paired.get("holdout", pd.Series(dtype=str)).dropna().unique().tolist()),
         },
@@ -1221,7 +1331,14 @@ def save_all_species_margin_figure(
         ax.set_title(TASK_LABELS[task], loc="left", fontweight="bold")
         ax.set_yticks(y)
         if task_index == 0:
-            ax.set_yticklabels(combinations, fontsize=8.5)
+            labels = []
+            for combo in combinations:
+                rows = summary[summary["combo_label"].astype(str).eq(combo)]
+                labels.append(
+                    _cohort_count_label(combo, rows.iloc[0])
+                    if not rows.empty else combo
+                )
+            ax.set_yticklabels(labels, fontsize=7.6)
             ax.set_ylabel("Species-stage holdout", labelpad=12)
         else:
             ax.tick_params(axis="y", labelleft=False)
@@ -1247,7 +1364,10 @@ def save_all_species_margin_figure(
     )
     fig.text(
         0.5, 0.018,
-        r"$M_{total}=M_{lost}+M_{retained}$. Chance is derived separately for each task as $1/K$ under uniform random prediction.",
+        _ablation_figure_note(
+            r"$M_{total}=M_{lost}+M_{retained}$. Chance is derived separately "
+            r"for each task as $1/K$ under uniform random prediction."
+        ),
         ha="center", fontsize=9,
     )
     fig.subplots_adjust(top=0.87, bottom=0.08, left=0.18, right=0.98, wspace=0.12)
@@ -1398,6 +1518,9 @@ def build_holdout_visual_notebook_figures(
         require_loss_recipe=True,
     )
     paired = pair_taxon_metrics(taxon_frame)
+    paired, taxon_individual_counts = attach_taxon_individual_counts(
+        paired, split_root
+    )
     species_paired = paired[
         paired.get("species", pd.Series(index=paired.index, dtype=str)).astype(str).eq(species_ablation)
     ].copy() if not paired.empty else paired
@@ -1451,6 +1574,9 @@ def build_holdout_visual_notebook_figures(
         "baseline_rows": int(len(baseline_frame)),
         "taxon_stage_rows": int(len(taxon_frame)),
         "paired_taxon_rows": int(len(paired)),
+        "taxon_individual_counts": taxon_individual_counts.to_dict(
+            orient="records"
+        ),
         "species_paired_rows": int(len(species_paired)),
         "figures": figures,
     }
