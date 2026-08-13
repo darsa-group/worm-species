@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import unittest
 
+import numpy as np
 import pandas as pd
 import torch
 
 from src.worm_species.training.losses import build_criteria, hierarchy_consistency_loss
+from src.worm_species.training.metrics import classification_metric_summary
 
 
 class TrainingLossConfigurationTests(unittest.TestCase):
@@ -107,6 +109,33 @@ class HierarchyConsistencyLossTests(unittest.TestCase):
         loss.backward()
         self.assertTrue(torch.all(torch.isfinite(parent_logits.grad)))
         self.assertTrue(torch.all(torch.isfinite(child_logits.grad)))
+
+
+class ClassificationMetricSummaryTests(unittest.TestCase):
+    def test_target_metrics_include_hard_label_and_probability_diagnostics(self) -> None:
+        metrics = classification_metric_summary(
+            [0, 0, 1, 1],
+            [0, 1, 1, 1],
+            target_index=1,
+            target_probabilities=np.asarray([0.1, 0.6, 0.8, 0.9]),
+        )
+
+        self.assertEqual(metrics["target_tp"], 2)
+        self.assertEqual(metrics["target_fp"], 1)
+        self.assertEqual(metrics["target_fn"], 0)
+        self.assertEqual(metrics["target_tn"], 1)
+        self.assertAlmostEqual(metrics["target_precision"], 2.0 / 3.0)
+        self.assertAlmostEqual(metrics["target_recall"], 1.0)
+        self.assertAlmostEqual(metrics["target_specificity"], 0.5)
+        self.assertAlmostEqual(metrics["target_f1"], 0.8)
+        for key in (
+            "precision_macro", "recall_macro", "f1_macro",
+            "precision_micro", "recall_micro", "f1_micro",
+            "precision_weighted", "recall_weighted", "f1_weighted",
+            "target_roc_auc", "target_average_precision",
+            "target_brier_score", "target_ece_10bin",
+        ):
+            self.assertTrue(np.isfinite(metrics[key]), key)
 
 
 if __name__ == "__main__":

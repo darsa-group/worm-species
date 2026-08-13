@@ -13,6 +13,7 @@ from scripts.build_holdout_visual_notebook import (
     build_holdout_visual_notebook_figures,
     pair_taxon_metrics,
     prepare_baseline_frame,
+    prepare_biological_question_frame,
     prepare_taxon_stage_holdout_frame,
     shared_variance_effect_summary,
 )
@@ -100,6 +101,11 @@ class HoldoutVisualNotebookTests(unittest.TestCase):
         self.assertAlmostEqual(row["m_total"], 0.4)
         self.assertAlmostEqual(row["m_lost"], 0.2)
         self.assertAlmostEqual(row["m_retained"], 0.2)
+        self.assertAlmostEqual(row["m_lost_ci95_low"], 0.2)
+        self.assertAlmostEqual(row["m_lost_ci95_high"], 0.2)
+        for metric in ("m_total", "m_retained", "d_total", "d_ablation", "d_retained"):
+            self.assertLessEqual(row[f"{metric}_ci95_low"], row[metric])
+            self.assertGreaterEqual(row[f"{metric}_ci95_high"], row[metric])
         self.assertEqual(row["number_of_classes"], 2)
         self.assertEqual(
             row["chance_method"],
@@ -129,6 +135,84 @@ class HoldoutVisualNotebookTests(unittest.TestCase):
             prepared["loss_recipe"].tolist(),
             ["genus-1_species-0.5_age-2"],
         )
+
+    def test_biological_questions_use_fixed_test_predictions(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            split_dir = root / "split_csv"
+            split_dir.mkdir()
+            test_rows = pd.DataFrame({
+                "filename": ["longa-adult", "longa-juvenile", "other-adult", "other-juvenile"],
+                "barcode": ["a", "j", "oa", "oj"],
+                "genus": ["Aporrectodea"] * 4,
+                "species_label": [
+                    "Aporrectodea_longa", "Aporrectodea_longa",
+                    "Aporrectodea_rosea", "Aporrectodea_rosea",
+                ],
+                "life_stage": ["Adult", "Juvenile", "Adult", "Juvenile"],
+            })
+            test_rows.to_csv(split_dir / "test_split.csv", index=False)
+            test_rows.iloc[:1].to_csv(split_dir / "train_split.csv", index=False)
+            test_rows.iloc[:1].to_csv(split_dir / "val_split.csv", index=False)
+
+            baseline_dir = root / "baseline"
+            adult_dir = root / "adult_ablated"
+            juvenile_dir = root / "juvenile_ablated"
+            prediction_rows = pd.DataFrame({
+                "task": ["age"] * 4,
+                "filename": test_rows["filename"],
+                "true_label": test_rows["life_stage"],
+                "predicted_label": test_rows["life_stage"],
+            })
+            for run_dir, predictions in (
+                (baseline_dir, prediction_rows),
+                (adult_dir, prediction_rows.assign(
+                    predicted_label=["Juvenile", "Adult", "Adult", "Juvenile"]
+                )),
+                (juvenile_dir, prediction_rows.assign(
+                    predicted_label=["Juvenile", "Adult", "Adult", "Adult"]
+                )),
+            ):
+                run_dir.mkdir()
+                predictions.to_csv(run_dir / "test_predictions_best.csv", index=False)
+
+            rows = []
+            for stage, holdout, ablated_dir in (
+                ("Adult", "adult_aporrectodea_longa", adult_dir),
+                ("Juvenile", "juvenile_aporrectodea_longa", juvenile_dir),
+            ):
+                for system, run_dir in (
+                    ("Full-data baseline", baseline_dir),
+                    ("Ablated training", ablated_dir),
+                ):
+                    rows.append({
+                        "seed": 40,
+                        "holdout": holdout,
+                        "genus": "Aporrectodea",
+                        "species": "Aporrectodea_longa",
+                        "stage": stage,
+                        "system": system,
+                        "run_dir": str(run_dir),
+                    })
+
+            prepared = prepare_biological_question_frame(pd.DataFrame(rows), root)
+
+        self.assertEqual(
+            set(prepared["question"]),
+            {
+                "Direct withheld cohort",
+                "Adult removed → evaluate Juvenile",
+                "Juvenile removed → evaluate Adult",
+                "Within-genus spillover",
+            },
+        )
+        adult_to_juvenile = prepared[
+            prepared["question"].eq("Adult removed → evaluate Juvenile")
+        ].iloc[0]
+        self.assertEqual(adult_to_juvenile["task"], "age")
+        self.assertAlmostEqual(adult_to_juvenile["baseline_score"], 1.0)
+        self.assertAlmostEqual(adult_to_juvenile["ablated_score"], 0.0)
+        self.assertAlmostEqual(adult_to_juvenile["delta"], -1.0)
 
     def _base_config(
         self,
@@ -400,9 +484,9 @@ class HoldoutVisualNotebookTests(unittest.TestCase):
                 "figure_01_all_models_all_tasks",
                 "figure_02_convnext_visual_ablation",
                 "figure_03_species_ablation",
-                "figure_04_all_data_ablations",
                 "figure_05_species_ablation_raw_margins",
-                "figure_06_all_data_ablations_raw_margins",
+                "supplementary_figure_01_all_species_effects",
+                "supplementary_figure_02_all_species_raw_margins",
             )
             for stem in expected:
                 for extension in ("png", "pdf", "svg"):
@@ -416,11 +500,11 @@ class HoldoutVisualNotebookTests(unittest.TestCase):
             )
             self.assertEqual(set(summary["number_of_seeds"]), {3})
             effect = pd.read_csv(
-                output_dir / "figure_sources" / "figure_04_all_data_ablations"
+                output_dir / "figure_sources" / "supplementary_figure_01_all_species_effects"
                 / "shared_variance_effects.csv"
             )
             taxon_plot_data = pd.read_csv(
-                output_dir / "figure_sources" / "figure_04_all_data_ablations"
+                output_dir / "figure_sources" / "supplementary_figure_01_all_species_effects"
                 / "recall_seed_data.csv"
             )
             self.assertEqual(set(taxon_plot_data["model"]), {"convnext_base"})
@@ -434,6 +518,11 @@ class HoldoutVisualNotebookTests(unittest.TestCase):
             self.assertNotIn("mean_skill_retained", effect)
             self.assertTrue(effect[[
                 "d_total", "d_ablation", "d_retained"
+            ]].notna().all().all())
+            self.assertTrue(effect[[
+                "d_total_ci95_low", "d_total_ci95_high",
+                "d_ablation_ci95_low", "d_ablation_ci95_high",
+                "d_retained_ci95_low", "d_retained_ci95_high",
             ]].notna().all().all())
             additive_error = (
                 effect["d_total"]
@@ -459,9 +548,14 @@ class HoldoutVisualNotebookTests(unittest.TestCase):
                 - figure_five_margin["m_lost"]
                 - figure_five_margin["m_retained"]
             ).abs().lt(1e-10).all())
+            self.assertTrue(figure_five_margin[[
+                "m_total_ci95_low", "m_total_ci95_high",
+                "m_lost_ci95_low", "m_lost_ci95_high",
+                "m_retained_ci95_low", "m_retained_ci95_high",
+            ]].notna().all().all())
             figure_six_manifest = json.loads((
                 output_dir / "figure_sources"
-                / "figure_06_all_data_ablations_raw_margins"
+                / "supplementary_figure_02_all_species_raw_margins"
                 / "manifest.json"
             ).read_text(encoding="utf-8"))
             self.assertEqual(figure_six_manifest["chance_formula"], "1/K")
@@ -474,6 +568,15 @@ class HoldoutVisualNotebookTests(unittest.TestCase):
             self.assertEqual(
                 figure_six_manifest["individual_count_unit"],
                 "unique biological individual (barcode)",
+            )
+            self.assertEqual(
+                figure_six_manifest["interval_source"],
+                "variation across matched baseline/ablated training seeds",
+            )
+            self.assertFalse(figure_six_manifest["interval_is_class_based"])
+            self.assertEqual(
+                figure_six_manifest["chance_reference"],
+                "1/K from the saved task label map",
             )
 
     def test_notebook_is_valid_json_with_well_formed_code_cells(self) -> None:

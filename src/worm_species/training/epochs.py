@@ -27,6 +27,7 @@ def run_hierarchy_epoch(
     hierarchy_cfg: dict | None = None,
     child_to_parent_matrix: torch.Tensor | None = None,
     use_masked_labels: bool = True,
+    return_probabilities: bool = False,
 ):
     if train:
         model.train()
@@ -58,6 +59,7 @@ def run_hierarchy_epoch(
     hierarchy_losses = []
     all_true = {task: [] for task in tasks}
     all_pred = {task: [] for task in tasks}
+    all_probabilities = {task: [] for task in tasks}
 
     complete_exact_correct = 0
     complete_exact_total = 0
@@ -161,6 +163,13 @@ def run_hierarchy_epoch(
                     task_losses[task].append(float(loss_by_task[task].item()))
                 all_true[task].extend(y[task][valid].detach().cpu().numpy().tolist())
                 all_pred[task].extend(pred[valid].detach().cpu().numpy().tolist())
+                if return_probabilities:
+                    all_probabilities[task].append(
+                        torch.softmax(logits_by_task[task][valid], dim=1)
+                        .detach()
+                        .cpu()
+                        .numpy()
+                    )
 
         if complete_mask.any():
             complete_exact_total += int(complete_mask.sum().item())
@@ -208,4 +217,14 @@ def run_hierarchy_epoch(
         )
         metrics["complete_exact_match_n"] = int(complete_exact_total)
 
+    if return_probabilities:
+        probabilities = {
+            task: (
+                np.concatenate(chunks, axis=0)
+                if chunks
+                else np.empty((0, 0), dtype=float)
+            )
+            for task, chunks in all_probabilities.items()
+        }
+        return metrics, all_true, all_pred, probabilities
     return metrics, all_true, all_pred

@@ -12,5 +12,5 @@
 - [x] Save exact best-checkpoint test predictions and confusion matrices.
 - [x] Build a publication bundle with figures, figure sources, checkpoint/config/split/label-map checksums, environment, and Git provenance.
 - [x] Make reruns skip completed run IDs with a successful status and retained best checkpoint.
-- [ ] Run the 1,740 fits on Genome (not performed by repository validation).
-- [ ] Rebuild the final bundle after every stage is complete and visually inspect all seven figures.
+- [ ] Run the 1,890 fits on Genome, including the 150 resolution gap-fill fits (not performed by repository validation).
+- [ ] Rebuild the final bundle after every stage is complete and visually inspect every main and supplementary figure.

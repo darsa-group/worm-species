@@ -1,0 +1,30 @@
+# Focused cache + training path for only the five missing resolution levels.
+name: genome_publication_30seed_resolution_gapfill
+cluster_config: ../configs/clusters/genome.yaml
+paper_result_dir: ../publication_30seed_result
+dependency: afterok
+required_hierarchy_loss_weights: [0.0]
+
+base_cache:
+  enabled: true
+  source_stage: visual_ablation
+  directory_name: image_cache_publication_30seed_v1
+  cpus_per_task: 128
+  memory: 64G
+  time_limit: "04:00:00"
+
+condition_cache:
+  enabled: true
+  source_stages: [visual_ablation]
+  consumer_stages: [visual_ablation]
+  directory_name: image_condition_cache_publication_30seed_v1
+  transforms: [resolution_loss]
+  cpus_per_task: 128
+  memory: 64G
+  time_limit: "04:00:00"
+  max_active: 5
+
+stages:
+  - {name: visual_ablation, config: genome_publication_30seed_resolution_gapfill.yaml}
+
+report: {enabled: false}

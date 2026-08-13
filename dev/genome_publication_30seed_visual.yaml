@@ -1,4 +1,4 @@
-# Matched train/validation/test visual ablations: 23 conditions x 30 seeds.
+# Matched train/validation/test visual ablations: 28 conditions x 30 seeds.
 extends: genome_visual_ablation.yaml
 
 training: {val_interval: 1}
@@ -45,7 +45,12 @@ sweep:
     - {name: resolution_loss_050pct, feature: spatial_detail, transform: resolution_loss, strength: 50.0, parameters: {percent: 50}}
     - {name: resolution_loss_075pct, feature: spatial_detail, transform: resolution_loss, strength: 75.0, parameters: {percent: 75}}
     - {name: resolution_loss_087.5pct, feature: spatial_detail, transform: resolution_loss, strength: 87.5, parameters: {percent: 87.5}}
+    - {name: resolution_loss_090pct, feature: spatial_detail, transform: resolution_loss, strength: 90.0, parameters: {percent: 90}}
     - {name: resolution_loss_093.75pct, feature: spatial_detail, transform: resolution_loss, strength: 93.75, parameters: {percent: 93.75}}
+    - {name: resolution_loss_095pct, feature: spatial_detail, transform: resolution_loss, strength: 95.0, parameters: {percent: 95}}
+    - {name: resolution_loss_097pct, feature: spatial_detail, transform: resolution_loss, strength: 97.0, parameters: {percent: 97}}
+    - {name: resolution_loss_098pct, feature: spatial_detail, transform: resolution_loss, strength: 98.0, parameters: {percent: 98}}
+    - {name: resolution_loss_099pct, feature: spatial_detail, transform: resolution_loss, strength: 99.0, parameters: {percent: 99}}
     - {name: resolution_loss_100pct, feature: spatial_detail, transform: resolution_loss, strength: 100.0, parameters: {percent: 100}}
 evaluation:
   test_conditions: {enabled: false, conditions: [], evaluate_original_training: false}

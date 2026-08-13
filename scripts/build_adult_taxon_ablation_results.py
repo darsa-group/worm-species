@@ -122,6 +122,27 @@ def _collect_stage(
         frame = _read_csv(path)
         if frame.empty:
             continue
+        enriched = _read_csv(
+            path.with_name("target_class_metrics_full_test.csv")
+        )
+        if not enriched.empty:
+            merge_keys = [
+                column
+                for column in ("holdout", "cohort", "task", "target_label")
+                if column in frame and column in enriched
+            ]
+            added_columns = [
+                column
+                for column in enriched
+                if column not in merge_keys and column not in frame
+            ]
+            if merge_keys and added_columns:
+                frame = frame.merge(
+                    enriched[[*merge_keys, *added_columns]],
+                    on=merge_keys,
+                    how="left",
+                    validate="many_to_one",
+                )
         run_dir = path.parents[1]
         config = _read_json(run_dir / "config.json")
         if not config:

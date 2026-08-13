@@ -15,6 +15,7 @@ from scripts.build_paper_results import (
     _original_test_condition_summary,
     build_report,
 )
+from scripts.augment_data_ablation_metrics import augment_run
 from src.worm_species.slurm.config import load_submission_config
 from src.worm_species.slurm.planning import plan_submission
 
@@ -235,6 +236,44 @@ class PaperReportRegressionTests(unittest.TestCase):
         ])
         summary = _original_test_condition_summary(cross)
         self.assertEqual(summary["run_dir"].tolist(), ["/tmp/run-1"])
+
+    def test_completed_predictions_recover_target_precision_recall_and_f1(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            run = Path(temporary) / "run"
+            evaluation = run / "data_holdout_evaluation"
+            evaluation.mkdir(parents=True)
+            pd.DataFrame([{
+                "holdout": "adult_aporrectodea_longa",
+                "cohort": "independent_test",
+                "task": "species",
+                "target_label": "Aporrectodea_longa",
+            }]).to_csv(evaluation / "task_metrics.csv", index=False)
+            pd.DataFrame({
+                "task": ["species"] * 4,
+                "true_label": [
+                    "Aporrectodea_longa", "Aporrectodea_longa",
+                    "Other", "Other",
+                ],
+                "predicted_label": [
+                    "Aporrectodea_longa", "Other",
+                    "Aporrectodea_longa", "Other",
+                ],
+                "class_probabilities_json": [
+                    json.dumps({"Aporrectodea_longa": value, "Other": 1 - value})
+                    for value in (0.8, 0.4, 0.6, 0.1)
+                ],
+            }).to_csv(run / "test_predictions_best.csv", index=False)
+
+            result = augment_run(run, "data_holdout_evaluation")
+            enriched = pd.read_csv(
+                evaluation / "target_class_metrics_full_test.csv"
+            )
+
+        self.assertEqual(result["status"], "complete")
+        self.assertAlmostEqual(enriched.loc[0, "target_precision"], 0.5)
+        self.assertAlmostEqual(enriched.loc[0, "target_recall"], 0.5)
+        self.assertAlmostEqual(enriched.loc[0, "target_f1"], 0.5)
+        self.assertTrue(enriched.loc[0, "probability_metrics_available"])
 
 
 if __name__ == "__main__":
