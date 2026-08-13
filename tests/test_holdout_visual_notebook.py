@@ -592,6 +592,32 @@ class HoldoutVisualNotebookTests(unittest.TestCase):
         self.assertTrue(code_cells)
         self.assertTrue(all(isinstance(cell.get("outputs"), list) for cell in code_cells))
         self.assertTrue(all("source" in cell for cell in code_cells))
+        code = "\n".join(
+            "".join(cell.get("source", [])) for cell in code_cells
+        )
+        for index, cell in enumerate(code_cells):
+            compile(
+                "".join(cell.get("source", [])),
+                f"{notebook}:code-cell-{index}",
+                "exec",
+            )
+        for forbidden in (
+            "figure_builder",
+            "from scripts",
+            "import scripts",
+            "from src.",
+            "import src.",
+        ):
+            self.assertNotIn(forbidden, code)
+        for definition in (
+            "def collect_runs",
+            "def classification_metric_summary",
+            "def build_split_transform",
+            "class ResolutionLoss",
+            "def save_baseline_overview",
+            "def save_mixed_visual_seed_figure",
+        ):
+            self.assertIn(definition, code)
 
 
 if __name__ == "__main__":

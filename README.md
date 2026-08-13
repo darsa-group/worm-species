@@ -127,6 +127,18 @@ or run:
 make holdout-visual-report
 ```
 
+The notebook is standalone: its result readers, metric calculations, exact
+image transformations, confidence intervals, and plotting functions are
+embedded in the notebook. It imports no local project module or reporting
+script. Set the paths in its editable settings cell, run the preparation cell,
+then run any figure cell independently. If the reporting implementation
+changes, regenerate the embedded copy with:
+
+```bash
+/home/devd/miniconda3/envs/wormspecies/bin/python \
+  scripts/build_standalone_holdout_visual_notebook.py
+```
+
 The output contains: baseline task scores and seed-mean confusion matrices with
 cellwise confidence intervals; a dedicated Adult/Juvenile diagnostic; linear
 and log2 pixel-resolution visual-ablation variants; a paired-seed mixed-cue
