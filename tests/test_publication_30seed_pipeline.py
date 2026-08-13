@@ -21,7 +21,7 @@ class PublicationDesignTests(unittest.TestCase):
     def test_every_stage_has_the_confirmed_design(self) -> None:
         expected = {
             "genome_publication_30seed_baseline.yaml": (90, {"convnext_base", "vit_b_16", "resnet50"}),
-            "genome_publication_30seed_visual.yaml": (690, {"convnext_base"}),
+            "genome_publication_30seed_visual.yaml": (840, {"convnext_base"}),
             "genome_publication_30seed_interactions.yaml": (600, {"convnext_base"}),
             "genome_publication_30seed_taxon_baseline.yaml": (30, {"convnext_base"}),
             "genome_publication_30seed_taxon_holdouts.yaml": (330, {"convnext_base"}),
@@ -47,8 +47,23 @@ class PublicationDesignTests(unittest.TestCase):
         pipeline = yaml.safe_load((ROOT / "dev" / "genome_publication_30seed_pipeline.yaml").read_text())
         self.assertEqual(pipeline["required_hierarchy_loss_weights"], [0.0])
         self.assertIn("binary_mask", pipeline["condition_cache"]["transforms"])
-        self.assertEqual(sum((90, 690, 600, 30, 330)), 1740)
+        self.assertEqual(sum((90, 840, 600, 30, 330)), 1890)
         self.assertEqual(pipeline["report"]["script"], "../scripts/build_publication_bundle.py")
+
+    def test_resolution_gapfill_is_exactly_five_levels_by_thirty_seeds(self) -> None:
+        from scripts.run_missing_resolution_losses import (
+            EXPECTED_PIXELS,
+            validate_gapfill_plan,
+        )
+
+        validate_gapfill_plan()
+        config = load_submission_config(
+            ROOT / "dev" / "genome_publication_30seed_resolution_gapfill.yaml",
+            cluster_config=CLUSTER,
+        )
+        plan = plan_submission(config)
+        self.assertEqual(plan.array_size, 150)
+        self.assertEqual(set(plan.conditions), set(EXPECTED_PIXELS))
 
     def test_binary_mask_is_three_channel_and_binary(self) -> None:
         image = torch.zeros(3, 4, 4)

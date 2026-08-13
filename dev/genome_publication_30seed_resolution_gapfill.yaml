@@ -1,0 +1,12 @@
+# The five pre-registered resolution gap-fill levels only: 5 x 30 = 150 fits.
+# This overlays the publication visual configuration so every training setting
+# other than the selected conditions remains byte-for-byte equivalent.
+extends: genome_publication_30seed_visual.yaml
+
+sweep:
+  conditions:
+    - {name: resolution_loss_090pct, feature: spatial_detail, transform: resolution_loss, strength: 90.0, parameters: {percent: 90}}
+    - {name: resolution_loss_095pct, feature: spatial_detail, transform: resolution_loss, strength: 95.0, parameters: {percent: 95}}
+    - {name: resolution_loss_097pct, feature: spatial_detail, transform: resolution_loss, strength: 97.0, parameters: {percent: 97}}
+    - {name: resolution_loss_098pct, feature: spatial_detail, transform: resolution_loss, strength: 98.0, parameters: {percent: 98}}
+    - {name: resolution_loss_099pct, feature: spatial_detail, transform: resolution_loss, strength: 99.0, parameters: {percent: 99}}

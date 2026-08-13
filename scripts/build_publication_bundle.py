@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build the seven figures and an auditable publication record."""
+"""Build the main/supplementary figures and an auditable publication record."""
 
 from __future__ import annotations
 
@@ -104,6 +104,9 @@ def build_publication_bundle(
         "split_summaries": _file_inventory(paper_root, "runs/**/split_summary.json"),
         "test_metrics": _file_inventory(paper_root, "runs/**/test_metrics_best.json"),
         "test_predictions": _file_inventory(paper_root, "runs/**/test_predictions_best.csv"),
+        "data_ablation_target_metrics": _file_inventory(
+            paper_root, "runs/**/target_class_metrics_full_test.csv"
+        ),
         "training_histories": _file_inventory(paper_root, "runs/**/history.csv"),
         "pipeline_manifests": _file_inventory(paper_root, "artifacts/**/pipeline_manifest.json"),
     }
@@ -152,7 +155,7 @@ def build_publication_bundle(
     )
     (bundle_root / "README.md").write_text(
         "# Publication bundle\n\n"
-        "Figures 1-7 are under `figures/`; every figure has PNG, PDF, SVG, source CSVs, and a manifest. "
+        "Main and supplementary figures are under `figures/`; every figure has PNG, PDF, SVG, source CSVs, and a manifest. "
         "`metadata/` records checksums and absolute locations of the retained best checkpoints, resolved configs, label maps, split summaries, test metrics, exact test predictions, and training histories. "
         "Only validation loss selected checkpoints; all reported performance is from the test split.\n",
         encoding="utf-8",

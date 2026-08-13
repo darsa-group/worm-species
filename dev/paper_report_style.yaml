@@ -5,11 +5,15 @@ font_size: 10
 axes_grid: false
 
 palette:
-  - "#4C78A8"
-  - "#F58518"
-  - "#54A24B"
-  - "#E45756"
-  - "#B279A2"
+  # Okabe-Ito colour-blind-safe palette. Plots also use marker/line redundancy.
+  - "#0072B2"
+  - "#E69F00"
+  - "#009E73"
+  - "#CC79A7"
+  - "#56B4E9"
+  - "#D55E00"
+  - "#F0E442"
+  - "#000000"
 
 best_baseline_colour: "#111111"
 chance_colour: "#777777"

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build the seven analysis figures used by the ablation notebook.
+"""Build the editable main and supplementary ablation figures.
 
 The figures are deliberately generated outside the notebook as well, so the
 same completed-run inputs create the same PNG, PDF, SVG, and source CSV files.
@@ -32,12 +32,15 @@ from scripts.build_paper_results import (
     load_split_frames,
 )
 from src.worm_species.data.transforms import build_split_transform
+from src.worm_species.training.metrics import classification_metric_summary
 
 
+# Okabe-Ito: colour-blind safe, with marker/line redundancy added per plot.
 PALETTE = (
-    "#3B5B92", "#B35C1E", "#3D7A57", "#8A4F7D", "#7A6A2F",
-    "#4B7F8C", "#A04747", "#5E5E9A", "#98703D", "#487A73",
+    "#0072B2", "#E69F00", "#009E73", "#CC79A7", "#56B4E9",
+    "#D55E00", "#F0E442", "#000000",
 )
+HEATMAP_CMAP = "cividis"
 TASK_ORDER = ("genus", "species", "age")
 TASK_LABELS = {
     "genus": "Genus",
@@ -50,6 +53,32 @@ PAPER_SEEDS = tuple(range(40, 2941, 100))
 TEST_COHORT = "independent_test"
 TAXON_MODEL = "convnext_base"
 T_CRITICAL = {1: 12.706, 2: 4.303, 3: 3.182, 4: 2.776}
+ABLATION_BOOTSTRAP_RESAMPLES = 10_000
+ABLATION_BOOTSTRAP_SEED = 20260804
+ABLATION_INTERVAL_LEVEL = 0.95
+INPUT_SIZE = 224
+
+
+def _deterministic_jitter(
+    values: Iterable[object], *, width: float = 0.08
+) -> np.ndarray:
+    """Stable jitter keyed by seed/identity rather than row ordering."""
+    offsets = []
+    for value in values:
+        digest = hashlib.sha256(str(value).encode("utf-8")).digest()
+        unit = int.from_bytes(digest[:8], "big") / float(2**64 - 1)
+        offsets.append((unit - 0.5) * 2.0 * width)
+    return np.asarray(offsets, dtype=float)
+
+
+def _interval_text(mean: float, half_width: float) -> str:
+    if not np.isfinite(mean):
+        return ""
+    if not np.isfinite(half_width):
+        return f"{mean:.1%}"
+    low = max(0.0, mean - half_width)
+    high = min(1.0, mean + half_width)
+    return f"{mean:.1%}\n[{low:.1%}, {high:.1%}]"
 
 
 def _slug(value: object) -> str:
@@ -324,16 +353,21 @@ def save_baseline_overview(frame: pd.DataFrame, output_dir: Path, source_root: P
         )
         raw = frame[frame["task"].eq(task)]
         for model_index, model in enumerate(model_order):
-            values = raw.loc[raw["model"].eq(model), "test_macro_f1"].to_numpy()
-            jitter = np.linspace(-width * 0.16, width * 0.16, max(1, len(values)))
+            selected = raw[raw["model"].eq(model)]
+            values = selected["test_macro_f1"].to_numpy()
+            jitter = _deterministic_jitter(
+                selected.get("seed", selected.index), width=width * 0.18
+            )
             ax.scatter(
                 np.full(len(values), x[model_index] + offsets[index]) + jitter,
                 values, s=14, color="#222222", alpha=0.5, zorder=4,
             )
-        for bar in bars:
+        for model_index, bar in enumerate(bars):
             if np.isfinite(bar.get_height()):
+                half_width = errors[model_index]
                 ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + 0.012,
-                        f"{bar.get_height():.2f}", ha="center", va="bottom", fontsize=7)
+                        _interval_text(bar.get_height(), half_width),
+                        ha="center", va="bottom", fontsize=6.2)
     ax.set_xticks(x, [_display_model(model) for model in model_order])
     ax.tick_params(axis="x", rotation=18)
     ax.set_ylim(0, 1.04)
@@ -377,15 +411,57 @@ def save_baseline_overview(frame: pd.DataFrame, output_dir: Path, source_root: P
             matrix_ax.text(0.5, 0.5, "Awaiting completed\nConvNeXt-Base runs", ha="center", va="center")
             matrix_ax.set_axis_off()
             continue
-        mean_matrix = np.mean(np.stack(matrices), axis=0)
-        image = matrix_ax.imshow(mean_matrix, vmin=0, vmax=1, cmap="Blues", aspect="auto")
+        stacked = np.stack(matrices)
+        mean_matrix = np.mean(stacked, axis=0)
+        if len(matrices) >= 2:
+            half_width = (
+                T_CRITICAL.get(len(matrices) - 1, 1.96)
+                * np.std(stacked, axis=0, ddof=1)
+                / math.sqrt(len(matrices))
+            )
+        else:
+            half_width = np.full_like(mean_matrix, np.nan)
+        image = matrix_ax.imshow(
+            mean_matrix, vmin=0, vmax=1, cmap=HEATMAP_CMAP, aspect="auto"
+        )
+        for row_index in range(mean_matrix.shape[0]):
+            for column_index in range(mean_matrix.shape[1]):
+                value = mean_matrix[row_index, column_index]
+                interval = half_width[row_index, column_index]
+                contrast = "black" if value > 0.58 else "white"
+                matrix_ax.text(
+                    column_index,
+                    row_index,
+                    _interval_text(value, interval),
+                    ha="center",
+                    va="center",
+                    fontsize=4.6,
+                    color=contrast,
+                )
+                confusion_sources.append({
+                    "task": task,
+                    "seed": "summary",
+                    "true_label": expected_labels[row_index],
+                    "predicted_label": expected_labels[column_index],
+                    "row_normalized_fraction": value,
+                    "ci95_low": max(0.0, value - interval) if np.isfinite(interval) else np.nan,
+                    "ci95_high": min(1.0, value + interval) if np.isfinite(interval) else np.nan,
+                    "number_of_seeds": len(matrices),
+                })
         matrix_ax.set_title(f"{TASK_LABELS[task]} confusion", fontweight="bold")
         matrix_ax.set_xlabel("Predicted")
         matrix_ax.set_ylabel("True")
         matrix_ax.set_xticks(range(len(expected_labels)), expected_labels, rotation=90, fontsize=6)
         matrix_ax.set_yticks(range(len(expected_labels)), expected_labels, fontsize=6)
     if image is not None:
-        fig.colorbar(image, ax=fig.axes[1:], fraction=0.018, pad=0.015, label="Mean row-normalized fraction")
+        fig.colorbar(
+            image,
+            ax=fig.axes[1:],
+            fraction=0.018,
+            pad=0.015,
+            label="Mean row-normalized percentage",
+            format=PercentFormatter(1.0),
+        )
     fig.suptitle("Test performance and ConvNeXt-Base confusion matrices", fontsize=16, fontweight="bold")
     fig.subplots_adjust(top=0.94, bottom=0.13, left=0.08, right=0.96)
     return _save_bundle(
@@ -407,9 +483,290 @@ def save_baseline_overview(frame: pd.DataFrame, output_dir: Path, source_root: P
     )
 
 
+def prepare_developmental_stage_diagnostics(
+    baseline_frame: pd.DataFrame,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Read seed-level age reports and row-normalized confusion matrices."""
+    metric_rows: list[dict] = []
+    confusion_rows: list[dict] = []
+    if baseline_frame.empty:
+        return pd.DataFrame(), pd.DataFrame()
+    runs = baseline_frame[
+        [column for column in ("model", "model_label", "seed", "run_dir") if column in baseline_frame]
+    ].drop_duplicates()
+    for row in runs.itertuples(index=False):
+        run_dir = Path(row.run_dir)
+        report_path = run_dir / "classification_report_best_age.csv"
+        matrix_path = run_dir / "confusion_matrix_best_age.csv"
+        if report_path.is_file():
+            report = pd.read_csv(report_path, index_col=0)
+            values = {}
+            for label in ("Adult", "Juvenile"):
+                if label in report.index:
+                    values.update({
+                        f"{label} precision": report.loc[label, "precision"],
+                        f"{label} recall": report.loc[label, "recall"],
+                        f"{label} F1": report.loc[label, "f1-score"],
+                    })
+            if "accuracy" in report.index:
+                values["Accuracy"] = report.loc["accuracy", "f1-score"]
+            if "macro avg" in report.index:
+                values.update({
+                    "Balanced accuracy": report.loc["macro avg", "recall"],
+                    "Macro precision": report.loc["macro avg", "precision"],
+                    "Macro recall": report.loc["macro avg", "recall"],
+                    "Macro F1": report.loc["macro avg", "f1-score"],
+                })
+            if "weighted avg" in report.index:
+                values["Weighted F1"] = report.loc["weighted avg", "f1-score"]
+            for metric, score in values.items():
+                metric_rows.append({
+                    "model": row.model,
+                    "model_label": row.model_label,
+                    "seed": row.seed,
+                    "metric": metric,
+                    "score": float(score),
+                    "run_dir": str(run_dir),
+                })
+        if matrix_path.is_file():
+            matrix = pd.read_csv(matrix_path, index_col=0)
+            labels = [str(value) for value in matrix.index]
+            values = matrix.to_numpy(dtype=float)
+            totals = values.sum(axis=1, keepdims=True)
+            normalised = np.divide(
+                values, totals, out=np.zeros_like(values), where=totals > 0
+            )
+            for true_index, true_label in enumerate(labels):
+                for predicted_index, predicted_label in enumerate(labels):
+                    confusion_rows.append({
+                        "model": row.model,
+                        "model_label": row.model_label,
+                        "seed": row.seed,
+                        "true_label": true_label,
+                        "predicted_label": predicted_label,
+                        "row_normalized_fraction": normalised[
+                            true_index, predicted_index
+                        ],
+                    })
+    return pd.DataFrame(metric_rows), pd.DataFrame(confusion_rows)
+
+
+def save_developmental_stage_diagnostics(
+    metrics: pd.DataFrame,
+    confusions: pd.DataFrame,
+    output_dir: Path,
+    source_root: Path,
+) -> list[str]:
+    if metrics.empty:
+        return []
+    metric_order = [
+        "Accuracy", "Balanced accuracy", "Macro precision", "Macro recall",
+        "Macro F1", "Weighted F1", "Adult precision", "Adult recall",
+        "Adult F1", "Juvenile precision", "Juvenile recall", "Juvenile F1",
+    ]
+    metric_order = [value for value in metric_order if value in set(metrics["metric"])]
+    model_order = metrics["model"].drop_duplicates().tolist()
+    summary = seed_summary(metrics, ["model", "model_label", "metric"], "score")
+    figure_height = max(10.0, 0.48 * len(metric_order) + 6.5)
+    fig = plt.figure(figsize=(16.5, figure_height))
+    grid = fig.add_gridspec(2, max(1, len(model_order)), height_ratios=(1.45, 1.0), hspace=0.34, wspace=0.34)
+    ax = fig.add_subplot(grid[0, :])
+    y = np.arange(len(metric_order), dtype=float)
+    offsets = np.linspace(-0.22, 0.22, max(1, len(model_order)))
+    for model_index, model in enumerate(model_order):
+        current_summary = summary[summary["model"].eq(model)].set_index("metric")
+        current_raw = metrics[metrics["model"].eq(model)]
+        for metric_index, metric in enumerate(metric_order):
+            raw = current_raw[current_raw["metric"].eq(metric)]
+            if metric not in current_summary.index:
+                continue
+            row = current_summary.loc[metric]
+            ax.scatter(
+                raw["score"],
+                np.full(len(raw), y[metric_index] + offsets[model_index])
+                + _deterministic_jitter(raw.get("seed", raw.index), width=0.045),
+                s=14,
+                alpha=0.28,
+                color=PALETTE[model_index % len(PALETTE)],
+                marker=("o", "s", "^", "D", "P")[model_index % 5],
+            )
+            ax.errorbar(
+                row["mean"],
+                y[metric_index] + offsets[model_index],
+                xerr=0.0 if pd.isna(row["ci95"]) else row["ci95"],
+                fmt=("o", "s", "^", "D", "P")[model_index % 5],
+                markersize=6,
+                capsize=3,
+                color=PALETTE[model_index % len(PALETTE)],
+                label=_display_model(model) if metric_index == 0 else None,
+                zorder=4,
+            )
+    ax.set_yticks(y, metric_order)
+    ax.set_ylim(len(metric_order) - 0.4, -0.6)
+    ax.set_xlim(0, 1.02)
+    ax.xaxis.set_major_formatter(PercentFormatter(1.0))
+    ax.set_xlabel("Independent-test score")
+    ax.set_title("A. Developmental-stage metrics across baseline seeds", loc="left", fontweight="bold")
+    ax.grid(axis="x", alpha=0.18)
+    ax.spines[["top", "right", "left"]].set_visible(False)
+    ax.legend(frameon=False, ncol=max(1, len(model_order)))
+
+    confusion_summary_rows = []
+    for model_index, model in enumerate(model_order):
+        matrix_ax = fig.add_subplot(grid[1, model_index])
+        current = confusions[confusions["model"].eq(model)]
+        labels = list(dict.fromkeys(current.get("true_label", pd.Series(dtype=str)).astype(str)))
+        if current.empty or not labels:
+            matrix_ax.text(0.5, 0.5, "No saved age confusion matrices", ha="center", va="center")
+            matrix_ax.set_axis_off()
+            continue
+        matrices = []
+        for _, seed_frame in current.groupby("seed"):
+            pivot = seed_frame.pivot(index="true_label", columns="predicted_label", values="row_normalized_fraction").reindex(index=labels, columns=labels)
+            matrices.append(pivot.to_numpy(dtype=float))
+        stacked = np.stack(matrices)
+        mean = stacked.mean(axis=0)
+        half = (
+            T_CRITICAL.get(len(matrices) - 1, 1.96)
+            * stacked.std(axis=0, ddof=1)
+            / math.sqrt(len(matrices))
+            if len(matrices) >= 2
+            else np.full_like(mean, np.nan)
+        )
+        matrix_ax.imshow(mean, vmin=0, vmax=1, cmap=HEATMAP_CMAP)
+        for true_index, true_label in enumerate(labels):
+            for predicted_index, predicted_label in enumerate(labels):
+                value = mean[true_index, predicted_index]
+                interval = half[true_index, predicted_index]
+                matrix_ax.text(
+                    predicted_index,
+                    true_index,
+                    _interval_text(value, interval),
+                    ha="center",
+                    va="center",
+                    fontsize=8,
+                    color="black" if value > 0.58 else "white",
+                )
+                confusion_summary_rows.append({
+                    "model": model,
+                    "true_label": true_label,
+                    "predicted_label": predicted_label,
+                    "mean": value,
+                    "ci95_low": max(0.0, value - interval) if np.isfinite(interval) else np.nan,
+                    "ci95_high": min(1.0, value + interval) if np.isfinite(interval) else np.nan,
+                    "number_of_seeds": len(matrices),
+                })
+        matrix_ax.set_xticks(range(len(labels)), labels)
+        matrix_ax.set_yticks(range(len(labels)), labels)
+        matrix_ax.set_xlabel("Predicted stage")
+        if model_index == 0:
+            matrix_ax.set_ylabel("True stage")
+        matrix_ax.set_title(f"{chr(66 + model_index)}. {_display_model(model)}", fontweight="bold")
+    fig.suptitle("Why is developmental-stage performance low?", fontsize=16, fontweight="bold", y=0.995)
+    fig.text(0.5, 0.012, "Points are training seeds; whiskers and confusion-cell intervals are 95% t intervals across seeds. All metrics use the independent test split.", ha="center", fontsize=8.5)
+    fig.subplots_adjust(top=0.94, bottom=0.07, left=0.16, right=0.98)
+    return _save_bundle(
+        fig,
+        output_dir=output_dir,
+        source_root=source_root,
+        name="figure_01b_developmental_stage_diagnostics",
+        sources={
+            "seed_metrics": metrics,
+            "seed_summary": summary,
+            "confusion_matrices_by_seed": confusions,
+            "confusion_matrix_summary": pd.DataFrame(confusion_summary_rows),
+        },
+        details={
+            "split": "independent test",
+            "uncertainty": "95% t interval across training seeds",
+            "metric_unit": "image",
+            "purpose": "diagnose Adult/Juvenile precision-recall asymmetry and directional confusions",
+            **_paper_design_manifest(),
+        },
+    )
+
+
 def _summarise_line(frame: pd.DataFrame, x: str, series: str | None = None) -> pd.DataFrame:
     groups = [x] if series is None else [series, x]
     return seed_summary(frame, groups, "test_mean_macro_f1")
+
+
+def visual_uniform_chance_reference(
+    runs: pd.DataFrame,
+    split_root: Path,
+) -> pd.DataFrame:
+    """Expected macro-F1 for uniform predictions on the fixed test labels."""
+    columns = [
+        "task", "class_count", "test_n", "expected_uniform_macro_f1",
+        "method",
+    ]
+    if runs.empty or "run_dir" not in runs:
+        return pd.DataFrame(columns=columns)
+    label_maps = {}
+    for run_dir in runs["run_dir"].dropna().drop_duplicates():
+        path = Path(run_dir) / "label_to_index_by_task.json"
+        if path.is_file():
+            label_maps = json.loads(path.read_text(encoding="utf-8"))
+            if label_maps:
+                break
+    if not label_maps:
+        return pd.DataFrame(columns=columns)
+    test = load_split_frames(split_root).get("test", pd.DataFrame())
+    target_columns = {
+        "genus": "genus",
+        "species": "species_label",
+        "age": "life_stage",
+    }
+    rows = []
+    for task in TASK_ORDER:
+        labels = label_maps.get(task, {})
+        if not isinstance(labels, dict) or not labels:
+            continue
+        class_count = len(labels)
+        column = target_columns[task]
+        observed = (
+            test[column].astype(str)
+            if not test.empty and column in test
+            else pd.Series(dtype=str)
+        )
+        observed = observed[observed.isin(set(map(str, labels)))]
+        counts = observed.value_counts()
+        if counts.sum():
+            prevalence = np.asarray(
+                [counts.get(str(label), 0) / counts.sum() for label in labels],
+                dtype=float,
+            )
+            class_f1 = np.divide(
+                2.0 * prevalence,
+                class_count * prevalence + 1.0,
+                out=np.zeros_like(prevalence),
+                where=(class_count * prevalence + 1.0) > 0,
+            )
+            chance = float(class_f1.mean())
+        else:
+            # Fail-soft for old/synthetic bundles without aligned split labels.
+            chance = 1.0 / class_count
+        rows.append({
+            "task": task,
+            "class_count": class_count,
+            "test_n": int(counts.sum()),
+            "expected_uniform_macro_f1": chance,
+            "method": (
+                "expected per-class F1 under uniform random prediction using "
+                "the fixed independent-test class prevalence"
+            ),
+        })
+    if rows:
+        rows.append({
+            "task": "mean",
+            "class_count": np.nan,
+            "test_n": int(sum(row["test_n"] for row in rows)),
+            "expected_uniform_macro_f1": float(np.mean([
+                row["expected_uniform_macro_f1"] for row in rows
+            ])),
+            "method": "unweighted mean of the three task-specific chance macro-F1 values",
+        })
+    return pd.DataFrame(rows, columns=columns)
 
 
 def _draw_line_panel(
@@ -436,14 +793,64 @@ def _draw_line_panel(
             color=PALETTE[index % len(PALETTE)], label=label,
         )
         raw = frame if value is None else frame[frame[series].eq(value)]
-        ax.scatter(raw[x], raw["test_mean_macro_f1"], s=11,
-                   color=PALETTE[index % len(PALETTE)], alpha=0.25)
+        unique_x = np.sort(
+            pd.to_numeric(frame[x], errors="coerce").dropna().unique()
+        )
+        positive_steps = np.diff(unique_x)
+        positive_steps = positive_steps[positive_steps > 0]
+        jitter_width = (
+            float(positive_steps.min()) * 0.08
+            if positive_steps.size
+            else 0.08
+        )
+        identities = raw.get("seed", raw.index)
+        ax.scatter(
+            pd.to_numeric(raw[x], errors="coerce")
+            + _deterministic_jitter(identities, width=jitter_width),
+            raw["test_mean_macro_f1"],
+            s=13,
+            color=PALETTE[index % len(PALETTE)],
+            alpha=0.32,
+            zorder=3,
+        )
+        for _, row in current.iterrows():
+            if np.isfinite(row["mean"]):
+                ax.annotate(
+                    _interval_text(float(row["mean"]), float(row["ci95"])),
+                    (row[x], row["mean"]),
+                    xytext=(0, 8),
+                    textcoords="offset points",
+                    ha="center",
+                    va="bottom",
+                    fontsize=5.7,
+                    color=PALETTE[index % len(PALETTE)],
+                )
     ax.set_title(title, loc="left", fontweight="bold")
     ax.set_xlabel(xlabel)
     ax.set_ylabel("Test mean macro-F1")
     ax.set_ylim(0, 1.02)
     ax.grid(alpha=0.2)
     ax.spines[["top", "right"]].set_visible(False)
+    chance_values = pd.to_numeric(frame.get("chance", np.nan), errors="coerce")
+    if np.ndim(chance_values) and pd.Series(chance_values).notna().any():
+        chance = float(pd.Series(chance_values).dropna().mean())
+        ax.axhline(
+            chance,
+            color="#000000",
+            linestyle=(0, (4, 2)),
+            linewidth=1.1,
+            alpha=0.8,
+            zorder=0,
+        )
+        ax.text(
+            0.99,
+            chance,
+            f"uniform chance {chance:.1%}",
+            transform=ax.get_yaxis_transform(),
+            ha="right",
+            va="bottom",
+            fontsize=7,
+        )
     if series is not None:
         ax.legend(frameon=False, fontsize=8, ncol=2)
     return summary
@@ -478,13 +885,22 @@ def prepare_convnext_visual_frames(
     gaussian = pd.concat([original_gaussian, gaussian], ignore_index=True)
 
     resolution = visual[visual["transform"].eq("resolution_loss")].copy()
-    resolution["level"] = pd.to_numeric(resolution["percent"], errors="coerce")
+    resolution["loss_percent"] = pd.to_numeric(
+        resolution["percent"], errors="coerce"
+    )
+    resolution["level"] = resolution["loss_percent"].map(
+        lambda percent: max(
+            1, int(round(INPUT_SIZE * (1.0 - float(percent) / 100.0)))
+        )
+        if pd.notna(percent)
+        else np.nan
+    )
 
     colour = visual[visual["transform"].eq("saturation")].copy()
-    colour["level"] = 0.0
+    colour["level"] = 1.0
     colour["category"] = "Colour removed"
     mask = visual[visual["transform"].eq("binary_mask")].copy()
-    mask["level"] = 1.0
+    mask["level"] = 0.0
     mask["category"] = "Binary mask only"
     original_colour = original.copy()
     original_colour["level"] = 2.0
@@ -498,16 +914,24 @@ def prepare_convnext_visual_frames(
     patch = pd.concat([original_patch, patch], ignore_index=True)
 
     interaction_parts = []
-    gaussian_only = gaussian.copy()
+    gaussian_only = gaussian[
+        pd.to_numeric(gaussian["level"], errors="coerce").isin(
+            (0.0, 25.0, 50.0, 75.0, 100.0)
+        )
+    ].copy()
     gaussian_only["series"] = "100% colour (Gaussian only)"
     interaction_parts.append(gaussian_only)
     anchors = {
-        "0% colour": colour[colour["level"].eq(0.0)],
+        "0% colour": colour[colour["category"].eq("Colour removed")],
+        "2×2 patches": patch[patch["level"].eq(2.0)],
+        "4×4 patches": patch[patch["level"].eq(4.0)],
         "8×8 patches": patch[patch["level"].eq(8.0)],
         "16×16 patches": patch[patch["level"].eq(16.0)],
     }
     conditions = (
         ("0% colour", "saturation", 0.0),
+        ("2×2 patches", "patch_shuffle", 2.0),
+        ("4×4 patches", "patch_shuffle", 4.0),
         ("8×8 patches", "patch_shuffle", 8.0),
         ("16×16 patches", "patch_shuffle", 16.0),
     )
@@ -533,23 +957,30 @@ def prepare_convnext_visual_frames(
 
 
 def save_convnext_visual_figure(
-    frames: dict[str, pd.DataFrame], output_dir: Path, source_root: Path, *, model: str,
+    frames: dict[str, pd.DataFrame],
+    output_dir: Path,
+    source_root: Path,
+    *,
+    model: str,
+    resolution_scale: str = "linear",
+    chance_reference: pd.DataFrame | None = None,
 ) -> list[str]:
     if not frames:
         return []
-    fig = plt.figure(figsize=(15.5, 15.5))
-    grid = fig.add_gridspec(3, 2, height_ratios=(1, 1, 1.42), hspace=0.38, wspace=0.28)
+    if resolution_scale not in {"linear", "log2"}:
+        raise ValueError("resolution_scale must be 'linear' or 'log2'")
+    fig = plt.figure(figsize=(15.5, 10.5))
+    grid = fig.add_gridspec(2, 2, hspace=0.38, wspace=0.28)
     axes = {
         "gaussian": fig.add_subplot(grid[0, 0]),
         "resolution": fig.add_subplot(grid[0, 1]),
         "colour": fig.add_subplot(grid[1, 0]),
         "patch": fig.add_subplot(grid[1, 1]),
-        "interaction": fig.add_subplot(grid[2, :]),
     }
     summaries = []
     specs = (
         ("gaussian", "A. Gaussian blur", "Gaussian blur (%)"),
-        ("resolution", "B. Resolution loss", "Resolution loss (%)"),
+        ("resolution", "B. Resolution retained", "Intermediate side (px)"),
         ("colour", "C. Colour and silhouette", "Input retained"),
         ("patch", "D. Patch shuffling", "Patch grid"),
     )
@@ -557,37 +988,185 @@ def save_convnext_visual_figure(
         summary = _draw_line_panel(axes[panel], frames[panel], x="level", title=title, xlabel=xlabel)
         summaries.append(summary.assign(panel=panel))
     axes["colour"].set_xticks(
-        [0, 1, 2], ["Colour\nremoved", "Binary mask\nonly", "Original\nRGB"]
+        [0, 1, 2], ["Binary mask\nonly", "0% colour", "Original\nRGB"]
     )
     patch_ticks = sorted(frames["patch"]["level"].dropna().unique())
     axes["patch"].set_xticks(patch_ticks, [f"{int(value)}×{int(value)}" for value in patch_ticks])
-    interaction_order = (
-        "100% colour (Gaussian only)", "0% colour", "8×8 patches", "16×16 patches",
+    if resolution_scale == "log2":
+        axes["resolution"].set_xscale("log", base=2)
+    axes["resolution"].invert_xaxis()
+    axes["resolution"].xaxis.set_major_formatter(
+        matplotlib.ticker.ScalarFormatter()
     )
-    interaction_summary = _draw_line_panel(
-        axes["interaction"], frames["interaction"], x="level",
-        title="E. Combined cue ablations", xlabel="Gaussian blur (%)",
-        series="series", order=interaction_order,
+    axes["resolution"].set_xticks(
+        sorted(frames["resolution"]["level"].dropna().unique(), reverse=True)
     )
-    summaries.append(interaction_summary.assign(panel="interaction"))
     fig.suptitle(
         f"Visual ablations for {_display_model(model)}",
         fontsize=16, fontweight="bold", y=0.995,
     )
     plot_data = pd.concat(
-        [frame.assign(panel=panel) for panel, frame in frames.items()], ignore_index=True
+        [
+            frame.assign(panel=panel)
+            for panel, frame in frames.items()
+            if panel != "interaction"
+        ],
+        ignore_index=True,
     )
     fig.subplots_adjust(top=0.95, bottom=0.06, left=0.07, right=0.98)
     return _save_bundle(
         fig, output_dir=output_dir, source_root=source_root,
-        name="figure_02_convnext_visual_ablation",
-        sources={"plot_data": plot_data, "seed_summary": pd.concat(summaries, ignore_index=True)},
+        name=(
+            "figure_02_convnext_visual_ablation"
+            if resolution_scale == "linear"
+            else "figure_02b_convnext_visual_ablation_resolution_log2"
+        ),
+        sources={
+            "plot_data": plot_data,
+            "seed_summary": pd.concat(summaries, ignore_index=True),
+            "chance_reference": chance_reference
+            if chance_reference is not None
+            else pd.DataFrame(),
+        },
         details={
             "model": model,
             "metric": "test mean macro-F1",
             "split": "test",
             "uncertainty": "95% t interval across seeds",
-            "interaction_series": list(interaction_order),
+            "resolution_x": "intermediate pixels per side",
+            "resolution_scale": resolution_scale,
+            "chance": "expected macro-F1 under uniform random prediction on the fixed test label distribution",
+            **_paper_design_manifest(),
+        },
+    )
+
+
+def save_mixed_visual_seed_figure(
+    frame: pd.DataFrame,
+    output_dir: Path,
+    source_root: Path,
+    *,
+    model: str,
+    chance_reference: pd.DataFrame | None = None,
+) -> list[str]:
+    """Paired-seed small multiples for Gaussian x cue interactions."""
+    if frame.empty:
+        return []
+    order = [
+        "100% colour (Gaussian only)",
+        "0% colour",
+        "2×2 patches",
+        "4×4 patches",
+        "8×8 patches",
+        "16×16 patches",
+    ]
+    observed = [value for value in order if value in set(frame["series"])]
+    blur_levels = sorted(pd.to_numeric(frame["level"], errors="coerce").dropna().unique())
+    summary = seed_summary(frame, ["level", "series"], "test_mean_macro_f1")
+    fig, axes = plt.subplots(
+        1,
+        len(blur_levels),
+        figsize=(max(14.0, 3.7 * len(blur_levels)), 6.4),
+        sharey=True,
+        squeeze=False,
+    )
+    for level_index, level in enumerate(blur_levels):
+        ax = axes[0, level_index]
+        current = frame[pd.to_numeric(frame["level"], errors="coerce").eq(level)]
+        x_positions = np.arange(len(observed), dtype=float)
+        for seed, seed_frame in current.groupby("seed", dropna=False):
+            seed_frame = seed_frame.set_index("series")
+            present = [value for value in observed if value in seed_frame.index]
+            if len(present) >= 2:
+                xs = [observed.index(value) for value in present]
+                ys = [float(seed_frame.loc[value]["test_mean_macro_f1"]) for value in present]
+                ax.plot(xs, ys, color="#777777", linewidth=0.45, alpha=0.14, zorder=1)
+        for series_index, series_value in enumerate(observed):
+            raw = current[current["series"].eq(series_value)]
+            offsets = _deterministic_jitter(raw.get("seed", raw.index), width=0.10)
+            ax.scatter(
+                np.full(len(raw), x_positions[series_index]) + offsets,
+                raw["test_mean_macro_f1"],
+                s=17,
+                alpha=0.36,
+                color=PALETTE[series_index % len(PALETTE)],
+                marker=("o", "s", "^", "v", "D", "P")[series_index],
+                zorder=2,
+            )
+            row = summary[
+                pd.to_numeric(summary["level"], errors="coerce").eq(level)
+                & summary["series"].eq(series_value)
+            ]
+            if not row.empty:
+                row = row.iloc[0]
+                ax.errorbar(
+                    x_positions[series_index],
+                    row["mean"],
+                    yerr=0.0 if pd.isna(row["ci95"]) else row["ci95"],
+                    fmt="o",
+                    color="#000000",
+                    markerfacecolor=PALETTE[series_index % len(PALETTE)],
+                    capsize=3,
+                    markersize=6,
+                    zorder=4,
+                )
+        chance = pd.to_numeric(current.get("chance", np.nan), errors="coerce")
+        if np.ndim(chance) and pd.Series(chance).notna().any():
+            chance_value = float(pd.Series(chance).dropna().mean())
+            ax.axhline(
+                chance_value,
+                color="#000000",
+                linestyle=(0, (4, 2)),
+                linewidth=1.0,
+            )
+            ax.text(
+                0.98,
+                chance_value,
+                f"chance {chance_value:.1%}",
+                transform=ax.get_yaxis_transform(),
+                ha="right",
+                va="bottom",
+                fontsize=6.5,
+            )
+        ax.set_title(f"Gaussian blur {level:g}%", fontweight="bold")
+        ax.set_xticks(x_positions, observed, rotation=62, ha="right", fontsize=7)
+        ax.grid(axis="y", alpha=0.18)
+        ax.spines[["top", "right"]].set_visible(False)
+        if level_index == 0:
+            ax.set_ylabel("Test mean macro-F1")
+        ax.set_ylim(0, 1.02)
+    fig.suptitle(
+        f"Paired-seed mixed visual ablations — {_display_model(model)}",
+        fontsize=16,
+        fontweight="bold",
+    )
+    fig.text(
+        0.5,
+        0.01,
+        "Each translucent point is one training seed; thin lines connect the same seed across cue conditions. Black-edged points and whiskers are seed means and 95% t intervals.",
+        ha="center",
+        fontsize=8.5,
+    )
+    fig.subplots_adjust(top=0.86, bottom=0.34, left=0.055, right=0.995, wspace=0.16)
+    return _save_bundle(
+        fig,
+        output_dir=output_dir,
+        source_root=source_root,
+        name="figure_02c_mixed_visual_seed_comparison",
+        sources={
+            "plot_data": frame,
+            "seed_summary": summary,
+            "chance_reference": chance_reference
+            if chance_reference is not None
+            else pd.DataFrame(),
+        },
+        details={
+            "model": model,
+            "metric": "test mean macro-F1",
+            "split": "test",
+            "pairing_unit": "training seed",
+            "uncertainty": "95% t interval across seeds",
+            "chance": "expected macro-F1 under uniform random prediction on the fixed test label distribution",
             **_paper_design_manifest(),
         },
     )
@@ -666,7 +1245,15 @@ def pair_taxon_metrics(frame: pd.DataFrame, *, cohort: str = TEST_COHORT) -> pd.
         "genus", "species", "stage", "combo_label",
     ]
     keys = [column for column in candidates if column in selected]
-    values = [column for column in ("macro_f1", "target_recall", "chance") if column in selected]
+    values = [
+        column
+        for column in (
+            "macro_f1", "target_recall", "target_precision", "target_f1",
+            "target_specificity", "target_average_precision",
+            "target_roc_auc", "chance",
+        )
+        if column in selected
+    ]
     baseline = selected[selected["system"].eq("Full-data baseline")][[*keys, *values]].copy()
     ablated = selected[selected["system"].eq("Ablated training")][[*keys, *values]].copy()
     if baseline.empty or ablated.empty:
@@ -676,7 +1263,10 @@ def pair_taxon_metrics(frame: pd.DataFrame, *, cohort: str = TEST_COHORT) -> pd.
     baseline = baseline.rename(columns={column: f"baseline_{column}" for column in values})
     ablated = ablated.rename(columns={column: f"ablated_{column}" for column in values})
     paired = ablated.merge(baseline, on=keys, how="inner")
-    for metric in ("macro_f1", "target_recall"):
+    for metric in (
+        "macro_f1", "target_recall", "target_precision", "target_f1",
+        "target_specificity", "target_average_precision", "target_roc_auc",
+    ):
         left, right = f"ablated_{metric}", f"baseline_{metric}"
         if left in paired and right in paired:
             paired[f"delta_{metric}"] = paired[left] - paired[right]
@@ -697,6 +1287,379 @@ def pair_taxon_metrics(frame: pd.DataFrame, *, cohort: str = TEST_COHORT) -> pd.
     return paired
 
 
+def save_species_target_metric_figure(
+    paired: pd.DataFrame,
+    output_dir: Path,
+    source_root: Path,
+    *,
+    species_ablation: str,
+) -> list[str]:
+    """Precision/recall/F1 view for the configurable main-text species."""
+    metric_specs = (
+        ("target_precision", "Precision"),
+        ("target_recall", "Recall"),
+        ("target_f1", "F1"),
+    )
+    available = [
+        (metric, label)
+        for metric, label in metric_specs
+        if f"baseline_{metric}" in paired and f"ablated_{metric}" in paired
+    ]
+    if paired.empty or not available:
+        return []
+    rows = []
+    for metric, label in available:
+        for system, prefix in (
+            ("Full-data baseline", "baseline"),
+            ("Ablated training", "ablated"),
+        ):
+            current = paired[
+                [column for column in ("seed", "stage", "task") if column in paired]
+            ].copy()
+            current["metric"] = label
+            current["system"] = system
+            current["score"] = pd.to_numeric(
+                paired[f"{prefix}_{metric}"], errors="coerce"
+            )
+            rows.append(current)
+    plot_data = pd.concat(rows, ignore_index=True).dropna(subset=["score"])
+    if plot_data.empty:
+        return []
+    summary = seed_summary(
+        plot_data,
+        ["stage", "task", "metric", "system"],
+        "score",
+    )
+    stages = _ordered_stages(plot_data["stage"].dropna().unique())
+    fig, axes = plt.subplots(
+        len(stages),
+        len(TASK_ORDER),
+        figsize=(18, max(5.6, 4.8 * len(stages))),
+        sharex=True,
+        sharey=True,
+        squeeze=False,
+    )
+    x = np.arange(len(available), dtype=float)
+    offsets = {"Full-data baseline": -0.13, "Ablated training": 0.13}
+    markers = {"Full-data baseline": "D", "Ablated training": "o"}
+    colours = {"Full-data baseline": PALETTE[0], "Ablated training": PALETTE[1]}
+    for stage_index, stage in enumerate(stages):
+        for task_index, task in enumerate(TASK_ORDER):
+            ax = axes[stage_index, task_index]
+            current = plot_data[
+                plot_data["stage"].eq(stage) & plot_data["task"].eq(task)
+            ]
+            current_summary = summary[
+                summary["stage"].eq(stage) & summary["task"].eq(task)
+            ]
+            for metric_index, (_, metric_label) in enumerate(available):
+                for system in offsets:
+                    raw = current[
+                        current["metric"].eq(metric_label)
+                        & current["system"].eq(system)
+                    ]
+                    row = current_summary[
+                        current_summary["metric"].eq(metric_label)
+                        & current_summary["system"].eq(system)
+                    ]
+                    ax.scatter(
+                        np.full(len(raw), x[metric_index] + offsets[system])
+                        + _deterministic_jitter(raw.get("seed", raw.index), width=0.045),
+                        raw["score"],
+                        s=14,
+                        alpha=0.3,
+                        marker=markers[system],
+                        color=colours[system],
+                    )
+                    if not row.empty:
+                        row = row.iloc[0]
+                        ax.errorbar(
+                            x[metric_index] + offsets[system],
+                            row["mean"],
+                            yerr=0.0 if pd.isna(row["ci95"]) else row["ci95"],
+                            fmt=markers[system],
+                            color=colours[system],
+                            capsize=3,
+                            markersize=6,
+                            label=system if stage_index == task_index == metric_index == 0 else None,
+                        )
+            ax.set_xticks(x, [label for _, label in available])
+            ax.set_ylim(0, 1.02)
+            ax.yaxis.set_major_formatter(PercentFormatter(1.0))
+            ax.grid(axis="y", alpha=0.18)
+            ax.spines[["top", "right"]].set_visible(False)
+            if stage_index == 0:
+                ax.set_title(TASK_LABELS[task], fontweight="bold")
+            if task_index == 0:
+                ax.set_ylabel(f"{stage}\nIndependent-test score")
+    fig.legend(loc="upper center", bbox_to_anchor=(0.5, 0.95), ncol=2, frameon=False)
+    fig.suptitle(
+        f"Target-class metrics after withholding {species_ablation.replace('_', ' ')}",
+        fontsize=16,
+        fontweight="bold",
+        y=0.995,
+    )
+    fig.text(0.5, 0.012, "Points are matched training seeds; whiskers are 95% t intervals. Precision is calculated one-vs-rest on the complete independent test split.", ha="center", fontsize=8.5)
+    fig.subplots_adjust(top=0.89, bottom=0.08, left=0.09, right=0.985, hspace=0.25, wspace=0.16)
+    return _save_bundle(
+        fig,
+        output_dir=output_dir,
+        source_root=source_root,
+        name="figure_03b_species_ablation_precision_recall_f1",
+        sources={"plot_data": plot_data, "seed_summary": summary},
+        details={
+            "species_ablation": species_ablation,
+            "split": "independent test",
+            "metric_unit": "image",
+            "precision_scope": "one-vs-rest on the complete test split",
+            "uncertainty": "95% t interval across seeds",
+            **_paper_design_manifest(),
+        },
+    )
+
+
+def _read_test_predictions(run_dir: object) -> pd.DataFrame:
+    path = Path(str(run_dir)) / "test_predictions_best.csv"
+    if not path.is_file():
+        return pd.DataFrame()
+    try:
+        return pd.read_csv(path)
+    except (OSError, pd.errors.EmptyDataError):
+        return pd.DataFrame()
+
+
+def prepare_biological_question_frame(
+    taxon_frame: pd.DataFrame,
+    split_root: Path,
+) -> pd.DataFrame:
+    """Derive four cross-cohort questions from retained full-test predictions."""
+    columns = [
+        "question", "holdout", "genus", "species", "heldout_stage",
+        "evaluated_stage", "task", "seed", "baseline_score",
+        "ablated_score", "delta", "test_images", "baseline_target_precision",
+        "ablated_target_precision", "baseline_target_recall",
+        "ablated_target_recall", "baseline_target_f1", "ablated_target_f1",
+    ]
+    if taxon_frame.empty or "run_dir" not in taxon_frame:
+        return pd.DataFrame(columns=columns)
+    test = load_split_frames(split_root).get("test", pd.DataFrame())
+    if test.empty or "filename" not in test:
+        return pd.DataFrame(columns=columns)
+    identities = [
+        column for column in ("seed", "holdout", "genus", "species", "stage")
+        if column in taxon_frame
+    ]
+    run_rows = taxon_frame[
+        [*identities, "system", "run_dir"]
+    ].drop_duplicates()
+    baseline = run_rows[run_rows["system"].eq("Full-data baseline")].rename(
+        columns={"run_dir": "baseline_run_dir"}
+    )
+    ablated = run_rows[run_rows["system"].eq("Ablated training")].rename(
+        columns={"run_dir": "ablated_run_dir"}
+    )
+    paired_runs = ablated.merge(
+        baseline,
+        on=identities,
+        how="inner",
+        suffixes=("_ablated", "_baseline"),
+    )
+    prediction_cache: dict[str, pd.DataFrame] = {}
+    output_rows = []
+    for run in paired_runs.itertuples(index=False):
+        baseline_dir = str(run.baseline_run_dir)
+        ablated_dir = str(run.ablated_run_dir)
+        if baseline_dir not in prediction_cache:
+            prediction_cache[baseline_dir] = _read_test_predictions(baseline_dir)
+        if ablated_dir not in prediction_cache:
+            prediction_cache[ablated_dir] = _read_test_predictions(ablated_dir)
+        baseline_predictions = prediction_cache[baseline_dir]
+        ablated_predictions = prediction_cache[ablated_dir]
+        if baseline_predictions.empty or ablated_predictions.empty:
+            continue
+        question_specs = [
+            (
+                "Direct withheld cohort",
+                str(run.stage),
+                lambda frame: frame["species_label"].astype(str).eq(str(run.species))
+                & frame["life_stage"].astype(str).eq(str(run.stage)),
+            ),
+        ]
+        if str(run.stage) == "Adult":
+            question_specs.append((
+                "Adult removed → evaluate Juvenile",
+                "Juvenile",
+                lambda frame: frame["species_label"].astype(str).eq(str(run.species))
+                & frame["life_stage"].astype(str).eq("Juvenile"),
+            ))
+        if str(run.stage) == "Juvenile":
+            question_specs.append((
+                "Juvenile removed → evaluate Adult",
+                "Adult",
+                lambda frame: frame["species_label"].astype(str).eq(str(run.species))
+                & frame["life_stage"].astype(str).eq("Adult"),
+            ))
+        question_specs.append((
+            "Within-genus spillover",
+            str(run.stage),
+            lambda frame: frame["genus"].astype(str).eq(str(run.genus))
+            & frame["life_stage"].astype(str).eq(str(run.stage))
+            & ~frame["species_label"].astype(str).eq(str(run.species)),
+        ))
+        for task in TASK_ORDER:
+            baseline_task = baseline_predictions[baseline_predictions["task"].eq(task)]
+            ablated_task = ablated_predictions[ablated_predictions["task"].eq(task)]
+            if baseline_task.empty or ablated_task.empty:
+                continue
+            for prediction_frame in (baseline_task, ablated_task):
+                if "filename" not in prediction_frame:
+                    break
+            else:
+                baseline_joined = baseline_task.merge(test, on="filename", how="inner")
+                ablated_joined = ablated_task.merge(test, on="filename", how="inner")
+                target_label_by_stage = {
+                    "genus": str(run.genus),
+                    "species": str(run.species),
+                }
+                for question, evaluated_stage, selector in question_specs:
+                    baseline_cohort = baseline_joined[selector(baseline_joined)]
+                    ablated_cohort = ablated_joined[selector(ablated_joined)]
+                    if baseline_cohort.empty or ablated_cohort.empty:
+                        continue
+                    baseline_score = float(
+                        baseline_cohort["true_label"].astype(str).eq(
+                            baseline_cohort["predicted_label"].astype(str)
+                        ).mean()
+                    )
+                    ablated_score = float(
+                        ablated_cohort["true_label"].astype(str).eq(
+                            ablated_cohort["predicted_label"].astype(str)
+                        ).mean()
+                    )
+                    target_label = (
+                        evaluated_stage if task == "age"
+                        else target_label_by_stage.get(task)
+                    )
+                    baseline_target = {}
+                    ablated_target = {}
+                    if target_label is not None:
+                        for prediction_frame, destination in (
+                            (baseline_task, baseline_target),
+                            (ablated_task, ablated_target),
+                        ):
+                            labels = list(dict.fromkeys(
+                                [
+                                    *prediction_frame["true_label"].astype(str).tolist(),
+                                    *prediction_frame["predicted_label"].astype(str).tolist(),
+                                ]
+                            ))
+                            if target_label in labels:
+                                mapping = {label: index for index, label in enumerate(labels)}
+                                destination.update(classification_metric_summary(
+                                    prediction_frame["true_label"].astype(str).map(mapping).to_numpy(),
+                                    prediction_frame["predicted_label"].astype(str).map(mapping).to_numpy(),
+                                    target_index=mapping[target_label],
+                                ))
+                    output_rows.append({
+                        "question": question,
+                        "holdout": run.holdout,
+                        "genus": run.genus,
+                        "species": run.species,
+                        "heldout_stage": run.stage,
+                        "evaluated_stage": evaluated_stage,
+                        "task": task,
+                        "seed": run.seed,
+                        "baseline_score": baseline_score,
+                        "ablated_score": ablated_score,
+                        "delta": ablated_score - baseline_score,
+                        "test_images": int(len(baseline_cohort)),
+                        "baseline_target_precision": baseline_target.get("target_precision"),
+                        "ablated_target_precision": ablated_target.get("target_precision"),
+                        "baseline_target_recall": baseline_target.get("target_recall"),
+                        "ablated_target_recall": ablated_target.get("target_recall"),
+                        "baseline_target_f1": baseline_target.get("target_f1"),
+                        "ablated_target_f1": ablated_target.get("target_f1"),
+                    })
+    return pd.DataFrame(output_rows, columns=columns)
+
+
+def save_biological_question_figure(
+    frame: pd.DataFrame,
+    output_dir: Path,
+    source_root: Path,
+) -> list[str]:
+    if frame.empty:
+        return []
+    question_order = [
+        "Direct withheld cohort",
+        "Adult removed → evaluate Juvenile",
+        "Juvenile removed → evaluate Adult",
+        "Within-genus spillover",
+    ]
+    questions = [value for value in question_order if value in set(frame["question"])]
+    per_seed = frame.groupby(
+        ["question", "task", "seed"], dropna=False, as_index=False
+    )["delta"].mean()
+    summary = seed_summary(per_seed, ["question", "task"], "delta")
+    fig, axes = plt.subplots(2, 2, figsize=(15.5, 10.5), sharex=True, sharey=True, squeeze=False)
+    x = np.arange(len(TASK_ORDER), dtype=float)
+    for question_index, question in enumerate(questions):
+        ax = axes.flat[question_index]
+        current = per_seed[per_seed["question"].eq(question)]
+        current_summary = summary[summary["question"].eq(question)].set_index("task")
+        for task_index, task in enumerate(TASK_ORDER):
+            raw = current[current["task"].eq(task)]
+            ax.scatter(
+                np.full(len(raw), x[task_index])
+                + _deterministic_jitter(raw.get("seed", raw.index), width=0.09),
+                raw["delta"],
+                s=20,
+                alpha=0.34,
+                marker=("o", "s", "^")[task_index],
+                color=PALETTE[task_index],
+            )
+            if task in current_summary.index:
+                row = current_summary.loc[task]
+                ax.errorbar(
+                    x[task_index], row["mean"],
+                    yerr=0.0 if pd.isna(row["ci95"]) else row["ci95"],
+                    fmt=("o", "s", "^")[task_index], color=PALETTE[task_index],
+                    markeredgecolor="black", capsize=4, markersize=8, zorder=4,
+                )
+        ax.axhline(0.0, color="#000000", linestyle=":", linewidth=1.1)
+        ax.set_xticks(x, [TASK_LABELS[task] for task in TASK_ORDER])
+        ax.yaxis.set_major_formatter(PercentFormatter(1.0))
+        ax.grid(axis="y", alpha=0.18)
+        ax.spines[["top", "right"]].set_visible(False)
+        ax.set_title(f"{chr(65 + question_index)}. {question}", loc="left", fontweight="bold")
+        if question_index % 2 == 0:
+            ax.set_ylabel("Change from matched full-data model")
+    for unused in range(len(questions), 4):
+        axes.flat[unused].set_axis_off()
+    fig.suptitle("What transfers when a species-stage cohort is removed?", fontsize=16, fontweight="bold")
+    fig.text(0.5, 0.018, "Each point is a training seed after first averaging eligible species within that seed. Negative values indicate worse independent-test cohort accuracy after ablation; whiskers are 95% t intervals across seeds.", ha="center", fontsize=8.5)
+    fig.subplots_adjust(top=0.92, bottom=0.08, left=0.09, right=0.98, hspace=0.27, wspace=0.16)
+    return _save_bundle(
+        fig,
+        output_dir=output_dir,
+        source_root=source_root,
+        name="figure_04_biological_transfer_questions",
+        sources={
+            "prediction_derived_metrics": frame,
+            "per_seed_species_average": per_seed,
+            "seed_summary": summary,
+        },
+        details={
+            "split": "independent test only",
+            "metric": "change in image-level cohort accuracy",
+            "pairing_unit": "matched training seed",
+            "precision_recall_f1_source": "complete-test one-vs-rest hard predictions",
+            "uncertainty": "95% t interval across seed-level species averages",
+            **_paper_design_manifest(),
+        },
+    )
+
+
 def shared_variance_effect_summary(
     paired: pd.DataFrame,
     *,
@@ -708,7 +1671,13 @@ def shared_variance_effect_summary(
         *identities, "task", "n_seeds", "normal_mean_recall",
         "ablated_mean_recall", "chance", "number_of_classes", "chance_method",
         "shared_normal_sd", "m_total", "m_lost", "m_retained",
+        "m_total_ci95_low", "m_total_ci95_high",
+        "m_lost_ci95_low", "m_lost_ci95_high",
+        "m_retained_ci95_low", "m_retained_ci95_high",
         "margin_additive_check_error", "d_total", "d_ablation", "d_retained",
+        "d_total_ci95_low", "d_total_ci95_high",
+        "d_ablation_ci95_low", "d_ablation_ci95_high",
+        "d_retained_ci95_low", "d_retained_ci95_high",
         "standardised_additive_check_error",
     ]
     required = {
@@ -770,6 +1739,12 @@ def shared_variance_effect_summary(
         else:
             d_total = d_ablation = d_retained = np.nan
             standardised_additive_error = np.nan
+        intervals = _paired_seed_bootstrap_intervals(
+            normal_scores,
+            ablated_scores,
+            chance,
+            identity=identity_record,
+        )
         rows.append({
             **identity_record,
             "n_seeds": int(normal_scores.size),
@@ -782,6 +1757,7 @@ def shared_variance_effect_summary(
             "m_total": m_total,
             "m_lost": m_lost,
             "m_retained": m_retained,
+            **intervals,
             "margin_additive_check_error": float(margin_additive_error),
             "d_total": float(d_total),
             "d_ablation": float(d_ablation),
@@ -795,6 +1771,70 @@ def shared_variance_effect_summary(
         if column not in result:
             result[column] = np.nan
     return result[columns]
+
+
+def _paired_seed_bootstrap_intervals(
+    normal_scores: np.ndarray,
+    ablated_scores: np.ndarray,
+    chance: float,
+    *,
+    identity: dict[str, object],
+) -> dict[str, float]:
+    """Pointwise percentile intervals from matched-seed bootstrap samples."""
+    metric_names = (
+        "m_total", "m_lost", "m_retained",
+        "d_total", "d_ablation", "d_retained",
+    )
+    empty = {
+        f"{metric}_{bound}": np.nan
+        for metric in metric_names
+        for bound in ("ci95_low", "ci95_high")
+    }
+    if normal_scores.size < 2 or normal_scores.size != ablated_scores.size:
+        return empty
+
+    identity_text = json.dumps(
+        {
+            str(key): None if pd.isna(value) else str(value)
+            for key, value in identity.items()
+        },
+        sort_keys=True,
+    )
+    identity_seed = int.from_bytes(
+        hashlib.sha256(identity_text.encode("utf-8")).digest()[:8], "big"
+    )
+    rng = np.random.default_rng(ABLATION_BOOTSTRAP_SEED ^ identity_seed)
+    indices = rng.integers(
+        0,
+        normal_scores.size,
+        size=(ABLATION_BOOTSTRAP_RESAMPLES, normal_scores.size),
+    )
+    sampled_normal = normal_scores[indices]
+    sampled_ablated = ablated_scores[indices]
+    normal_mean = sampled_normal.mean(axis=1)
+    ablated_mean = sampled_ablated.mean(axis=1)
+    normal_sd = sampled_normal.std(axis=1, ddof=1)
+    samples = {
+        "m_total": normal_mean - chance,
+        "m_lost": normal_mean - ablated_mean,
+        "m_retained": ablated_mean - chance,
+    }
+    with np.errstate(divide="ignore", invalid="ignore"):
+        samples.update({
+            "d_total": (normal_mean - chance) / normal_sd,
+            "d_ablation": (normal_mean - ablated_mean) / normal_sd,
+            "d_retained": (ablated_mean - chance) / normal_sd,
+        })
+    alpha = (1.0 - ABLATION_INTERVAL_LEVEL) / 2.0
+    result = empty.copy()
+    for metric, values in samples.items():
+        finite = np.asarray(values, dtype=float)
+        finite = finite[np.isfinite(finite)]
+        if finite.size:
+            low, high = np.quantile(finite, (alpha, 1.0 - alpha))
+            result[f"{metric}_ci95_low"] = float(low)
+            result[f"{metric}_ci95_high"] = float(high)
+    return result
 
 
 def _recall_seed_data(paired: pd.DataFrame) -> pd.DataFrame:
@@ -829,6 +1869,23 @@ def _ablation_figure_details() -> dict[str, str]:
         "individual_count_scope": "matching species-stage cohort",
         "overall_individuals": "unique barcodes across training, validation, and test splits",
         "test_individuals": "unique barcodes in the independent test split",
+    }
+
+
+def _ablation_interval_details() -> dict[str, object]:
+    return {
+        "interval": "pointwise 95% paired-seed percentile bootstrap interval",
+        "interval_source": "variation across matched baseline/ablated training seeds",
+        "interval_is_class_based": False,
+        "interval_resamples": ABLATION_BOOTSTRAP_RESAMPLES,
+        "interval_random_seed": ABLATION_BOOTSTRAP_SEED,
+        "interval_pairing_unit": "matched training seed",
+        "chance_reference": "1/K from the saved task label map",
+        "chance_is_interval_source": False,
+        "interval_visualisation": (
+            "whiskers show retained and total position intervals; lost-gap "
+            "interval bounds are preserved in the source CSV"
+        ),
     }
 
 
@@ -870,31 +1927,33 @@ def _draw_capacity_row(
     if not all(np.isfinite(value) for value in (total, lost, retained)):
         ax.text(0.0, y, "undefined: normal seed SD = 0", fontsize=8, va="center")
         return
-    ax.plot([0.0, retained], [y, y], color="#3D7A57", linewidth=5.0,
+    ax.plot([0.0, retained], [y, y], color="#009E73", linewidth=5.0,
             solid_capstyle="round", alpha=0.75, zorder=2)
-    ax.plot([retained, total], [y, y], color="#A04747", linewidth=5.0,
+    ax.plot([retained, total], [y, y], color="#D55E00", linewidth=5.0,
             solid_capstyle="round", alpha=0.75, zorder=2)
     ax.scatter(0.0, y, marker="|", s=115, color="#555555", linewidths=1.5,
                zorder=4)
-    ax.scatter(retained, y, marker="o", s=54, color="#B35C1E",
+    ax.scatter(retained, y, marker="o", s=54, color="#E69F00",
                edgecolors="white", linewidths=0.8, zorder=4)
     ax.scatter(total, y, marker="D", s=52, facecolors="white",
-               edgecolors="#3B5B92", linewidths=1.5, zorder=4)
+               edgecolors="#0072B2", linewidths=1.5, zorder=4)
+    _draw_horizontal_interval(ax, row, "d_retained", y, "#E69F00")
+    _draw_horizontal_interval(ax, row, "d_total", y, "#0072B2")
     if annotate:
         ax.annotate(
             f"retained {retained:.2f}", (retained, y), xytext=(0, -15),
             textcoords="offset points", ha="center", va="top", fontsize=7.5,
-            color="#8A4A17",
+            color="#6B4E00",
         )
         ax.annotate(
             f"total {total:.2f}", (total, y), xytext=(0, 13),
             textcoords="offset points", ha="center", va="bottom", fontsize=7.5,
-            color="#29456F",
+            color="#00547F",
         )
         ax.annotate(
             f"lost {lost:.2f}", ((retained + total) / 2.0, y),
             xytext=(0, 5), textcoords="offset points", ha="center",
-            va="bottom", fontsize=7.2, color="#823D3D",
+            va="bottom", fontsize=7.2, color="#8C3A00",
         )
 
 
@@ -949,11 +2008,11 @@ def save_paired_estimation_figure(
         handles=[
             Line2D([0], [0], marker="|", color="#555555", linestyle="none",
                    markersize=12, label="Chance = 0"),
-            Line2D([0], [0], marker="o", color="#B35C1E", linestyle="none",
+            Line2D([0], [0], marker="o", color="#E69F00", linestyle="none",
                    markeredgecolor="white", label=r"Ablated: $d_{retained}$"),
-            Line2D([0], [0], marker="D", color="#3B5B92", linestyle="none",
+            Line2D([0], [0], marker="D", color="#0072B2", linestyle="none",
                    markerfacecolor="white", label=r"Normal: $d_{total}$"),
-            Line2D([0], [0], color="#A04747", linewidth=5,
+            Line2D([0], [0], color="#D55E00", linewidth=5,
                    label=r"Gap: $d_{ablation}$"),
         ],
         loc="upper center", bbox_to_anchor=(0.5, 0.92), ncol=4, frameon=False,
@@ -964,7 +2023,9 @@ def save_paired_estimation_figure(
         _ablation_figure_note(
             r"All positions use the normal model's sample SD: "
             r"$d_{total}=d_{ablation}+d_{retained}$. The publication design "
-            r"uses 30 seeds per stage; guides mark $d=0.8$ and $d=2$."
+            r"uses 30 seeds per stage; guides mark $d=0.8$ and $d=2$. "
+            r"Whiskers are pointwise 95% paired-seed bootstrap intervals; "
+            r"gap intervals are retained in the source CSV."
         ),
         ha="center", fontsize=9,
     )
@@ -983,7 +2044,8 @@ def save_paired_estimation_figure(
             "d_ablation": "(normal mean recall - ablated mean recall) / normal recall SD",
             "d_retained": "(ablated mean recall - chance) / normal recall SD",
             "additive_identity": "d_total = d_ablation + d_retained",
-            "inference": "descriptive effect sizes; no p-value or confidence interval",
+            **_ablation_interval_details(),
+            "inference": "descriptive effect sizes with confidence intervals; no p-value",
             "cohort": TEST_COHORT,
             "split": "test",
             **_ablation_figure_details(),
@@ -999,7 +2061,10 @@ def _raw_margin_summary(effect_summary: pd.DataFrame) -> pd.DataFrame:
         "overall_individuals", "test_individuals",
         "normal_mean_recall", "ablated_mean_recall", "chance",
         "number_of_classes", "chance_method", "m_total", "m_lost",
-        "m_retained", "margin_additive_check_error",
+        "m_retained", "m_total_ci95_low", "m_total_ci95_high",
+        "m_lost_ci95_low", "m_lost_ci95_high",
+        "m_retained_ci95_low", "m_retained_ci95_high",
+        "margin_additive_check_error",
     ]
     return effect_summary[
         [column for column in columns if column in effect_summary]
@@ -1025,32 +2090,60 @@ def _draw_margin_row(
     total = float(row["m_total"])
     lost = float(row["m_lost"])
     retained = float(row["m_retained"])
-    ax.plot([0.0, retained], [y, y], color="#3D7A57", linewidth=5.0,
+    ax.plot([0.0, retained], [y, y], color="#009E73", linewidth=5.0,
             solid_capstyle="round", alpha=0.75, zorder=2)
-    ax.plot([retained, total], [y, y], color="#A04747", linewidth=5.0,
+    ax.plot([retained, total], [y, y], color="#D55E00", linewidth=5.0,
             solid_capstyle="round", alpha=0.75, zorder=2)
     ax.scatter(0.0, y, marker="|", s=115, color="#555555", linewidths=1.5,
                zorder=4)
-    ax.scatter(retained, y, marker="o", s=54, color="#B35C1E",
+    ax.scatter(retained, y, marker="o", s=54, color="#E69F00",
                edgecolors="white", linewidths=0.8, zorder=4)
     ax.scatter(total, y, marker="D", s=52, facecolors="white",
-               edgecolors="#3B5B92", linewidths=1.5, zorder=4)
+               edgecolors="#0072B2", linewidths=1.5, zorder=4)
+    _draw_horizontal_interval(ax, row, "m_retained", y, "#E69F00")
+    _draw_horizontal_interval(ax, row, "m_total", y, "#0072B2")
     if annotate:
         ax.annotate(
             f"retained {retained:+.1%}", (retained, y), xytext=(0, -15),
             textcoords="offset points", ha="center", va="top", fontsize=7.5,
-            color="#8A4A17",
+            color="#6B4E00",
         )
         ax.annotate(
             f"total {total:+.1%}", (total, y), xytext=(0, 13),
             textcoords="offset points", ha="center", va="bottom", fontsize=7.5,
-            color="#29456F",
+            color="#00547F",
         )
         ax.annotate(
             f"lost {lost:+.1%}", ((retained + total) / 2.0, y),
             xytext=(0, 5), textcoords="offset points", ha="center",
-            va="bottom", fontsize=7.2, color="#823D3D",
+            va="bottom", fontsize=7.2, color="#8C3A00",
         )
+
+
+def _draw_horizontal_interval(
+    ax: plt.Axes,
+    row: pd.Series,
+    metric: str,
+    y: float,
+    colour: str,
+) -> None:
+    center = float(row.get(metric, np.nan))
+    low = float(row.get(f"{metric}_ci95_low", np.nan))
+    high = float(row.get(f"{metric}_ci95_high", np.nan))
+    if not all(np.isfinite(value) for value in (center, low, high)):
+        return
+    ax.errorbar(
+        center,
+        y,
+        xerr=np.asarray([[max(0.0, center - low)], [max(0.0, high - center)]]),
+        fmt="none",
+        ecolor=colour,
+        elinewidth=1.2,
+        capsize=3.0,
+        capthick=1.0,
+        alpha=0.95,
+        zorder=3,
+    )
 
 
 def _raw_margin_details() -> dict[str, object]:
@@ -1067,7 +2160,8 @@ def _raw_margin_details() -> dict[str, object]:
         "random_prediction_strategy": "uniform probability over K task classes",
         "class_imbalance_note": "for class recall under uniform random prediction, chance remains 1/K even when true classes are imbalanced",
         "accuracy_weighted_recall_note": "not plotted; those metrics require chance from true class proportions and prediction probabilities",
-        "inference": "descriptive margins; no p-value or confidence interval",
+        **_ablation_interval_details(),
+        "inference": "descriptive margins with confidence intervals; no p-value",
         "cohort": TEST_COHORT,
         "split": "test",
         **_ablation_figure_details(),
@@ -1126,11 +2220,11 @@ def save_species_margin_figure(
         handles=[
             Line2D([0], [0], marker="|", color="#555555", linestyle="none",
                    markersize=12, label="Chance = 0 margin"),
-            Line2D([0], [0], marker="o", color="#B35C1E", linestyle="none",
+            Line2D([0], [0], marker="o", color="#E69F00", linestyle="none",
                    markeredgecolor="white", label=r"Ablated: $M_{retained}$"),
-            Line2D([0], [0], marker="D", color="#3B5B92", linestyle="none",
+            Line2D([0], [0], marker="D", color="#0072B2", linestyle="none",
                    markerfacecolor="white", label=r"Normal: $M_{total}$"),
-            Line2D([0], [0], color="#A04747", linewidth=5,
+            Line2D([0], [0], color="#D55E00", linewidth=5,
                    label=r"Gap: $M_{lost}$"),
         ],
         loc="upper center", bbox_to_anchor=(0.5, 0.92), ncol=4, frameon=False,
@@ -1143,7 +2237,9 @@ def save_species_margin_figure(
         0.5, 0.018,
         _ablation_figure_note(
             r"$M_{total}=M_{lost}+M_{retained}$; chance is derived as $1/K$ "
-            r"from each task's saved class map."
+            r"from each task's saved class map. Whiskers are pointwise 95% "
+            r"paired-seed bootstrap intervals; gap intervals are retained in "
+            r"the source CSV."
         ),
         ha="center", fontsize=9,
     )
@@ -1235,11 +2331,11 @@ def save_all_species_effect_figure(
     legend = [
         Line2D([0], [0], marker="|", color="#555555", linestyle="none",
                markersize=12, label="Chance = 0"),
-        Line2D([0], [0], marker="o", color="#B35C1E", linestyle="none",
+        Line2D([0], [0], marker="o", color="#E69F00", linestyle="none",
                markeredgecolor="white", label=r"Ablated: $d_{retained}$"),
-        Line2D([0], [0], marker="D", color="#3B5B92", linestyle="none",
+        Line2D([0], [0], marker="D", color="#0072B2", linestyle="none",
                markerfacecolor="white", label=r"Normal: $d_{total}$"),
-        Line2D([0], [0], color="#A04747", linewidth=5,
+        Line2D([0], [0], color="#D55E00", linewidth=5,
                label=r"Gap: $d_{ablation}$"),
     ]
     fig.legend(
@@ -1247,7 +2343,7 @@ def save_all_species_effect_figure(
         ncol=4, frameon=False,
     )
     fig.suptitle(
-        "ConvNeXt-Base recall capacity by species and life stage — independent test cohort",
+        "Supplementary: ConvNeXt-Base recall capacity by species and life stage",
         fontsize=16, fontweight="bold", y=0.992,
     )
     fig.text(
@@ -1255,14 +2351,16 @@ def save_all_species_effect_figure(
         _ablation_figure_note(
             r"Chance is 0; the ablated point is $d_{retained}$, the normal "
             r"point is $d_{total}$, and their gap is $d_{ablation}$. All use "
-            r"the normal model's seed SD across the 30-seed publication design."
+            r"the normal model's seed SD across the 30-seed publication design. "
+            r"Whiskers are pointwise 95% paired-seed bootstrap intervals; "
+            r"gap intervals are retained in the source CSV."
         ),
         ha="center", fontsize=9,
     )
     fig.subplots_adjust(top=0.87, bottom=0.08, left=0.18, right=0.98, wspace=0.12)
     return _save_bundle(
         fig, output_dir=output_dir, source_root=source_root,
-        name="figure_04_all_data_ablations",
+        name="supplementary_figure_01_all_species_effects",
         sources={
             "recall_seed_data": _recall_seed_data(paired),
             "shared_variance_effects": summary,
@@ -1277,7 +2375,8 @@ def save_all_species_effect_figure(
             "d_ablation": "(normal mean recall - ablated mean recall) / normal recall SD",
             "d_retained": "(ablated mean recall - chance) / normal recall SD",
             "additive_identity": "d_total = d_ablation + d_retained",
-            "inference": "descriptive effect sizes; no p-value or confidence interval",
+            **_ablation_interval_details(),
+            "inference": "descriptive effect sizes with confidence intervals; no p-value",
             "cohort": TEST_COHORT,
             "split": "test",
             **_ablation_figure_details(),
@@ -1349,31 +2448,33 @@ def save_all_species_margin_figure(
         handles=[
             Line2D([0], [0], marker="|", color="#555555", linestyle="none",
                    markersize=12, label="Chance = 0 margin"),
-            Line2D([0], [0], marker="o", color="#B35C1E", linestyle="none",
+            Line2D([0], [0], marker="o", color="#E69F00", linestyle="none",
                    markeredgecolor="white", label=r"Ablated: $M_{retained}$"),
-            Line2D([0], [0], marker="D", color="#3B5B92", linestyle="none",
+            Line2D([0], [0], marker="D", color="#0072B2", linestyle="none",
                    markerfacecolor="white", label=r"Normal: $M_{total}$"),
-            Line2D([0], [0], color="#A04747", linewidth=5,
+            Line2D([0], [0], color="#D55E00", linewidth=5,
                    label=r"Gap: $M_{lost}$"),
         ],
         loc="upper center", bbox_to_anchor=(0.5, 0.935), ncol=4, frameon=False,
     )
     fig.suptitle(
-        "Raw ConvNeXt-Base recall margins by species and life stage — independent test cohort",
+        "Supplementary: raw ConvNeXt-Base recall margins by species and life stage",
         fontsize=16, fontweight="bold", y=0.992,
     )
     fig.text(
         0.5, 0.018,
         _ablation_figure_note(
             r"$M_{total}=M_{lost}+M_{retained}$. Chance is derived separately "
-            r"for each task as $1/K$ under uniform random prediction."
+            r"for each task as $1/K$ under uniform random prediction. Whiskers "
+            r"are pointwise 95% paired-seed bootstrap intervals; gap intervals "
+            r"are retained in the source CSV."
         ),
         ha="center", fontsize=9,
     )
     fig.subplots_adjust(top=0.87, bottom=0.08, left=0.18, right=0.98, wspace=0.12)
     return _save_bundle(
         fig, output_dir=output_dir, source_root=source_root,
-        name="figure_06_all_data_ablations_raw_margins",
+        name="supplementary_figure_02_all_species_raw_margins",
         sources={
             "recall_seed_data": _recall_seed_data(paired),
             "raw_margin_decomposition": summary,
@@ -1506,7 +2607,19 @@ def build_holdout_visual_notebook_figures(
 
     runs = collect_runs(paper_root)
     baseline_frame = prepare_baseline_frame(runs)
+    age_metric_frame, age_confusion_frame = (
+        prepare_developmental_stage_diagnostics(baseline_frame)
+    )
     visual_frames = prepare_convnext_visual_frames(runs, visual_model)
+    chance_reference = visual_uniform_chance_reference(runs, split_root)
+    chance_rows = chance_reference[chance_reference["task"].eq("mean")]
+    visual_chance = (
+        float(chance_rows.iloc[0]["expected_uniform_macro_f1"])
+        if not chance_rows.empty
+        else np.nan
+    )
+    for frame in visual_frames.values():
+        frame["chance"] = visual_chance
     taxon_frame = _paper_design_only(
         _model_only(
             prepare_taxon_stage_holdout_frame(
@@ -1521,14 +2634,43 @@ def build_holdout_visual_notebook_figures(
     paired, taxon_individual_counts = attach_taxon_individual_counts(
         paired, split_root
     )
+    biological_question_frame = prepare_biological_question_frame(
+        taxon_frame, split_root
+    )
     species_paired = paired[
         paired.get("species", pd.Series(index=paired.index, dtype=str)).astype(str).eq(species_ablation)
     ].copy() if not paired.empty else paired
 
     figures = {
         "baseline_all_models_tasks": save_baseline_overview(baseline_frame, output_dir, source_root),
+        "developmental_stage_diagnostics": save_developmental_stage_diagnostics(
+            age_metric_frame,
+            age_confusion_frame,
+            output_dir,
+            source_root,
+        ),
         "convnext_visual_ablation": save_convnext_visual_figure(
-            visual_frames, output_dir, source_root, model=visual_model,
+            visual_frames,
+            output_dir,
+            source_root,
+            model=visual_model,
+            resolution_scale="linear",
+            chance_reference=chance_reference,
+        ),
+        "convnext_visual_ablation_resolution_log2": save_convnext_visual_figure(
+            visual_frames,
+            output_dir,
+            source_root,
+            model=visual_model,
+            resolution_scale="log2",
+            chance_reference=chance_reference,
+        ),
+        "mixed_visual_seed_comparison": save_mixed_visual_seed_figure(
+            visual_frames.get("interaction", pd.DataFrame()),
+            output_dir,
+            source_root,
+            model=visual_model,
+            chance_reference=chance_reference,
         ),
         "species_ablation": save_paired_estimation_figure(
             species_paired, output_dir, source_root,
@@ -1543,6 +2685,17 @@ def build_holdout_visual_notebook_figures(
                 "split": "test",
                 "cohort": TEST_COHORT,
             },
+        ),
+        "species_ablation_precision_recall_f1": save_species_target_metric_figure(
+            species_paired,
+            output_dir,
+            source_root,
+            species_ablation=species_ablation,
+        ),
+        "biological_transfer_questions": save_biological_question_figure(
+            biological_question_frame,
+            output_dir,
+            source_root,
         ),
         "all_data_ablations": save_all_species_effect_figure(
             paired, output_dir, source_root,
@@ -1572,12 +2725,16 @@ def build_holdout_visual_notebook_figures(
         "data_root": str(data_root),
         "paper_design": _paper_design_manifest(),
         "baseline_rows": int(len(baseline_frame)),
+        "developmental_stage_metric_rows": int(len(age_metric_frame)),
+        "developmental_stage_confusion_rows": int(len(age_confusion_frame)),
+        "visual_chance_reference": chance_reference.to_dict(orient="records"),
         "taxon_stage_rows": int(len(taxon_frame)),
         "paired_taxon_rows": int(len(paired)),
         "taxon_individual_counts": taxon_individual_counts.to_dict(
             orient="records"
         ),
         "species_paired_rows": int(len(species_paired)),
+        "biological_question_rows": int(len(biological_question_frame)),
         "figures": figures,
     }
     (output_dir / "manifest.json").write_text(

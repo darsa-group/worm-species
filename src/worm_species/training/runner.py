@@ -74,12 +74,17 @@ def run_test_evaluation(
     profile: TrainingProfile,
     wandb_logger,
     input_condition: dict,
-) -> tuple[dict, dict[str, list[int]], dict[str, list[int]]]:
+) -> tuple[
+    dict,
+    dict[str, list[int]],
+    dict[str, list[int]],
+    dict[str, np.ndarray],
+]:
     """Evaluate one checkpoint on the test split and save its outputs."""
     checkpoint = load_checkpoint(checkpoint_path, map_location=device)
     model.load_state_dict(checkpoint["model_state"])
 
-    test_metrics, true, pred = run_hierarchy_epoch(
+    test_metrics, true, pred, probabilities = run_hierarchy_epoch(
         model,
         bundle.test_loader,
         criteria,
@@ -93,6 +98,7 @@ def run_test_evaluation(
         hierarchy_cfg,
         matrix,
         profile.masked_labels,
+        return_probabilities=True,
     )
 
     wandb_condition = (
@@ -173,6 +179,7 @@ def run_test_evaluation(
         names = bundle.index_to_label_by_task[task]
         task_true = true.get(task, [])
         task_pred = pred.get(task, [])
+        task_probabilities = probabilities.get(task, np.empty((0, 0)))
         source_positions = list(range(len(task_true)))
         if test_frame is not None:
             label_column = bundle.target_cols[task]
@@ -194,6 +201,21 @@ def run_test_evaluation(
                 "true_label": names[int(true_index)],
                 "predicted_label": names[int(pred_index)],
             }
+            if evaluation_index < len(task_probabilities):
+                probability_row = task_probabilities[evaluation_index]
+                row["predicted_probability"] = float(
+                    probability_row[int(pred_index)]
+                )
+                row["true_probability"] = float(
+                    probability_row[int(true_index)]
+                )
+                row["class_probabilities_json"] = json.dumps(
+                    {
+                        names[index]: float(value)
+                        for index, value in enumerate(probability_row)
+                    },
+                    sort_keys=True,
+                )
             if test_frame is not None and evaluation_index < len(source_positions):
                 source = test_frame.iloc[source_positions[evaluation_index]]
                 if group_col and group_col in source:
@@ -220,7 +242,7 @@ def run_test_evaluation(
         f"[{run_name}] {checkpoint_name.capitalize()} checkpoint test "
         f"mean macro-F1: {test_metrics.get('mean_macro_f1', float('nan')):.4f}"
     )
-    return test_metrics, true, pred
+    return test_metrics, true, pred, probabilities
 
 
 def run_one(cfg: dict, profile: TrainingProfile) -> dict:
@@ -538,7 +560,7 @@ def run_one(cfg: dict, profile: TrainingProfile) -> dict:
         )
         save_checkpoint(payload, out_dir / "last_model.pt")
         print(f"[{run_name}] Last model saved")
-        last_test_metrics, _, _ = run_test_evaluation(
+        last_test_metrics, _, _, _ = run_test_evaluation(
             checkpoint_name="last",
             checkpoint_path=out_dir / "last_model.pt",
             write_legacy_outputs=False,
@@ -557,7 +579,7 @@ def run_one(cfg: dict, profile: TrainingProfile) -> dict:
             wandb_logger=wandb_logger,
             input_condition=input_condition,
         )
-    test_metrics, true, pred = run_test_evaluation(
+    test_metrics, true, pred, probabilities = run_test_evaluation(
         checkpoint_name="best",
         checkpoint_path=out_dir / "best_model.pt",
         write_legacy_outputs=True,
@@ -590,6 +612,9 @@ def run_one(cfg: dict, profile: TrainingProfile) -> dict:
         hierarchy_cfg=hierarchy_cfg,
         child_to_parent_matrix=matrix,
         use_masked_labels=profile.masked_labels,
+        full_test_true=true,
+        full_test_pred=pred,
+        full_test_probabilities=probabilities,
     )
     holdout_controls = evaluate_holdout_controls(
         cfg=cfg,
@@ -604,6 +629,9 @@ def run_one(cfg: dict, profile: TrainingProfile) -> dict:
         hierarchy_cfg=hierarchy_cfg,
         child_to_parent_matrix=matrix,
         use_masked_labels=profile.masked_labels,
+        full_test_true=true,
+        full_test_pred=pred,
+        full_test_probabilities=probabilities,
     )
 
     if profile.loader_mode == "colour":
@@ -801,11 +829,18 @@ def run_one(cfg: dict, profile: TrainingProfile) -> dict:
     if data_holdout.get("enabled", False):
         summary["data_holdout_name"] = data_holdout["name"]
         for row in data_holdout["tasks"]:
-            summary[
-                "data_holdout/"
-                f"{row.get('cohort', 'independent_test')}/"
-                f"{row['task']}/target_recall"
-            ] = row["target_recall"]
+            for metric in (
+                "target_precision", "target_recall", "target_specificity",
+                "target_f1", "target_roc_auc", "target_average_precision",
+                "target_brier_score", "target_ece_10bin",
+            ):
+                if metric not in row:
+                    continue
+                summary[
+                    "data_holdout/"
+                    f"{row.get('cohort', 'independent_test')}/"
+                    f"{row['task']}/{metric}"
+                ] = row[metric]
     artifact_paths = [
         out_dir / "config.json",
         out_dir / "test_metrics.json",
@@ -818,6 +853,7 @@ def run_one(cfg: dict, profile: TrainingProfile) -> dict:
         out_dir / "best_model.pt",
         *sorted(out_dir.glob("classification_report_*.csv")),
         *sorted(out_dir.glob("confusion_matrix_*.csv")),
+        *sorted(out_dir.glob("test_predictions_*.csv")),
         out_dir / "data_holdout_evaluation" / "summary.json",
         out_dir / "data_holdout_evaluation" / "task_metrics.csv",
         out_dir / "data_holdout_control_evaluation" / "summary.json",
