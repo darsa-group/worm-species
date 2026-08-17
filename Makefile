@@ -1,6 +1,6 @@
 .DEFAULT_GOAL := help
 
-PYTHON ?= python
+PYTHON ?= /home/devd/miniforge3/envs/wormspecies/bin/python
 PIPELINE_CONFIG ?= dev/genome_ablation_pipeline.yaml
 PIPELINE_MODE ?= dry-run
 PAPER_RESULT ?= paper_result
