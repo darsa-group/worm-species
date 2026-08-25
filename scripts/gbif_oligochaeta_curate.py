@@ -102,7 +102,7 @@ def main() -> None:
         color="cluster",
         symbol="curation_label",
         hover_data=["image_id", "genus", "species", "scientific_name"],
-        render_mode="webgl",
+        render_mode="svg",
     )
     st.plotly_chart(plot, use_container_width=True)
 

@@ -16,7 +16,7 @@ ADULT_TAXON_RESULT ?= adult_taxon_ablation_result
 PUBLICATION_PIPELINE_CONFIG ?= dev/genome_publication_30seed_pipeline.yaml
 PUBLICATION_PIPELINE_MODE ?= dry-run
 PUBLICATION_RESULT ?= publication_30seed_result
-GBIF_CHECKPOINT ?=
+GBIF_CHECKPOINT ?= publication_30seed_result/runs/adult_taxon_baseline/run_000_convnext_base_original_loss_genus-1.0_species-0.5_age-2.0_seed_40_hloss_0.0_20260805153305/lr_0.0003_hloss_False_94d199d6_train_original/best_model.pt
 GBIF_CURATED_MANIFEST ?= gbif_oligochaeta/curation/curated_manifest.csv
 GBIF_EXISTING_PREDICTIONS ?= gbif_oligochaeta/predictions/existing_checkpoint.csv
 GBIF_DATASET_NOTEBOOK ?= notebooks/gbif_earthworm_dataset_audit.ipynb
@@ -25,8 +25,11 @@ GBIF_DOWNLOAD_KEY ?=
 GBIF_BUNDLE_ROOT ?= gbif_oligochaeta
 GBIF_GENOME_REMOTE ?= devd@login.genome.au.dk
 GBIF_GENOME_DATA_ROOT ?= /home/devd/worm-species/data/gbif_oligochaeta
-GBIF_GENOME_PROJECT_ROOT ?= /home/devd/worm-species/wormsource2
-GBIF_GENOME_CONDA_ENV ?= wormspecies-gbif
+GBIF_GENOME_PROJECT_ROOT ?= /home/devd/worm-species/source
+GBIF_GENOME_CONDA_ENV ?= wormspecies
+GBIF_TRAINING_CONFIG ?= configs/gbif_training.yaml
+GBIF_PHASE ?= primary
+GBIF_PYTHON ?= python
 
 PAPER_TESTS := \
 	tests.test_paper_ablation_pipeline \
@@ -39,9 +42,10 @@ PAPER_TESTS := \
 	tests.test_training_losses \
 	tests.test_holdout_visual_notebook \
 	tests.test_publication_30seed_pipeline \
-	tests.test_gbif_oligochaeta
+	tests.test_gbif_oligochaeta \
+	tests.test_gbif_domain_experiment
 
-.PHONY: help ablation-pipeline paper-report holdout-visual-report adult-taxon-ablation-pipeline adult-taxon-report publication-pipeline publication-resolution-gapfill publication-resolution-gapfill-submit publication-data-metrics publication-resume publication-status publication-report gbif-oligochaeta-scope gbif-oligochaeta-audit-scope gbif-oligochaeta-request gbif-oligochaeta-download-status gbif-oligochaeta-download-dwca gbif-oligochaeta-manifest gbif-oligochaeta-download-images gbif-oligochaeta-prune-missing-images-dry-run gbif-oligochaeta-prune-missing-images gbif-oligochaeta-filter-dataset-dry-run gbif-oligochaeta-filter-dataset gbif-oligochaeta-transfer-check gbif-oligochaeta-transfer-dry-run gbif-oligochaeta-transfer gbif-oligochaeta-transfer-verify gbif-oligochaeta-pull-genome-results gbif-oligochaeta-push-curation gbif-oligochaeta-genome-dry-run gbif-oligochaeta-genome-submit gbif-oligochaeta-embed gbif-oligochaeta-cluster gbif-oligochaeta-curate gbif-oligochaeta-infer-existing gbif-oligochaeta-notebook gbif-oligochaeta-notebook-execute test
+.PHONY: help ablation-pipeline paper-report holdout-visual-report adult-taxon-ablation-pipeline adult-taxon-report publication-pipeline publication-resolution-gapfill publication-resolution-gapfill-submit publication-data-metrics publication-resume publication-status publication-report gbif-oligochaeta-scope gbif-oligochaeta-audit-scope gbif-oligochaeta-request gbif-oligochaeta-download-status gbif-oligochaeta-download-dwca gbif-oligochaeta-manifest gbif-oligochaeta-download-images gbif-oligochaeta-prune-missing-images-dry-run gbif-oligochaeta-prune-missing-images gbif-oligochaeta-filter-dataset-dry-run gbif-oligochaeta-filter-dataset gbif-oligochaeta-transfer-check gbif-oligochaeta-transfer-dry-run gbif-oligochaeta-transfer gbif-oligochaeta-transfer-verify gbif-oligochaeta-pull-genome-results gbif-oligochaeta-push-curation gbif-oligochaeta-genome-dry-run gbif-oligochaeta-genome-submit gbif-oligochaeta-embed gbif-oligochaeta-cluster gbif-oligochaeta-curate gbif-oligochaeta-infer-existing gbif-oligochaeta-notebook gbif-oligochaeta-notebook-execute gbif-check gbif-prepare gbif-infer-dry-run gbif-infer gbif-train-dry-run gbif-train gbif-dino-dry-run gbif-dino gbif-status gbif-resume gbif-report test
 
 help: ## Show the paper-pipeline commands.
 	@echo "Worm Species paper pipeline"
@@ -94,6 +98,14 @@ help: ## Show the paper-pipeline commands.
 	@echo "                                             Run a real existing checkpoint."
 	@echo "  make gbif-oligochaeta-notebook            Regenerate the dataset-audit notebook."
 	@echo "  make gbif-oligochaeta-notebook-execute    Explicitly execute it in place."
+	@echo "  make gbif-check                          Validate the approved Genome config."
+	@echo "  make gbif-infer GBIF_CHECKPOINT=/path/best_model.pt"
+	@echo "                                             Submit 12 one-GPU inference shards."
+	@echo "  make gbif-train                          Submit ViT/ResNet/ConvNeXt arrays."
+	@echo "  make gbif-dino                           Submit the later 3-seed DINO arrays."
+	@echo "  make gbif-status                         Read output completion state."
+	@echo "  make gbif-resume GBIF_PHASE=primary      Resubmit skip-safe incomplete work."
+	@echo "  make gbif-report                         Build the combined results notebook."
 	@echo "  make test                                 Run the focused paper-pipeline tests."
 	@echo
 	@echo "Dry-run is the default; scheduler submission is always explicit."
@@ -269,6 +281,55 @@ gbif-oligochaeta-notebook-execute: ## Explicitly execute the existing audit note
 		JUPYTER_DATA_DIR=/tmp/jupyter-data PYTHONPATH=.:src $(PYTHON) -m jupyter \
 		nbconvert --to notebook --execute --inplace "$(GBIF_DATASET_NOTEBOOK)" \
 		--ExecutePreprocessor.timeout=$(GBIF_NOTEBOOK_TIMEOUT)
+
+gbif-check: ## Validate the approved direct-on-Genome experiment config.
+	PYTHONPATH=.:src $(GBIF_PYTHON) scripts/gbif_domain_experiment.py \
+		--config "$(GBIF_TRAINING_CONFIG)" check-config
+
+gbif-prepare: ## Build deterministic union labels and leakage-safe GBIF splits.
+	PYTHONPATH=.:src $(GBIF_PYTHON) scripts/gbif_domain_experiment.py \
+		--config "$(GBIF_TRAINING_CONFIG)" prepare
+
+gbif-infer-dry-run: ## Render the 12-shard one-GPU inference array without sbatch.
+	@test -n "$(GBIF_CHECKPOINT)" || (echo "Set GBIF_CHECKPOINT=/path/to/best_model.pt" >&2; exit 2)
+	PYTHONPATH=.:src $(GBIF_PYTHON) scripts/gbif_domain_experiment.py \
+		--config "$(GBIF_TRAINING_CONFIG)" render-inference \
+		--checkpoint "$(GBIF_CHECKPOINT)"
+
+gbif-infer: ## Submit inference locally from a Genome terminal; no SSH.
+	@test -n "$(GBIF_CHECKPOINT)" || (echo "Set GBIF_CHECKPOINT=/path/to/best_model.pt" >&2; exit 2)
+	PYTHONPATH=.:src $(GBIF_PYTHON) scripts/gbif_domain_experiment.py \
+		--config "$(GBIF_TRAINING_CONFIG)" submit-inference \
+		--checkpoint "$(GBIF_CHECKPOINT)"
+
+gbif-train-dry-run: ## Prepare and render primary model arrays without sbatch.
+	PYTHONPATH=.:src $(GBIF_PYTHON) scripts/gbif_domain_experiment.py \
+		--config "$(GBIF_TRAINING_CONFIG)" render-training --phase primary
+
+gbif-train: ## Submit five-seed ViT, ResNet, and ConvNeXt arrays on Genome.
+	PYTHONPATH=.:src $(GBIF_PYTHON) scripts/gbif_domain_experiment.py \
+		--config "$(GBIF_TRAINING_CONFIG)" submit-training --phase primary
+
+gbif-dino-dry-run: ## Prepare and render the later three-seed DINO arrays.
+	PYTHONPATH=.:src $(GBIF_PYTHON) scripts/gbif_domain_experiment.py \
+		--config "$(GBIF_TRAINING_CONFIG)" render-training --phase dino
+
+gbif-dino: ## Submit the later three-seed DINO arrays on Genome.
+	PYTHONPATH=.:src $(GBIF_PYTHON) scripts/gbif_domain_experiment.py \
+		--config "$(GBIF_TRAINING_CONFIG)" submit-training --phase dino
+
+gbif-status: ## Read direct-on-Genome result files without querying Slurm.
+	PYTHONPATH=.:src $(GBIF_PYTHON) scripts/gbif_domain_experiment.py \
+		--config "$(GBIF_TRAINING_CONFIG)" status
+
+gbif-resume: ## Resubmit a skip-safe primary or DINO phase from Genome.
+	@test "$(GBIF_PHASE)" = primary -o "$(GBIF_PHASE)" = dino || (echo "GBIF_PHASE must be primary or dino" >&2; exit 2)
+	PYTHONPATH=.:src $(GBIF_PYTHON) scripts/gbif_domain_experiment.py \
+		--config "$(GBIF_TRAINING_CONFIG)" submit-training --phase "$(GBIF_PHASE)"
+
+gbif-report: ## Generate and execute the combined inference/training/DINO notebook.
+	PYTHONPATH=.:src $(GBIF_PYTHON) scripts/build_gbif_combined_results_notebook.py \
+		--config "$(GBIF_TRAINING_CONFIG)" --execute
 
 test: ## Run the retained paper-pipeline verification surface.
 	MPLCONFIGDIR=/tmp/mplconfig PYTHONPATH=.:src $(PYTHON) -m unittest $(PAPER_TESTS)

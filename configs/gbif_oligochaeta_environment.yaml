@@ -17,6 +17,10 @@ dependencies:
   - torchvision
   - streamlit
   - plotly
+  - matplotlib
+  - jupyter
+  - nbformat
   - pip
   - pip:
       - timm>=1.0.20
+      - wandb>=0.17

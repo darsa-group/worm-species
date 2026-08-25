@@ -54,15 +54,17 @@ GBIF media manifest is never rewritten.
 
 The code is versioned in Git, while the image bundle is deliberately ignored by
 Git. Push this feature branch, then update the actual Genome runtime checkout at
-`/home/devd/worm-species/wormsource2`. From that checkout, create the separate
-environment once:
+`/home/devd/worm-species/source`. The approved jobs use the existing
+`wormspecies` environment. Update it with the GBIF/DINO/W&B/reporting
+dependencies before the first run:
 
 ```bash
-conda env create -f configs/gbif_oligochaeta_environment.yaml
+conda env update --name wormspecies -f configs/gbif_oligochaeta_environment.yaml
+conda activate wormspecies
 ```
 
-If the environment already exists, update it explicitly instead of recreating
-it. Before submitting a large job, confirm that `timm` can load the configured
+Do not use `--prune` unless you have separately checked every dependency needed
+by the wider repository. Before submitting a large job, confirm that `timm` can load the configured
 DINOv3 checkpoint in that environment; the Slurm job also checks imports and
 CUDA before processing images.
 
@@ -120,14 +122,71 @@ cluster filters, thumbnails, publisher links, and reversible content labels.
 Nothing is deleted.
 
 After exporting the review, copy the curated manifest to Genome with
-`make gbif-oligochaeta-push-curation`. Run the existing checkpoint
-only after its genus/species label map has been audited against the GBIF labels;
-reported label agreement is not independently verified accuracy. Fine-tuning
-must then use occurrence- and duplicate-grouped splits. The repository currently
-implements acquisition, transfer, embedding, clustering, interactive review,
-and existing-checkpoint inference; the grouped fine-tuning experiment still
-requires an approved checkpoint and split/model-selection configuration before
-it can be submitted.
+`make gbif-oligochaeta-push-curation`. All later commands are run directly in
+the Genome checkout; they do not SSH from another machine.
+
+The approved experiment is configured in `configs/gbif_training.yaml`. It
+keeps the existing Petri train/validation/test splits and creates a deterministic
+GBIF 65/15/20 split whose groups connect both occurrence identity and exact
+image duplicates. Labels supported by fewer than three independent groups are
+masked for that task without discarding rows useful to another task. Exact
+duplicate groups with contradictory GBIF species labels have the species task
+masked and are recorded in the preparation audit. The two Petri-only exact
+labels `Aporrectodea_tuberculata` and
+`Lumbricus_terrestris_herculeus` remain distinct.
+
+Run and inspect baseline inference first:
+
+```bash
+make gbif-check
+make gbif-infer-dry-run GBIF_CHECKPOINT=/absolute/path/to/best_model.pt
+make gbif-infer GBIF_CHECKPOINT=/absolute/path/to/best_model.pt
+```
+
+Inference is one 12-element Slurm array (`0-11%12`), not a twelve-GPU job.
+Each task requests one GPU and processes a deterministic hash shard. A dependent
+CPU job refuses to merge missing, duplicated, unexpected, or mixed-checkpoint
+outputs. Reported agreement with GBIF occurrence labels is not independently
+verified image-level accuracy.
+
+The primary training phase runs `vit_b_16`, `resnet50`, and `convnext_base`
+with five seeds. Each model uses the curated→Petri, Petri→curated, and balanced
+mixed regimes. Fixed optimizer steps rather than equal epochs give every regime
+the same number of image draws from each differently sized domain. Hierarchy
+loss is disabled. Early stopping has a 6,000-step floor and twelve-validation
+patience. Jobs request one GPU, 16 CPUs, 20 GB host memory, 12 DataLoader
+workers, and may run on `gpu-short`, `gpu-l40s`, or `gpu-h200`. Array concurrency
+is capped at 12.
+
+```bash
+make gbif-train-dry-run
+make gbif-train
+make gbif-status
+make gbif-resume GBIF_PHASE=primary
+```
+
+Only after the primary phase, run the three-seed DINOv3 ViT-B/16 phase:
+
+```bash
+make gbif-dino-dry-run
+make gbif-dino
+make gbif-resume GBIF_PHASE=dino
+```
+
+W&B logs scalar training, validation, test, domain, model, regime, stage, and
+seed metadata. Checkpoints remain on Genome and are never uploaded as W&B model
+artifacts. Set `WANDB_MODE=offline` when compute nodes cannot contact W&B.
+
+After inference and both training phases finish, build and execute the single
+editable results notebook:
+
+```bash
+make gbif-report
+```
+
+It writes `notebooks/gbif_inference_training_dino_results.ipynb` and exports
+source tables plus SVG/PDF figures below the configured output root. Missing
+jobs are displayed as pending and are never represented as scientific results.
 
 The dataset-audit notebook remains unexecuted. Generate or explicitly execute it
 with `make gbif-oligochaeta-notebook` and

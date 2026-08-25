@@ -1,0 +1,87 @@
+schema_version: 1
+
+# GenomeDK paths. Environment variables are expanded when the command runs.
+paths:
+  project_root: ${HOME}/worm-species/source
+  gbif_manifest: ${HOME}/worm-species/data/gbif_oligochaeta/curation/curated_manifest.csv
+  petri_split_dir: ${HOME}/worm-species/source/split_csv
+  petri_data_root: ${HOME}/worm-species/data
+  output_root: ${HOME}/worm-species/outputs/gbif_training
+  conda_sh: ${HOME}/miniforge3/etc/profile.d/conda.sh
+  conda_env: wormspecies
+
+data:
+  curation_labels: [keep]
+  minimum_independent_groups_per_class: 3
+  gbif_split: {train: 0.65, validation: 0.15, test: 0.20}
+  seed: 2026
+  image_size: 224
+  target_columns: {genus: genus, species: species, age: age}
+
+models:
+  primary: [vit_b_16, resnet50, convnext_base]
+  primary_seeds: [40, 140, 240, 340, 440]
+  dino: [dinov3_vitb16]
+  dino_seeds: [40, 140, 240]
+  pretrained: true
+
+training:
+  batch_size: 128
+  mixed_batch_per_domain: 64
+  num_workers: 12
+  prefetch_factor: 4
+  persistent_workers: true
+  pin_memory: true
+  use_amp: true
+  steps_per_domain: 10000
+  mixed_steps: 20000
+  validation_interval_steps: 500
+  checkpoint_interval_steps: 500
+  backbone_lr: 0.00001
+  head_lr: 0.0001
+  weight_decay: 0.05
+  warmup_steps: 1000
+  minimum_steps_before_early_stopping: 6000
+  early_stopping_patience: 12
+  early_stopping_min_delta: 0.0001
+  class_weight: true
+  loss_weights: {genus: 1.0, species: 0.5, age: 2.0}
+  hierarchy_loss: {enabled: false, weight: 0.0}
+  selection_metric: domain_balanced_macro_f1
+  augmentation:
+    enabled: true
+    horizontal_flip: {enabled: true, probability: 0.5}
+    vertical_flip: {enabled: true, probability: 0.5}
+    rotation: {enabled: true, degrees: 180}
+
+inference:
+  shards: 12
+  batch_size: 256
+  num_workers: 12
+  prefetch_factor: 4
+
+wandb:
+  enabled: true
+  project: worm-species-gbif-transfer
+  entity: null
+  mode: online
+  group: gbif-petri-order-v1
+  save_code: false
+  log_model: false
+
+slurm:
+  account: worm-species
+  partition: gpu-short,gpu-l40s,gpu-h200
+  gpus_per_task: 1
+  cpus_per_task: 16
+  memory: 20G
+  time_limit: "04:00:00"
+  array_max_active: 12
+  merge:
+    cpus_per_task: 4
+    memory: 8G
+    time_limit: "00:30:00"
+
+reporting:
+  confidence_level: 0.95
+  formats: [svg, pdf]

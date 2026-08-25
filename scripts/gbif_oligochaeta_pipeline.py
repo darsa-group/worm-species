@@ -12,6 +12,7 @@ import pandas as pd
 from worm_species.gbif.embedding import cluster_embeddings
 from worm_species.gbif.embedding import embed_manifest
 from worm_species.gbif.inference import infer_existing_checkpoint
+from worm_species.gbif.inference import merge_inference_shards
 from worm_species.gbif.pipeline import build_download_request
 from worm_species.gbif.pipeline import build_media_manifest
 from worm_species.gbif.pipeline import audit_taxonomic_scope
@@ -311,7 +312,20 @@ def command_infer_existing(config: dict, args: argparse.Namespace) -> None:
         args.output,
         batch_size=args.batch_size,
         num_workers=args.workers,
+        prefetch_factor=args.prefetch_factor,
         device_name=args.device,
+        curation_labels=tuple(args.curation_label),
+        shard_index=args.shard_index,
+        shard_count=args.shard_count,
+    ), indent=2, sort_keys=True))
+
+
+def command_merge_inference(config: dict, args: argparse.Namespace) -> None:
+    print(json.dumps(merge_inference_shards(
+        args.manifest,
+        args.shard_dir,
+        args.output,
+        shard_count=args.shard_count,
         curation_labels=tuple(args.curation_label),
     ), indent=2, sort_keys=True))
 
@@ -405,9 +419,20 @@ def build_parser() -> argparse.ArgumentParser:
     inference.add_argument("--output", required=True)
     inference.add_argument("--batch-size", type=int, default=64)
     inference.add_argument("--workers", type=int, default=4)
+    inference.add_argument("--prefetch-factor", type=int, default=4)
     inference.add_argument("--device", default="auto")
     inference.add_argument("--curation-label", action="append", default=["keep"])
+    inference.add_argument("--shard-index", type=int, default=0)
+    inference.add_argument("--shard-count", type=int, default=1)
     inference.set_defaults(function=command_infer_existing)
+
+    merge = subparsers.add_parser("merge-inference")
+    merge.add_argument("--manifest", required=True)
+    merge.add_argument("--shard-dir", required=True)
+    merge.add_argument("--output", required=True)
+    merge.add_argument("--shard-count", type=int, required=True)
+    merge.add_argument("--curation-label", action="append", default=["keep"])
+    merge.set_defaults(function=command_merge_inference)
     return parser
 
 

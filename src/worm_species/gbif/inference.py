@@ -54,9 +54,17 @@ def infer_existing_checkpoint(
     *,
     batch_size: int = 64,
     num_workers: int = 4,
+    prefetch_factor: int = 4,
     device_name: str = "auto",
     curation_labels: tuple[str, ...] = ("keep",),
+    shard_index: int = 0,
+    shard_count: int = 1,
 ) -> dict:
+    if shard_count < 1 or not 0 <= shard_index < shard_count:
+        raise ValueError(
+            f"Invalid inference shard {shard_index}/{shard_count}; "
+            "require 0 <= shard_index < shard_count"
+        )
     checkpoint_file = Path(checkpoint_path)
     if not checkpoint_file.is_file():
         raise FileNotFoundError(checkpoint_file)
@@ -70,6 +78,14 @@ def infer_existing_checkpoint(
     )
     frame = frame.loc[
         frame["_resolved_local_path"].map(lambda path: Path(path).is_file())
+    ].copy()
+    eligible_rows = int(len(frame))
+    frame = frame.loc[
+        frame["image_id"].map(
+            lambda value: int(
+                hashlib.sha256(str(value).encode("utf-8")).hexdigest(), 16
+            ) % shard_count == shard_index
+        )
     ].copy()
     if frame.empty:
         raise ValueError("No eligible downloaded images are available for inference")
@@ -97,13 +113,18 @@ def infer_existing_checkpoint(
         condition={"transform": "original"},
         apply_augmentation=False,
     )
-    loader = DataLoader(
-        InferenceImageDataset(frame, transform),
-        batch_size=batch_size,
-        shuffle=False,
-        num_workers=num_workers,
-        pin_memory=device.type == "cuda",
-    )
+    loader_kwargs = {
+        "batch_size": batch_size,
+        "shuffle": False,
+        "num_workers": num_workers,
+        "pin_memory": device.type == "cuda",
+    }
+    if num_workers:
+        loader_kwargs.update(
+            prefetch_factor=prefetch_factor,
+            persistent_workers=True,
+        )
+    loader = DataLoader(InferenceImageDataset(frame, transform), **loader_kwargs)
     predictions: dict[str, list] = {"image_id": []}
     for task in label_maps:
         predictions.update(
@@ -164,7 +185,11 @@ def infer_existing_checkpoint(
 
     summary = {
         "rows": int(len(result)),
+        "eligible_rows_all_shards": eligible_rows,
+        "shard_index": shard_index,
+        "shard_count": shard_count,
         "device": str(device),
+        "gpu": torch.cuda.get_device_name(device) if device.type == "cuda" else None,
         "checkpoint": str(checkpoint_file.resolve()),
         "checkpoint_sha256": _sha256(checkpoint_file),
         "checkpoint_model": config["model"]["name"],
@@ -189,5 +214,92 @@ def infer_existing_checkpoint(
     }
     output.with_suffix(".summary.json").write_text(
         json.dumps(summary, indent=2, sort_keys=True) + "\n"
+    )
+    return summary
+
+
+def merge_inference_shards(
+    manifest_path: str | Path,
+    shard_dir: str | Path,
+    output_path: str | Path,
+    *,
+    shard_count: int,
+    curation_labels: tuple[str, ...] = ("keep",),
+) -> dict:
+    """Validate exact shard coverage before publishing merged inference."""
+    if shard_count < 1:
+        raise ValueError("shard_count must be positive")
+    manifest = pd.read_csv(manifest_path, dtype=str, keep_default_na=False)
+    if "download_status" in manifest:
+        manifest = manifest.loc[manifest["download_status"].eq("downloaded")].copy()
+    if "curation_label" in manifest and curation_labels:
+        manifest = manifest.loc[manifest["curation_label"].isin(curation_labels)].copy()
+    manifest["_resolved_local_path"] = manifest["local_path"].map(
+        lambda value: str(resolve_manifest_image_path(manifest_path, value))
+    )
+    manifest = manifest.loc[
+        manifest["_resolved_local_path"].map(lambda path: Path(path).is_file())
+    ].copy()
+    expected_ids = manifest["image_id"].astype(str).tolist()
+    if len(expected_ids) != len(set(expected_ids)):
+        raise ValueError("Eligible inference manifest contains duplicate image_id values")
+
+    root = Path(shard_dir)
+    frames = []
+    summaries = []
+    for index in range(shard_count):
+        shard = root / f"shard-{index:03d}.csv"
+        summary_path = shard.with_suffix(".summary.json")
+        if not shard.is_file() or not summary_path.is_file():
+            raise FileNotFoundError(f"Missing inference shard artifacts for index {index}")
+        frame = pd.read_csv(shard, dtype=str, keep_default_na=False)
+        summary = json.loads(summary_path.read_text(encoding="utf-8"))
+        if int(summary.get("shard_index", -1)) != index:
+            raise ValueError(f"Shard {index} summary has the wrong shard_index")
+        if int(summary.get("shard_count", -1)) != shard_count:
+            raise ValueError(f"Shard {index} summary has the wrong shard_count")
+        frames.append(frame)
+        summaries.append(summary)
+    checkpoint_hashes = {item.get("checkpoint_sha256") for item in summaries}
+    if None in checkpoint_hashes or len(checkpoint_hashes) != 1:
+        raise ValueError("Inference shards used different checkpoints")
+    combined = pd.concat(frames, ignore_index=True)
+    if combined["image_id"].duplicated().any():
+        duplicates = combined.loc[combined["image_id"].duplicated(), "image_id"].head().tolist()
+        raise ValueError(f"Inference shard outputs overlap: {duplicates}")
+    actual_ids = set(combined["image_id"].astype(str))
+    missing = set(expected_ids).difference(actual_ids)
+    unexpected = actual_ids.difference(expected_ids)
+    if missing or unexpected:
+        raise ValueError(
+            f"Inference shard coverage mismatch: missing={len(missing)}, "
+            f"unexpected={len(unexpected)}"
+        )
+    order = {image_id: index for index, image_id in enumerate(expected_ids)}
+    combined["_manifest_order"] = combined["image_id"].map(order)
+    combined = combined.sort_values("_manifest_order").drop(columns="_manifest_order")
+    output = Path(output_path)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    combined.to_csv(output, index=False)
+    summary = {
+        "rows": int(len(combined)),
+        "shard_count": shard_count,
+        "checkpoint_sha256": next(iter(checkpoint_hashes)),
+        "checkpoint": summaries[0].get("checkpoint"),
+        "checkpoint_model": summaries[0].get("checkpoint_model"),
+        "known_genus_rows": int(
+            combined.get("checkpoint_genus_scope", pd.Series(dtype=str)).eq("known").sum()
+        ),
+        "known_species_rows": int(
+            combined.get("checkpoint_species_scope", pd.Series(dtype=str)).eq("known").sum()
+        ),
+        "coverage_validated": True,
+        "interpretation": (
+            "Agreement compares predictions with GBIF occurrence labels and is not "
+            "an independently verified accuracy estimate."
+        ),
+    }
+    output.with_suffix(".summary.json").write_text(
+        json.dumps(summary, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
     return summary
