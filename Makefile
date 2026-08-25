@@ -1,6 +1,6 @@
 .DEFAULT_GOAL := help
 
-PYTHON ?= /home/devd/miniforge3/envs/wormspecies/bin/python
+PYTHON ?= /home/devd/miniconda3/envs/wormspecies/bin/python
 PIPELINE_CONFIG ?= dev/genome_ablation_pipeline.yaml
 PIPELINE_MODE ?= dry-run
 PAPER_RESULT ?= paper_result
@@ -16,6 +16,17 @@ ADULT_TAXON_RESULT ?= adult_taxon_ablation_result
 PUBLICATION_PIPELINE_CONFIG ?= dev/genome_publication_30seed_pipeline.yaml
 PUBLICATION_PIPELINE_MODE ?= dry-run
 PUBLICATION_RESULT ?= publication_30seed_result
+GBIF_CHECKPOINT ?=
+GBIF_CURATED_MANIFEST ?= gbif_oligochaeta/curation/curated_manifest.csv
+GBIF_EXISTING_PREDICTIONS ?= gbif_oligochaeta/predictions/existing_checkpoint.csv
+GBIF_DATASET_NOTEBOOK ?= notebooks/gbif_earthworm_dataset_audit.ipynb
+GBIF_NOTEBOOK_TIMEOUT ?= -1
+GBIF_DOWNLOAD_KEY ?=
+GBIF_BUNDLE_ROOT ?= gbif_oligochaeta
+GBIF_GENOME_REMOTE ?= devd@login.genome.au.dk
+GBIF_GENOME_DATA_ROOT ?= /home/devd/worm-species/data/gbif_oligochaeta
+GBIF_GENOME_PROJECT_ROOT ?= /home/devd/worm-species/wormsource2
+GBIF_GENOME_CONDA_ENV ?= wormspecies-gbif
 
 PAPER_TESTS := \
 	tests.test_paper_ablation_pipeline \
@@ -27,9 +38,10 @@ PAPER_TESTS := \
 	tests.test_models \
 	tests.test_training_losses \
 	tests.test_holdout_visual_notebook \
-	tests.test_publication_30seed_pipeline
+	tests.test_publication_30seed_pipeline \
+	tests.test_gbif_oligochaeta
 
-.PHONY: help ablation-pipeline paper-report holdout-visual-report adult-taxon-ablation-pipeline adult-taxon-report publication-pipeline publication-resolution-gapfill publication-resolution-gapfill-submit publication-data-metrics publication-resume publication-status publication-report test
+.PHONY: help ablation-pipeline paper-report holdout-visual-report adult-taxon-ablation-pipeline adult-taxon-report publication-pipeline publication-resolution-gapfill publication-resolution-gapfill-submit publication-data-metrics publication-resume publication-status publication-report gbif-oligochaeta-scope gbif-oligochaeta-audit-scope gbif-oligochaeta-request gbif-oligochaeta-download-status gbif-oligochaeta-download-dwca gbif-oligochaeta-manifest gbif-oligochaeta-download-images gbif-oligochaeta-prune-missing-images-dry-run gbif-oligochaeta-prune-missing-images gbif-oligochaeta-filter-dataset-dry-run gbif-oligochaeta-filter-dataset gbif-oligochaeta-transfer-check gbif-oligochaeta-transfer-dry-run gbif-oligochaeta-transfer gbif-oligochaeta-transfer-verify gbif-oligochaeta-pull-genome-results gbif-oligochaeta-push-curation gbif-oligochaeta-genome-dry-run gbif-oligochaeta-genome-submit gbif-oligochaeta-embed gbif-oligochaeta-cluster gbif-oligochaeta-curate gbif-oligochaeta-infer-existing gbif-oligochaeta-notebook gbif-oligochaeta-notebook-execute test
 
 help: ## Show the paper-pipeline commands.
 	@echo "Worm Species paper pipeline"
@@ -53,6 +65,35 @@ help: ## Show the paper-pipeline commands.
 	@echo "  make publication-resume                   Explicitly resubmit; completed run IDs skip."
 	@echo "  make publication-status                   Read local completion state only."
 	@echo "  make publication-report                   Build all publication figures and metadata."
+	@echo "  make gbif-oligochaeta-scope               Print the explicit GBIF taxon scope."
+	@echo "  make gbif-oligochaeta-audit-scope         Resolve scope and current counts against GBIF."
+	@echo "  make gbif-oligochaeta-request             Request the authenticated GBIF DWCA."
+	@echo "  make gbif-oligochaeta-download-dwca GBIF_DOWNLOAD_KEY=..."
+	@echo "                                             Download a completed DWCA."
+	@echo "  make gbif-oligochaeta-manifest            Build a media manifest from the saved DWCA."
+	@echo "  make gbif-oligochaeta-download-images     Resume and require every image download."
+	@echo "  make gbif-oligochaeta-prune-missing-images-dry-run"
+	@echo "                                             Report rows without usable files."
+	@echo "  make gbif-oligochaeta-prune-missing-images"
+	@echo "                                             Exclude those rows from the active manifest."
+	@echo "  make gbif-oligochaeta-filter-dataset-dry-run"
+	@echo "                                             Preview the iNaturalist-only filter."
+	@echo "  make gbif-oligochaeta-filter-dataset       Apply the iNaturalist-only filter."
+	@echo "  make gbif-oligochaeta-transfer-check      Refuse unless the local bundle is complete."
+	@echo "  make gbif-oligochaeta-transfer-dry-run    Show the transfer without connecting."
+	@echo "  make gbif-oligochaeta-transfer            Start resumable rsync without hashing."
+	@echo "  make gbif-oligochaeta-transfer-verify     Compare file size/time without hashing."
+	@echo "  make gbif-oligochaeta-pull-genome-results Pull embeddings/clusters for review."
+	@echo "  make gbif-oligochaeta-push-curation       Push the reviewed manifest to Genome."
+	@echo "  make gbif-oligochaeta-genome-dry-run      Show the Genome Slurm command only."
+	@echo "  make gbif-oligochaeta-genome-submit       Explicitly submit DINOv3 + UMAP."
+	@echo "  make gbif-oligochaeta-embed               Run DINOv3 over downloaded images."
+	@echo "  make gbif-oligochaeta-cluster             Cluster saved DINOv3 embeddings."
+	@echo "  make gbif-oligochaeta-curate              Open the interactive curation app."
+	@echo "  make gbif-oligochaeta-infer-existing GBIF_CHECKPOINT=/path/best_model.pt"
+	@echo "                                             Run a real existing checkpoint."
+	@echo "  make gbif-oligochaeta-notebook            Regenerate the dataset-audit notebook."
+	@echo "  make gbif-oligochaeta-notebook-execute    Explicitly execute it in place."
 	@echo "  make test                                 Run the focused paper-pipeline tests."
 	@echo
 	@echo "Dry-run is the default; scheduler submission is always explicit."
@@ -123,6 +164,111 @@ publication-report: ## Build all test-only figures and publication records.
 		--paper-result "$(PUBLICATION_RESULT)" \
 		--split-root "$(SPLIT_ROOT)" --data-root "$(DATA_ROOT)" \
 		--style "$(REPORT_STYLE)"
+
+gbif-oligochaeta-scope: ## Print the reviewed, explicit GBIF taxon scope.
+	PYTHONPATH=.:src $(PYTHON) scripts/gbif_oligochaeta_pipeline.py scope
+
+gbif-oligochaeta-audit-scope: ## Verify configured keys and current image counts against GBIF.
+	PYTHONPATH=.:src $(PYTHON) scripts/gbif_oligochaeta_pipeline.py audit-scope
+
+gbif-oligochaeta-request: ## Request a GBIF DWCA using GBIF_USERNAME/PASSWORD/EMAIL.
+	PYTHONPATH=.:src $(PYTHON) scripts/gbif_oligochaeta_pipeline.py request-download
+
+gbif-oligochaeta-download-status: ## Inspect an asynchronous GBIF download.
+	@test -n "$(GBIF_DOWNLOAD_KEY)" || (echo "Set GBIF_DOWNLOAD_KEY" >&2; exit 2)
+	PYTHONPATH=.:src $(PYTHON) scripts/gbif_oligochaeta_pipeline.py download-status "$(GBIF_DOWNLOAD_KEY)"
+
+gbif-oligochaeta-download-dwca: ## Download a completed GBIF archive.
+	@test -n "$(GBIF_DOWNLOAD_KEY)" || (echo "Set GBIF_DOWNLOAD_KEY" >&2; exit 2)
+	PYTHONPATH=.:src $(PYTHON) scripts/gbif_oligochaeta_pipeline.py download-dwca "$(GBIF_DOWNLOAD_KEY)"
+
+gbif-oligochaeta-manifest: ## Join a completed GBIF DWCA into one row per image.
+	PYTHONPATH=.:src $(PYTHON) scripts/gbif_oligochaeta_pipeline.py build-manifest
+
+gbif-oligochaeta-download-images: ## Resume images and fail until every media row succeeds.
+	PYTHONPATH=.:src $(PYTHON) scripts/gbif_oligochaeta_pipeline.py download-images
+
+gbif-oligochaeta-prune-missing-images-dry-run: ## Report unusable rows without changing files.
+	PYTHONPATH=.:src $(PYTHON) scripts/gbif_oligochaeta_pipeline.py prune-missing-images
+
+gbif-oligochaeta-prune-missing-images: ## Keep only usable rows and retain an exclusion audit.
+	PYTHONPATH=.:src $(PYTHON) scripts/gbif_oligochaeta_pipeline.py \
+		prune-missing-images --apply
+
+gbif-oligochaeta-filter-dataset-dry-run: ## Preview the configured GBIF dataset filter.
+	PYTHONPATH=.:src $(PYTHON) scripts/gbif_oligochaeta_pipeline.py filter-dataset
+
+gbif-oligochaeta-filter-dataset: ## Keep only the configured GBIF dataset active.
+	PYTHONPATH=.:src $(PYTHON) scripts/gbif_oligochaeta_pipeline.py filter-dataset --apply
+
+gbif-oligochaeta-transfer-check: ## Validate completeness locally; no network connection.
+	PYTHONPATH=.:src $(PYTHON) scripts/prepare_gbif_earthworm_transfer.py \
+		--bundle-root "$(GBIF_BUNDLE_ROOT)"
+
+gbif-oligochaeta-transfer-dry-run: ## Validate and print transfer commands without SSH.
+	PYTHON="$(PYTHON)" scripts/transfer_gbif_earthworms_to_genome.sh \
+		--mode dry-run --bundle-root "$(GBIF_BUNDLE_ROOT)" \
+		--remote "$(GBIF_GENOME_REMOTE)" --remote-path "$(GBIF_GENOME_DATA_ROOT)"
+
+gbif-oligochaeta-transfer: ## Explicitly transfer the bundle without content hashing.
+	PYTHON="$(PYTHON)" scripts/transfer_gbif_earthworms_to_genome.sh \
+		--mode transfer --bundle-root "$(GBIF_BUNDLE_ROOT)" \
+		--remote "$(GBIF_GENOME_REMOTE)" --remote-path "$(GBIF_GENOME_DATA_ROOT)"
+
+gbif-oligochaeta-transfer-verify: ## Compare local/remote size and mtime without hashing.
+	PYTHON="$(PYTHON)" scripts/transfer_gbif_earthworms_to_genome.sh \
+		--mode verify --bundle-root "$(GBIF_BUNDLE_ROOT)" \
+		--remote "$(GBIF_GENOME_REMOTE)" --remote-path "$(GBIF_GENOME_DATA_ROOT)"
+
+gbif-oligochaeta-pull-genome-results: ## Pull embeddings and clusters for local review.
+	PYTHON="$(PYTHON)" scripts/transfer_gbif_earthworms_to_genome.sh \
+		--mode pull-results --bundle-root "$(GBIF_BUNDLE_ROOT)" \
+		--remote "$(GBIF_GENOME_REMOTE)" --remote-path "$(GBIF_GENOME_DATA_ROOT)"
+
+gbif-oligochaeta-push-curation: ## Push the reviewed manifest and decisions to Genome.
+	PYTHON="$(PYTHON)" scripts/transfer_gbif_earthworms_to_genome.sh \
+		--mode push-curation --bundle-root "$(GBIF_BUNDLE_ROOT)" \
+		--remote "$(GBIF_GENOME_REMOTE)" --remote-path "$(GBIF_GENOME_DATA_ROOT)"
+
+gbif-oligochaeta-genome-dry-run: ## Render the Genome submission without connecting.
+	scripts/run_gbif_earthworms_on_genome.sh --mode dry-run \
+		--remote "$(GBIF_GENOME_REMOTE)" \
+		--project-root "$(GBIF_GENOME_PROJECT_ROOT)" \
+		--bundle-root "$(GBIF_GENOME_DATA_ROOT)" \
+		--conda-env "$(GBIF_GENOME_CONDA_ENV)"
+
+gbif-oligochaeta-genome-submit: ## Explicitly submit the DINOv3 and clustering job.
+	scripts/run_gbif_earthworms_on_genome.sh --mode submit \
+		--remote "$(GBIF_GENOME_REMOTE)" \
+		--project-root "$(GBIF_GENOME_PROJECT_ROOT)" \
+		--bundle-root "$(GBIF_GENOME_DATA_ROOT)" \
+		--conda-env "$(GBIF_GENOME_CONDA_ENV)"
+
+gbif-oligochaeta-embed: ## Compute versioned DINOv3 image embeddings.
+	PYTHONPATH=.:src $(PYTHON) scripts/gbif_oligochaeta_pipeline.py embed
+
+gbif-oligochaeta-cluster: ## Reduce and HDBSCAN-cluster DINOv3 embeddings.
+	PYTHONPATH=.:src $(PYTHON) scripts/gbif_oligochaeta_pipeline.py cluster
+
+gbif-oligochaeta-curate: ## Open the reversible Streamlit cluster-review UI.
+	PYTHONPATH=.:src $(PYTHON) -m streamlit run scripts/gbif_oligochaeta_curate.py
+
+gbif-oligochaeta-infer-existing: ## Run an existing classifier on curated images.
+	@test -n "$(GBIF_CHECKPOINT)" || (echo "Set GBIF_CHECKPOINT=/path/to/best_model.pt" >&2; exit 2)
+	PYTHONPATH=.:src $(PYTHON) scripts/gbif_oligochaeta_pipeline.py infer-existing \
+		--manifest "$(GBIF_CURATED_MANIFEST)" \
+		--checkpoint "$(GBIF_CHECKPOINT)" \
+		--output "$(GBIF_EXISTING_PREDICTIONS)"
+
+gbif-oligochaeta-notebook: ## Regenerate the reproducible dataset-audit notebook.
+	PYTHONPATH=.:src $(PYTHON) scripts/build_gbif_earthworm_dataset_notebook.py
+
+gbif-oligochaeta-notebook-execute: ## Explicitly execute the existing audit notebook without regenerating it.
+	@test -f "$(GBIF_DATASET_NOTEBOOK)" || (echo "Run make gbif-oligochaeta-notebook first" >&2; exit 2)
+	MPLCONFIGDIR=/tmp/mplconfig JUPYTER_CONFIG_DIR=/tmp/jupyter-config \
+		JUPYTER_DATA_DIR=/tmp/jupyter-data PYTHONPATH=.:src $(PYTHON) -m jupyter \
+		nbconvert --to notebook --execute --inplace "$(GBIF_DATASET_NOTEBOOK)" \
+		--ExecutePreprocessor.timeout=$(GBIF_NOTEBOOK_TIMEOUT)
 
 test: ## Run the retained paper-pipeline verification surface.
 	MPLCONFIGDIR=/tmp/mplconfig PYTHONPATH=.:src $(PYTHON) -m unittest $(PAPER_TESTS)

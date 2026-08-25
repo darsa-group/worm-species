@@ -1,0 +1,88 @@
+schema_version: 1
+
+workspace:
+  root: gbif_oligochaeta
+  dwca_zip: gbif_oligochaeta/download/occurrence.zip
+  manifest: gbif_oligochaeta/manifests/media_manifest.csv
+  downloaded_manifest: gbif_oligochaeta/manifests/downloaded_manifest.csv
+  image_dir: gbif_oligochaeta/images
+  embeddings: gbif_oligochaeta/embeddings/dinov3_embeddings.npy
+  embedding_index: gbif_oligochaeta/embeddings/dinov3_embedding_index.csv
+  clusters: gbif_oligochaeta/curation/clusters.csv
+  decisions: gbif_oligochaeta/curation/decisions.csv
+  curated_manifest: gbif_oligochaeta/curation/curated_manifest.csv
+
+gbif:
+  api_base: https://api.gbif.org/v1
+  requested_name: Oligochaeta
+  requested_rank: CLASS
+  observed_synonym_key: 8166676
+  accepted_class_name: Clitellata
+  accepted_class_key: 255
+
+  # Temporary source restriction requested for the first DINOv3 pass.
+  dataset:
+    key: 50c9509d-22c7-4a22-a47d-8c48425ef4a7
+    name: iNaturalist research-grade observations
+
+  # User-approved true-earthworm scope. Do not replace this with class key 255:
+  # that would also include white worms, aquatic worms, and leeches.
+  included_orders:
+    - {key: 5958860, name: Crassiclitellata}
+    - {key: 11229348, name: Moniligastrida}
+
+  explicitly_excluded_orders:
+    - {key: 5958700, name: Enchytraeida, reason: "white worms, outside earthworm scope"}
+    - {key: 11341167, name: Tubificida, reason: "aquatic oligochaetes, outside earthworm scope"}
+    - {key: 472, name: Haplotaxida, reason: "aquatic oligochaetes, outside earthworm scope"}
+    - {key: 473, name: Lumbriculida, reason: "aquatic oligochaetes, outside earthworm scope"}
+    - {key: 11401427, name: Alluroidida, reason: outside earthworm scope}
+    - {key: 11389606, name: Parvidrilida, reason: outside earthworm scope}
+    - {key: 471, name: Branchiobdellida, reason: "crayfish worms, outside earthworm scope"}
+    - {key: 1077, name: Arhynchobdellida, reason: leech order}
+    - {key: 1078, name: Rhynchobdellida, reason: leech order}
+    - {key: 909, name: Euhirudinea, reason: leech order}
+    - {key: 1076, name: Acanthobdellida, reason: leech order}
+
+  download:
+    format: DWCA
+    require_still_image: true
+    require_genus_key: true
+    send_notification: false
+    # Required only for request-download. Values come from GBIF_USERNAME,
+    # GBIF_PASSWORD, and GBIF_EMAIL and are never stored in output metadata.
+
+images:
+  workers: 1
+  require_complete: false
+  attempts: 8
+  retry_backoff_seconds: 2.0
+  connect_timeout_seconds: 15
+  read_timeout_seconds: 90
+  max_bytes: 50000000
+  user_agent: worm-species-gbif-image-research/1.0
+
+embedding:
+  model: dinov3_vitb16
+  batch_size: 64
+  num_workers: 4
+  device: auto
+  l2_normalize: true
+
+clustering:
+  seed: 42
+  pca_dimensions: 50
+  projection: umap
+  min_cluster_size: 20
+  min_samples: 5
+
+curation:
+  default_label: unreviewed
+  labels:
+    - unreviewed
+    - keep
+    - reject_text
+    - reject_non_organism
+    - reject_duplicate
+    - reject_low_quality
+    - unsure

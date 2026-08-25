@@ -112,6 +112,7 @@ coverage.xml
 cover/
 
 # Repository-local generated operational artefacts
+/gbif_oligochaeta/
 /logs/**/*.out
 /logs/**/*.err
 /logs/**/*.log
