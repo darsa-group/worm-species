@@ -105,6 +105,8 @@ CONFIG_FIELDS: tuple[ConfigField, ...] = (
     _field("data_holdout.remove_from", list, default=("train", "validation"), consumers=("split filtering",)),
     _field("data_holdout.where", dict, default={}, consumers=("split filtering",)),
     _field("data_holdout.where.*", str, consumers=("split filtering",)),
+    _field("data_holdout.cohort_where", dict, default={}, consumers=("split filtering",)),
+    _field("data_holdout.cohort_where.*", str, consumers=("split filtering",)),
     _field("data_holdout.evaluation_where", dict, default={}, consumers=("evaluation",)),
     _field("data_holdout.evaluation_where.*", str, consumers=("evaluation",)),
     _field("data_holdout.primary_tasks", list, default=(), consumers=("evaluation",)),

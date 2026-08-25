@@ -39,6 +39,21 @@ def _filter_mask(
     return mask
 
 
+def _column_filter_mask(
+    frame: pd.DataFrame,
+    where: dict[str, str],
+) -> pd.Series:
+    """Select an auditable raw-data cohort without inventing task labels."""
+    mask = pd.Series(True, index=frame.index, dtype=bool)
+    for column, expected in where.items():
+        if column not in frame.columns:
+            raise ValueError(
+                f"Data holdout cohort selector uses missing column {column!r}."
+            )
+        mask &= frame[column].astype("string").eq(str(expected)).fillna(False)
+    return mask
+
+
 def select_holdout_frame(
     frame: pd.DataFrame,
     where: dict[str, str],
@@ -72,7 +87,13 @@ def apply_data_holdout(
     if not bool(holdout.get("enabled", False)):
         return DataHoldoutResult(train, validation, test, None, None, None)
 
-    where = dict(holdout["where"])
+    where = dict(holdout.get("where") or {})
+    cohort_where = dict(holdout.get("cohort_where") or {})
+    if not where and not cohort_where:
+        raise ValueError(
+            "Enabled data holdout requires data_holdout.where or "
+            "data_holdout.cohort_where."
+        )
     evaluation_where = dict(holdout.get("evaluation_where") or where)
     remove_from = list(holdout.get("remove_from", ["train", "validation"]))
     frames = {
@@ -83,7 +104,11 @@ def apply_data_holdout(
     removed_frames = []
     for split_name in remove_from:
         frame = frames[split_name]
-        mask = _filter_mask(frame, where, target_cols)
+        mask = (
+            _column_filter_mask(frame, cohort_where)
+            if cohort_where
+            else _filter_mask(frame, where, target_cols)
+        )
         removed[split_name] = _counts(frame, mask, group_col)
         selected = frame.loc[mask].copy()
         selected["_holdout_source_split"] = split_name
@@ -93,7 +118,8 @@ def apply_data_holdout(
     if removed.get("train", {}).get("rows", 0) == 0:
         raise ValueError(
             f"Data holdout {holdout['name']!r} removed no training rows. "
-            f"Check data_holdout.where={where!r}."
+            "Check data_holdout.where/cohort_where="
+            f"{(cohort_where or where)!r}."
         )
 
     evaluation_mask = _filter_mask(test, evaluation_where, target_cols)
@@ -118,6 +144,7 @@ def apply_data_holdout(
         "question": holdout.get("question", ""),
         "remove_from": remove_from,
         "where": where,
+        "cohort_where": cohort_where,
         "evaluation_where": evaluation_where,
         "primary_tasks": list(holdout["primary_tasks"]),
         "removed": removed,

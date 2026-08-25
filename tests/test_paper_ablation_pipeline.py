@@ -133,6 +133,57 @@ class BiologicalHoldoutTests(unittest.TestCase):
         self.assertEqual(result.test_cohort["id"].tolist(), ["a"])
         self.assertTrue(result.audit["test_unchanged"])
 
+    def test_raw_cohort_selector_removes_unresolved_juveniles(self) -> None:
+        train = pd.DataFrame([
+            {
+                "id": "unresolved",
+                "taxon_label": "Lumbricus_sp",
+                "genus": "Lumbricus",
+                "species": pd.NA,
+                "age": "Juvenile",
+            },
+            {
+                "id": "adult",
+                "taxon_label": "Lumbricus_castaneus",
+                "genus": "Lumbricus",
+                "species": "Lumbricus_castaneus",
+                "age": "Adult",
+            },
+        ])
+        config = {
+            "data_holdout": {
+                "enabled": True,
+                "name": "juvenile_lumbricus_sp",
+                "question": "Does adult genus recognition deteriorate?",
+                "remove_from": ["train", "validation"],
+                "cohort_where": {
+                    "taxon_label": "Lumbricus_sp",
+                    "life_stage": "Juvenile",
+                },
+                "evaluation_where": {"genus": "Lumbricus", "age": "Adult"},
+                "primary_tasks": ["genus", "age"],
+            }
+        }
+        split = train.rename(columns={"age": "life_stage"})
+        result = apply_data_holdout(
+            config=config,
+            train=split,
+            validation=split.copy(),
+            test=split.copy(),
+            target_cols={
+                "genus": "genus",
+                "species": "species",
+                "age": "life_stage",
+            },
+            group_col="id",
+        )
+        self.assertEqual(result.train["id"].tolist(), ["adult"])
+        self.assertEqual(result.test_cohort["id"].tolist(), ["adult"])
+        self.assertEqual(
+            result.audit["cohort_where"],
+            {"taxon_label": "Lumbricus_sp", "life_stage": "Juvenile"},
+        )
+
 
 class GenomePaperPlanTests(unittest.TestCase):
     def test_all_four_stages_use_three_seeds_and_both_hloss_levels(self) -> None:

@@ -30,6 +30,7 @@ stages:
   - {name: visual_interactions, config: genome_publication_30seed_interactions.yaml}
   - {name: adult_taxon_baseline, config: genome_publication_30seed_taxon_baseline.yaml}
   - {name: adult_taxon_holdouts, config: genome_publication_30seed_taxon_holdouts.yaml}
+  - {name: biological_transfer_holdouts, config: genome_publication_30seed_biological_transfer.yaml}
 
 report:
   enabled: true

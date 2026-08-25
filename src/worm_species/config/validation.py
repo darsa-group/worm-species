@@ -1043,9 +1043,36 @@ def _validate_data_holdout(
             "data_holdout.remove_from",
             "must be a unique non-empty list containing train and/or validation",
         ))
+    where = raw.get("where")
+    cohort_where = raw.get("cohort_where")
+    if not where and not cohort_where:
+        issues.append(ValidationIssue(
+            "data_holdout.where",
+            "requires a non-empty where or cohort_where mapping",
+        ))
+    if cohort_where is not None:
+        if not isinstance(cohort_where, dict) or not cohort_where:
+            issues.append(ValidationIssue(
+                "data_holdout.cohort_where",
+                "must be a non-empty split-column-to-label mapping",
+            ))
+        else:
+            for column, label in cohort_where.items():
+                if not isinstance(column, str) or not column.strip():
+                    issues.append(ValidationIssue(
+                        "data_holdout.cohort_where",
+                        "column names must be non-empty strings",
+                    ))
+                if not isinstance(label, str) or not label.strip():
+                    issues.append(ValidationIssue(
+                        f"data_holdout.cohort_where.{column}",
+                        "must be a non-empty label string",
+                    ))
     for key in ("where", "evaluation_where"):
         where = raw.get(key)
         if key == "evaluation_where" and where is None:
+            continue
+        if key == "where" and where is None and cohort_where:
             continue
         if not isinstance(where, dict) or not where:
             issues.append(ValidationIssue(

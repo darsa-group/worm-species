@@ -195,6 +195,7 @@ def canonical_tracking_config(
             "data_holdout/name",
             "data_holdout/question",
             "data_holdout/where/",
+            "data_holdout/cohort_where/",
             "runtime/",
             "experiment/type",
         )

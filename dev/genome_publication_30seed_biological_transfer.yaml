@@ -1,0 +1,48 @@
+# Four genus-stage transfer experiments x 30 matched ConvNeXt-Base seeds.
+# The independent test set is never altered. Juvenile unresolved cohorts are
+# selected by raw taxon_label, not fabricated species labels.
+extends: genome_publication_30seed_taxon_holdouts.yaml
+
+wandb:
+  group: publication-30seed-biological-transfer
+  tags: [publication, data-ablation, biological-transfer, 30-seed, h0]
+
+sweep:
+  parameters:
+    data_holdout:
+      - enabled: true
+        name: all_adult_aporrectodea
+        question: Can adult Aporrectodea be recognised after every adult Aporrectodea image is removed from model development?
+        remove_from: [train, validation]
+        where: &all_adult_aporrectodea {genus: Aporrectodea, age: Adult}
+        evaluation_where: *all_adult_aporrectodea
+        primary_tasks: [genus, age]
+      - enabled: true
+        name: unresolved_juvenile_aporrectodea
+        question: Does removing the unresolved juvenile Aporrectodea cohort alter recognition of resolved adult Aporrectodea?
+        remove_from: [train, validation]
+        cohort_where:
+          taxon_label: Aporrectodea_caliginosa_tuberculata
+          life_stage: Juvenile
+        evaluation_where: {genus: Aporrectodea, age: Adult}
+        primary_tasks: [genus, age]
+      - enabled: true
+        name: all_adult_lumbricus
+        question: Can adult Lumbricus be recognised after every adult Lumbricus image is removed from model development?
+        remove_from: [train, validation]
+        where: &all_adult_lumbricus {genus: Lumbricus, age: Adult}
+        evaluation_where: *all_adult_lumbricus
+        primary_tasks: [genus, age]
+      - enabled: true
+        name: unresolved_juvenile_lumbricus
+        question: Does removing Lumbricus_sp juveniles alter genus recognition of resolved adult Lumbricus?
+        remove_from: [train, validation]
+        cohort_where:
+          taxon_label: Lumbricus_sp
+          life_stage: Juvenile
+        evaluation_where: {genus: Lumbricus, age: Adult}
+        primary_tasks: [genus, age]
+
+output: {out_dir: publication_30seed_result/runs/biological_transfer_holdouts}
+slurm:
+  planning: {experiment_type: genome_publication_30seed_biological_transfer, external_expansion: sweep, clear_run_names: true}

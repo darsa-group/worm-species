@@ -5,9 +5,12 @@ import tempfile
 import unittest
 from pathlib import Path
 
+import matplotlib
 import pandas as pd
+from PIL import Image
 
 from scripts.build_holdout_visual_notebook import (
+    FIGURE_DPI,
     _model_only,
     attach_taxon_individual_counts,
     build_holdout_visual_notebook_figures,
@@ -15,6 +18,7 @@ from scripts.build_holdout_visual_notebook import (
     prepare_baseline_frame,
     prepare_biological_question_frame,
     prepare_taxon_stage_holdout_frame,
+    prepare_visual_ablation_example,
     shared_variance_effect_summary,
 )
 
@@ -25,6 +29,34 @@ def _write_json(path: Path, payload: dict) -> None:
 
 
 class HoldoutVisualNotebookTests(unittest.TestCase):
+    def test_visual_example_uses_one_test_image_and_exact_six_conditions(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            split_dir = root / "split_csv"
+            data_root = root / "images"
+            split_dir.mkdir()
+            data_root.mkdir()
+            rows = []
+            for index in range(5):
+                relative_path = f"worm-{index}.png"
+                Image.new(
+                    "RGB", (32, 32), color=(40 + index * 10, 10, 10)
+                ).save(data_root / relative_path)
+                rows.append({
+                    "barcode": f"barcode-{index}",
+                    "rel_path_seg": relative_path,
+                })
+            pd.DataFrame(rows).to_csv(split_dir / "test_split.csv", index=False)
+
+            images, source = prepare_visual_ablation_example(root, data_root)
+
+        self.assertEqual(len(images), 6)
+        self.assertEqual(source["relative_image_path"].nunique(), 1)
+        self.assertEqual(source["split"].unique().tolist(), ["independent test"])
+        self.assertEqual(source["model_input_side_pixels"].unique().tolist(), [224])
+        self.assertEqual(FIGURE_DPI, 600)
+        self.assertEqual(matplotlib.rcParams["svg.fonttype"], "path")
+
     def test_figures_three_through_six_model_filter_keeps_only_convnext_base(self) -> None:
         mixed = pd.DataFrame({
             "model": ["convnext_base", "resnet18", "dinov3_vitb16"],
@@ -498,6 +530,11 @@ class HoldoutVisualNotebookTests(unittest.TestCase):
                 output_dir / "figure_sources" / "figure_02_convnext_visual_ablation"
                 / "seed_summary.csv"
             )
+            figure_manifest = json.loads((
+                output_dir / "figure_sources" / "figure_02_convnext_visual_ablation"
+                / "manifest.json"
+            ).read_text(encoding="utf-8"))
+            self.assertEqual(figure_manifest["raster_dpi"], 600)
             self.assertEqual(set(summary["number_of_seeds"]), {3})
             effect = pd.read_csv(
                 output_dir / "figure_sources" / "supplementary_figure_01_all_species_effects"

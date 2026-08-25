@@ -77,6 +77,32 @@ class AdultTaxonConfigTests(unittest.TestCase):
             EXPECTED_HOLDOUTS,
         )
 
+    def test_publication_transfer_plan_keeps_unresolved_groups_genus_only(self) -> None:
+        config = load_submission_config(
+            ROOT / "dev" / "genome_publication_30seed_biological_transfer.yaml",
+            cluster_config=CLUSTER,
+        )
+        plan = plan_submission(config)
+        self.assertEqual(plan.array_size, 120)
+        definitions = {
+            spec.resolved_config["data_holdout"]["name"]:
+            spec.resolved_config["data_holdout"]
+            for spec in plan.run_specs
+        }
+        self.assertEqual(set(definitions), {
+            "all_adult_aporrectodea",
+            "unresolved_juvenile_aporrectodea",
+            "all_adult_lumbricus",
+            "unresolved_juvenile_lumbricus",
+        })
+        for name in (
+            "unresolved_juvenile_aporrectodea",
+            "unresolved_juvenile_lumbricus",
+        ):
+            self.assertNotIn("species", definitions[name]["evaluation_where"])
+            self.assertNotIn("species", definitions[name]["primary_tasks"])
+            self.assertIn("taxon_label", definitions[name]["cohort_where"])
+
 
 class AdultTaxonReportTests(unittest.TestCase):
     @staticmethod

@@ -166,7 +166,7 @@ def _collect_stage(
         for index, row in frame.iterrows():
             definition = (
                 configured_holdout
-                if training_regime == "adult_combo_withheld"
+                if training_regime != "full_data_control"
                 else controls.get(str(row.get("holdout")), {})
             )
             where = (
@@ -215,7 +215,15 @@ def collect_adult_taxon_metrics(paper_root: Path) -> pd.DataFrame:
         evaluation_directory="data_holdout_evaluation",
         training_regime="adult_combo_withheld",
     )
-    frames = [item for item in (controls, withheld) if not item.empty]
+    transfer = _collect_stage(
+        paper_root,
+        stage="biological_transfer_holdouts",
+        evaluation_directory="data_holdout_evaluation",
+        training_regime="biological_transfer_withheld",
+    )
+    frames = [
+        item for item in (controls, withheld, transfer) if not item.empty
+    ]
     return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
 
 

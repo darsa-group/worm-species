@@ -8,7 +8,9 @@ same completed-run inputs create the same PNG, PDF, SVG, and source CSV files.
 from __future__ import annotations
 
 import argparse
+import base64
 import hashlib
+import io
 import json
 import math
 import re
@@ -18,6 +20,7 @@ from typing import Iterable
 import matplotlib
 
 matplotlib.use("Agg")
+matplotlib.rcParams["svg.fonttype"] = "path"
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
@@ -57,6 +60,37 @@ ABLATION_BOOTSTRAP_RESAMPLES = 10_000
 ABLATION_BOOTSTRAP_SEED = 20260804
 ABLATION_INTERVAL_LEVEL = 0.95
 INPUT_SIZE = 224
+FIGURE_DPI = 600
+
+VISUAL_EXAMPLE_CONDITIONS = (
+    ("Original", {"transform": "original"}),
+    (
+        "Gaussian blur 50%",
+        {
+            "transform": "gaussian_blur_percent",
+            "parameters": {"percent": 50, "max_sigma": 64.0},
+        },
+    ),
+    (
+        "22 px retained",
+        {"transform": "resolution_loss", "parameters": {"percent": 90}},
+    ),
+    (
+        "Greyscale",
+        {"transform": "saturation", "parameters": {"retention": 0.0}},
+    ),
+    (
+        "Binary silhouette",
+        {"transform": "binary_mask", "parameters": {"threshold": 5.0 / 255.0}},
+    ),
+    (
+        "8x8 patch shuffle",
+        {
+            "transform": "patch_shuffle",
+            "parameters": {"grid_size": 8, "seed": 2026},
+        },
+    ),
+)
 
 
 def _deterministic_jitter(
@@ -287,13 +321,14 @@ def _save_bundle(
     paths = []
     for extension in ("svg", "pdf", "png"):
         path = output_dir / f"{name}.{extension}"
-        fig.savefig(path, dpi=300, bbox_inches="tight")
+        fig.savefig(path, dpi=FIGURE_DPI, bbox_inches="tight")
         paths.append(str(path))
     for stem, frame in sources.items():
         frame.to_csv(source_dir / f"{stem}.csv", index=False)
     manifest = {
         "figure": name,
         "formats": paths,
+        "raster_dpi": FIGURE_DPI,
         "source_files": sorted(f"{stem}.csv" for stem in sources),
         **(details or {}),
     }
@@ -956,6 +991,142 @@ def prepare_convnext_visual_frames(
     }
 
 
+def prepare_visual_ablation_example(
+    split_root: Path,
+    data_root: Path,
+    *,
+    sample_seed: int = 2026,
+    fallback_gallery: Path | None = None,
+) -> tuple[list[tuple[str, np.ndarray]], pd.DataFrame]:
+    """Create a reproducible example strip using the exact paper transforms."""
+    split_path = Path(split_root) / "split_csv" / "test_split.csv"
+    if not split_path.is_file():
+        split_path = Path(split_root) / "test_split.csv"
+    image_source = None
+    provenance = {}
+    if split_path.is_file() and Path(data_root).is_dir():
+        frame = pd.read_csv(split_path)
+        required = {"barcode", "rel_path_seg"}
+        if required.issubset(frame):
+            available = frame[
+                frame["rel_path_seg"].map(
+                    lambda value: (Path(data_root) / str(value)).is_file()
+                )
+            ].copy()
+            barcodes = available["barcode"].dropna().astype(str).unique()
+            if len(barcodes) >= 5:
+                # Match the first individual in Figure 7's deterministic sample.
+                generator = np.random.default_rng(sample_seed)
+                selected_barcodes = generator.choice(
+                    barcodes, size=5, replace=False
+                )
+                barcode = str(selected_barcodes[0])
+                candidates = available[
+                    available["barcode"].astype(str).eq(barcode)
+                ]
+                row = candidates.iloc[int(generator.integers(0, len(candidates)))]
+                image_path = Path(data_root) / str(row["rel_path_seg"])
+                image_source = Image.open(image_path).convert("RGB")
+                provenance = {
+                    "barcode": row["barcode"],
+                    "relative_image_path": row["rel_path_seg"],
+                    "sha256": hashlib.sha256(image_path.read_bytes()).hexdigest(),
+                    "example_source": "original segmented image",
+                    "example_source_file": str(image_path),
+                }
+    if image_source is None and fallback_gallery is not None:
+        gallery_path = Path(fallback_gallery)
+        if gallery_path.is_file():
+            gallery_text = gallery_path.read_text(encoding="utf-8")
+            matches = re.findall(
+                r"data:image/png;base64,\s*([^\"]+)", gallery_text, flags=re.DOTALL
+            )
+            if matches:
+                encoded = re.sub(r"\s+", "", matches[0])
+                image_source = Image.open(
+                    io.BytesIO(base64.b64decode(encoded))
+                ).convert("RGB")
+                provenance = {
+                    "barcode": "Aporrectodea_longa_Juvenile_29",
+                    "relative_image_path": (
+                        "01_Segmented/Aporrectodea_longa_Juvenile_29/"
+                        "Aporrectodea_longa_Juvenile_29_5/"
+                        "Aporrectodea_longa_Juvenile_29_5_seg.jpg"
+                    ),
+                    "sha256": (
+                        "723f294024b035f86b70f4483594fd96d87cc777ec2180a97adf8aa207e1c75e"
+                    ),
+                    "example_source": "lossless original panel embedded in prior Figure 7 SVG",
+                    "example_source_file": str(gallery_path),
+                    "example_source_file_sha256": hashlib.sha256(
+                        gallery_path.read_bytes()
+                    ).hexdigest(),
+                }
+    if image_source is None:
+        return [], pd.DataFrame()
+
+    images = []
+    source_rows = []
+    for label, condition in VISUAL_EXAMPLE_CONDITIONS:
+        transform = build_split_transform(
+            split="test",
+            preprocessing={
+                "image_size": INPUT_SIZE,
+                "normalisation": {"enabled": False},
+            },
+            condition=condition,
+        )
+        transformed = transform(image_source).permute(1, 2, 0).numpy()
+        images.append((label, np.clip(transformed, 0.0, 1.0)))
+        source_rows.append({
+            "condition": label,
+            "condition_config": json.dumps(condition, sort_keys=True),
+            **provenance,
+            "sample_seed": sample_seed,
+            "split": "independent test",
+            "model_input_side_pixels": INPUT_SIZE,
+        })
+    return images, pd.DataFrame(source_rows)
+
+
+def _draw_visual_example_strip(
+    fig: plt.Figure,
+    subplot_spec,
+    images: list[tuple[str, np.ndarray]],
+) -> None:
+    if not images:
+        ax = fig.add_subplot(subplot_spec)
+        ax.set_axis_off()
+        ax.text(
+            0.5,
+            0.5,
+            "Representative image unavailable under the configured data root",
+            ha="center",
+            va="center",
+            fontsize=9,
+            color="#666666",
+        )
+        return
+    strip = subplot_spec.subgridspec(1, len(images), wspace=0.06)
+    axes = []
+    for index, (label, transformed) in enumerate(images):
+        ax = fig.add_subplot(strip[0, index])
+        ax.imshow(transformed)
+        ax.set_title(label, fontsize=8.5, fontweight="bold", pad=4)
+        ax.set_axis_off()
+        axes.append(ax)
+    axes[0].text(
+        -0.08,
+        1.28,
+        "E. What each ablation does to the same independent-test image",
+        transform=axes[0].transAxes,
+        ha="left",
+        va="bottom",
+        fontsize=11,
+        fontweight="bold",
+    )
+
+
 def save_convnext_visual_figure(
     frames: dict[str, pd.DataFrame],
     output_dir: Path,
@@ -964,13 +1135,20 @@ def save_convnext_visual_figure(
     model: str,
     resolution_scale: str = "linear",
     chance_reference: pd.DataFrame | None = None,
+    visual_example: tuple[list[tuple[str, np.ndarray]], pd.DataFrame] | None = None,
 ) -> list[str]:
     if not frames:
         return []
     if resolution_scale not in {"linear", "log2"}:
         raise ValueError("resolution_scale must be 'linear' or 'log2'")
-    fig = plt.figure(figsize=(15.5, 10.5))
-    grid = fig.add_gridspec(2, 2, hspace=0.38, wspace=0.28)
+    fig = plt.figure(figsize=(15.5, 13.4))
+    grid = fig.add_gridspec(
+        3,
+        2,
+        height_ratios=(1.0, 1.0, 0.46),
+        hspace=0.48,
+        wspace=0.28,
+    )
     axes = {
         "gaussian": fig.add_subplot(grid[0, 0]),
         "resolution": fig.add_subplot(grid[0, 1]),
@@ -1001,6 +1179,8 @@ def save_convnext_visual_figure(
     axes["resolution"].set_xticks(
         sorted(frames["resolution"]["level"].dropna().unique(), reverse=True)
     )
+    example_images, example_source = visual_example or ([], pd.DataFrame())
+    _draw_visual_example_strip(fig, grid[2, :], example_images)
     fig.suptitle(
         f"Visual ablations for {_display_model(model)}",
         fontsize=16, fontweight="bold", y=0.995,
@@ -1013,7 +1193,7 @@ def save_convnext_visual_figure(
         ],
         ignore_index=True,
     )
-    fig.subplots_adjust(top=0.95, bottom=0.06, left=0.07, right=0.98)
+    fig.subplots_adjust(top=0.96, bottom=0.045, left=0.07, right=0.98)
     return _save_bundle(
         fig, output_dir=output_dir, source_root=source_root,
         name=(
@@ -1027,6 +1207,7 @@ def save_convnext_visual_figure(
             "chance_reference": chance_reference
             if chance_reference is not None
             else pd.DataFrame(),
+            "representative_visual_example": example_source,
         },
         details={
             "model": model,
@@ -1035,6 +1216,10 @@ def save_convnext_visual_figure(
             "uncertainty": "95% t interval across seeds",
             "resolution_x": "intermediate pixels per side",
             "resolution_scale": resolution_scale,
+            "representative_example": (
+                "same deterministically selected independent-test image rendered "
+                "with the exact model-input transforms"
+            ),
             "chance": "expected macro-F1 under uniform random prediction on the fixed test label distribution",
             **_paper_design_manifest(),
         },
@@ -2620,6 +2805,11 @@ def build_holdout_visual_notebook_figures(
     )
     for frame in visual_frames.values():
         frame["chance"] = visual_chance
+    visual_example = prepare_visual_ablation_example(
+        split_root,
+        data_root,
+        fallback_gallery=output_dir / "figure_07_representative_transformations.svg",
+    )
     taxon_frame = _paper_design_only(
         _model_only(
             prepare_taxon_stage_holdout_frame(
@@ -2656,6 +2846,7 @@ def build_holdout_visual_notebook_figures(
             model=visual_model,
             resolution_scale="linear",
             chance_reference=chance_reference,
+            visual_example=visual_example,
         ),
         "convnext_visual_ablation_resolution_log2": save_convnext_visual_figure(
             visual_frames,
@@ -2664,6 +2855,7 @@ def build_holdout_visual_notebook_figures(
             model=visual_model,
             resolution_scale="log2",
             chance_reference=chance_reference,
+            visual_example=visual_example,
         ),
         "mixed_visual_seed_comparison": save_mixed_visual_seed_figure(
             visual_frames.get("interaction", pd.DataFrame()),
