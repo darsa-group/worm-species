@@ -436,6 +436,13 @@ def prepare_domain_manifests(config: dict) -> dict:
     existing_manifests = [prepared / f"{domain}_{split}.csv" for domain in DOMAINS for split in SPLITS]
     if existing_summary.is_file() and all(path.is_file() for path in existing_manifests):
         existing = json.loads(existing_summary.read_text(encoding="utf-8"))
+        # A pre-cache preparation has no source inventory or taxonomy audit.
+        # Rebuild that legacy artifact once so the persistent cache can obtain
+        # a verifiable identity; later preparations are immutable.
+        legacy_preparation = (
+            not isinstance(existing.get("source_inventory"), dict)
+            or not (prepared / "taxonomy_mapping.csv").is_file()
+        )
         current_inputs = {
             "gbif_manifest_sha256": file_sha256(config["paths"]["gbif_manifest"]),
             "petri_splits": {
@@ -446,13 +453,17 @@ def prepare_domain_manifests(config: dict) -> dict:
             },
         }
         recorded = existing.get("inputs", {})
-        if recorded.get("gbif_manifest_sha256") != current_inputs["gbif_manifest_sha256"] or recorded.get("petri_splits") != current_inputs["petri_splits"]:
+        if not legacy_preparation and (
+            recorded.get("gbif_manifest_sha256") != current_inputs["gbif_manifest_sha256"]
+            or recorded.get("petri_splits") != current_inputs["petri_splits"]
+        ):
             raise RuntimeError(
                 "Immutable prepared manifests already exist but source inputs changed; "
                 "choose a new output_root rather than overwriting the frozen split."
             )
-        existing["status"] = "reused_immutable"
-        return existing
+        if not legacy_preparation:
+            existing["status"] = "reused_immutable"
+            return existing
     gbif = _prepare_gbif(config)
     petri = _prepare_petri(config)
     duplicate_audit = _duplicate_audit(gbif)
