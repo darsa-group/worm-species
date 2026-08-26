@@ -27,6 +27,7 @@ GBIF_GENOME_REMOTE ?= devd@login.genome.au.dk
 GBIF_GENOME_DATA_ROOT ?= /faststorage/project/worm-species/data/gbif_oligochaeta
 GBIF_GENOME_PROJECT_ROOT ?= /faststorage/project/worm-species/source
 GBIF_GENOME_CONDA_ENV ?= wormspecies
+GBIF_TRANSFER_WORKERS ?= 4
 GBIF_TRAINING_CONFIG ?= configs/gbif_training.yaml
 GBIF_EVALUATION_OUTPUT ?=
 GBIF_PHASE ?= primary
@@ -87,7 +88,7 @@ help: ## Show the paper-pipeline commands.
 	@echo "  make gbif-oligochaeta-filter-dataset       Apply the iNaturalist-only filter."
 	@echo "  make gbif-oligochaeta-transfer-check      Refuse unless the local bundle is complete."
 	@echo "  make gbif-oligochaeta-transfer-dry-run    Show the transfer without connecting."
-	@echo "  make gbif-oligochaeta-transfer            Start resumable rsync without hashing."
+	@echo "  make gbif-oligochaeta-transfer            Start resumable parallel rsync without hashing."
 	@echo "  make gbif-oligochaeta-transfer-verify     Compare file size/time without hashing."
 	@echo "  make gbif-oligochaeta-pull-genome-results Pull embeddings/clusters for review."
 	@echo "  make gbif-oligochaeta-push-curation       Push the reviewed manifest to Genome."
@@ -224,12 +225,14 @@ gbif-oligochaeta-transfer-check: ## Validate completeness locally; no network co
 gbif-oligochaeta-transfer-dry-run: ## Validate and print transfer commands without SSH.
 	PYTHON="$(PYTHON)" scripts/transfer_gbif_earthworms_to_genome.sh \
 		--mode dry-run --bundle-root "$(GBIF_BUNDLE_ROOT)" \
-		--remote "$(GBIF_GENOME_REMOTE)" --remote-path "$(GBIF_GENOME_DATA_ROOT)"
+		--remote "$(GBIF_GENOME_REMOTE)" --remote-path "$(GBIF_GENOME_DATA_ROOT)" \
+		--workers "$(GBIF_TRANSFER_WORKERS)"
 
 gbif-oligochaeta-transfer: ## Explicitly transfer the bundle without content hashing.
 	PYTHON="$(PYTHON)" scripts/transfer_gbif_earthworms_to_genome.sh \
 		--mode transfer --bundle-root "$(GBIF_BUNDLE_ROOT)" \
-		--remote "$(GBIF_GENOME_REMOTE)" --remote-path "$(GBIF_GENOME_DATA_ROOT)"
+		--remote "$(GBIF_GENOME_REMOTE)" --remote-path "$(GBIF_GENOME_DATA_ROOT)" \
+		--workers "$(GBIF_TRANSFER_WORKERS)"
 
 gbif-oligochaeta-transfer-verify: ## Compare local/remote size and mtime without hashing.
 	PYTHON="$(PYTHON)" scripts/transfer_gbif_earthworms_to_genome.sh \

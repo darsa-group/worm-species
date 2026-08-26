@@ -8,6 +8,7 @@ bundle_root="gbif_oligochaeta"
 remote="devd@login.genome.au.dk"
 remote_path="/home/devd/worm-species/data/gbif_oligochaeta"
 python_bin="${PYTHON:-/home/devd/miniconda3/envs/wormspecies/bin/python}"
+workers=4
 
 usage() {
     printf '%s\n' \
@@ -19,6 +20,7 @@ usage() {
         "  --bundle-root PATH   Local bundle (default: ${bundle_root})" \
         "  --remote HOST        SSH destination (default: ${remote})" \
         "  --remote-path PATH   Genome data directory (default: ${remote_path})" \
+        "  --workers N          Concurrent rsync transfers (default: ${workers})" \
         "  -h, --help           Show this help" \
         "" \
         "check and dry-run are local-only and never open an SSH connection."
@@ -42,6 +44,10 @@ while (($#)); do
             remote_path=${2:?"--remote-path requires a value"}
             shift 2
             ;;
+        --workers)
+            workers=${2:?"--workers requires a value"}
+            shift 2
+            ;;
         -h|--help)
             usage
             exit 0
@@ -62,6 +68,11 @@ case "$mode" in
         ;;
 esac
 
+if ! [[ "$workers" =~ ^[1-9][0-9]*$ ]]; then
+    printf 'Error: --workers must be a positive integer: %s\n' "$workers" >&2
+    exit 2
+fi
+
 quoted_remote_path=$(printf '%q' "$remote_path")
 
 local_check() {
@@ -81,6 +92,7 @@ if [[ "$mode" == "dry-run" ]]; then
     printf '  rsync -a --partial --info=progress2 --files-from=%q %q %q\n' \
         "${bundle_root%/}/transfer/FILES.txt" "${bundle_root%/}/" \
         "$remote:${remote_path%/}/"
+    printf '  (transfer uses %s concurrent rsync workers)\n' "$workers"
     exit 0
 fi
 
@@ -148,15 +160,34 @@ PYTHONPATH=.:src "$python_bin" scripts/prepare_gbif_earthworm_transfer.py \
 transfer_file_list="$bundle_root/transfer/FILES.txt"
 
 ssh "$remote" "mkdir -p $quoted_remote_path"
-rsync \
-    -a \
-    --partial \
-    --human-readable \
-    --info=progress2 \
-    --protect-args \
-    --files-from="$transfer_file_list" \
-    "${bundle_root%/}/" \
-    "$remote:${remote_path%/}/"
+transfer_tmp=$(mktemp -d "${TMPDIR:-/tmp}/gbif-transfer.XXXXXX")
+cleanup_transfer_tmp() { rm -rf -- "$transfer_tmp"; }
+trap cleanup_transfer_tmp EXIT
+split -d -n "l/${workers}" "$transfer_file_list" "$transfer_tmp/files-"
+transfer_pids=()
+for shard in "$transfer_tmp"/files-*; do
+    [[ -s "$shard" ]] || continue
+    rsync \
+        -a \
+        --partial \
+        --human-readable \
+        --info=progress2 \
+        --protect-args \
+        --files-from="$shard" \
+        "${bundle_root%/}/" \
+        "$remote:${remote_path%/}/" &
+    transfer_pids+=("$!")
+done
+transfer_failed=0
+for pid in "${transfer_pids[@]}"; do
+    if ! wait "$pid"; then
+        transfer_failed=1
+    fi
+done
+if (( transfer_failed )); then
+    printf 'One or more parallel rsync workers failed; rerun to resume.\n' >&2
+    exit 1
+fi
 
-printf 'Transfer complete without content hashing: %s:%s\n' \
-    "$remote" "$remote_path"
+printf 'Transfer complete without content hashing using %s workers: %s:%s\n' \
+    "$workers" "$remote" "$remote_path"

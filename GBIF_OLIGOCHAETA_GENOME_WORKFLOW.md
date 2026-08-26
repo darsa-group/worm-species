@@ -54,7 +54,7 @@ GBIF media manifest is never rewritten.
 
 The code is versioned in Git, while the image bundle is deliberately ignored by
 Git. Push this feature branch, then update the actual Genome runtime checkout at
-`/home/devd/worm-species/source`. The approved jobs use the existing
+`/faststorage/project/worm-species/source`. The approved jobs use the existing
 `wormspecies` environment. Update it with the GBIF/DINO/W&B/reporting
 dependencies before the first run:
 
@@ -72,19 +72,37 @@ CUDA before processing images.
 
 ```bash
 make gbif-oligochaeta-transfer-dry-run
-make gbif-oligochaeta-transfer
+make gbif-oligochaeta-transfer GBIF_TRANSFER_WORKERS=4
 ```
 
 The dry-run is offline. The real target performs the fast structural gate and
-then uses resumable `rsync` without `--delete`. It does not recompute image
-hashes, so transfer progress starts after the manifest/file-existence check and
-SSH connection. `transfer/FILES.txt` restricts the copy to active iNaturalist
-images plus download and manifest provenance; other publisher images are not
-transferred. Rerunning the command resumes an interrupted copy. A later
-size-and-modification-time comparison, also without content hashing, is:
+then uses four resumable `rsync` workers without `--delete` (adjust
+`GBIF_TRANSFER_WORKERS` if the login node has a different policy). It does not
+recompute image hashes, so transfer progress starts after the manifest/file-
+existence check and SSH connection. `transfer/FILES.txt` restricts the copy to
+active iNaturalist images plus download and manifest provenance; other
+publisher images are not transferred. Rerunning the command resumes an
+interrupted copy. Build the training cache directly on Genome after transfer;
+do not copy the cache from the local machine. A later size-and-modification-
+time comparison, also without content hashing, is:
 
 ```bash
 make gbif-oligochaeta-transfer-verify
+
+On Genome, continue with the parallel cache/training preparation:
+
+```bash
+cd /faststorage/project/worm-species/source
+make gbif-check
+make gbif-prepare
+make gbif-cache
+make gbif-status
+make gbif-train-dry-run
+```
+
+`gbif-cache` uses the configured 16 preprocessing workers. The generated
+training arrays run independently with up to 12 active one-GPU tasks and share
+one locked node-local cache copy per physical node.
 ```
 
 ## 4. Embed and cluster on Genome
