@@ -7,9 +7,13 @@ import argparse
 import json
 from pathlib import Path
 
+from worm_species.gbif.domain_cache import build_domain_cache
+from worm_species.gbif.domain_cache import domain_cache_directory
+from worm_species.gbif.domain_cache import domain_cache_status
 from worm_species.gbif.domain_data import load_domain_config
 from worm_species.gbif.domain_data import prepare_domain_manifests
 from worm_species.gbif.domain_orchestration import experiment_status
+from worm_species.gbif.domain_orchestration import _training_specs
 from worm_species.gbif.domain_orchestration import render_inference
 from worm_species.gbif.domain_orchestration import render_training
 from worm_species.gbif.domain_orchestration import submit_inference
@@ -28,6 +32,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     commands.add_parser("check-config")
     commands.add_parser("prepare")
+    commands.add_parser("build-cache")
+    commands.add_parser("cache-path")
+    cache_status = commands.add_parser("cache-status")
+    cache_status.add_argument("--cache-root")
+    cache_status.add_argument("--verify-files", action="store_true")
     for name in ("render-training", "submit-training"):
         command = commands.add_parser(name)
         command.add_argument("--phase", choices=("primary", "dino"), required=True)
@@ -44,6 +53,7 @@ def main() -> None:
     args = build_parser().parse_args()
     config = load_domain_config(args.config)
     if args.command == "check-config":
+        wave1, wave2 = _training_specs(config, "primary")
         _print({
             "valid": True,
             "partition": config["slurm"]["partition"],
@@ -51,9 +61,31 @@ def main() -> None:
             "training_models": config["models"]["primary"],
             "dino_models": config["models"]["dino"],
             "inference_shards": config["inference"]["shards"],
+            "preprocessed_cache_root": config["preprocessed_cache"]["root"],
+            "node_cache_root": config["preprocessed_cache"]["node_root"],
+            "experiment": {
+                "strategies": ["gbif_only", "peti_to_gbif", "gbif_to_peti", "mixed"],
+                "seeds": config["models"]["primary_seeds"],
+                "hierarchy_loss_weights": config["training"]["hierarchy_loss"]["weights"],
+                "wave1_jobs": len(wave1), "wave2_jobs": len(wave2),
+                "final_trajectories": sum(spec["final_model"] for spec in wave1 + wave2),
+            },
         })
     elif args.command == "prepare":
         _print(prepare_domain_manifests(config))
+    elif args.command == "build-cache":
+        _print(build_domain_cache(config))
+    elif args.command == "cache-path":
+        print(domain_cache_directory(config))
+    elif args.command == "cache-status":
+        status = domain_cache_status(
+            config,
+            cache_root=args.cache_root,
+            verify_files=bool(args.verify_files),
+        )
+        _print(status)
+        if not status["ready"]:
+            raise SystemExit(2)
     elif args.command == "render-training":
         _print(render_training(config, args.config, args.phase, prepare=True))
     elif args.command == "submit-training":

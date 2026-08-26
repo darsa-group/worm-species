@@ -16,7 +16,7 @@ ADULT_TAXON_RESULT ?= adult_taxon_ablation_result
 PUBLICATION_PIPELINE_CONFIG ?= dev/genome_publication_30seed_pipeline.yaml
 PUBLICATION_PIPELINE_MODE ?= dry-run
 PUBLICATION_RESULT ?= publication_30seed_result
-GBIF_CHECKPOINT ?= publication_30seed_result/runs/adult_taxon_baseline/run_000_convnext_base_original_loss_genus-1.0_species-0.5_age-2.0_seed_40_hloss_0.0_20260805153305/lr_0.0003_hloss_False_94d199d6_train_original/best_model.pt
+GBIF_CHECKPOINT ?= /faststorage/project/worm-species/source/publication_30seed_result/runs/baseline/run_012_convnext_base_original_loss_genus-1.0_species-0.5_age-2.0_seed_1240_hloss_0.0_20260805153055/lr_0.0003_hloss_False_f7435e3a_train_original/best_model.pt
 GBIF_CURATED_MANIFEST ?= gbif_oligochaeta/curation/curated_manifest.csv
 GBIF_EXISTING_PREDICTIONS ?= gbif_oligochaeta/predictions/existing_checkpoint.csv
 GBIF_DATASET_NOTEBOOK ?= notebooks/gbif_earthworm_dataset_audit.ipynb
@@ -24,10 +24,11 @@ GBIF_NOTEBOOK_TIMEOUT ?= -1
 GBIF_DOWNLOAD_KEY ?=
 GBIF_BUNDLE_ROOT ?= gbif_oligochaeta
 GBIF_GENOME_REMOTE ?= devd@login.genome.au.dk
-GBIF_GENOME_DATA_ROOT ?= /home/devd/worm-species/data/gbif_oligochaeta
-GBIF_GENOME_PROJECT_ROOT ?= /home/devd/worm-species/source
+GBIF_GENOME_DATA_ROOT ?= /faststorage/project/worm-species/data/gbif_oligochaeta
+GBIF_GENOME_PROJECT_ROOT ?= /faststorage/project/worm-species/source
 GBIF_GENOME_CONDA_ENV ?= wormspecies
 GBIF_TRAINING_CONFIG ?= configs/gbif_training.yaml
+GBIF_EVALUATION_OUTPUT ?=
 GBIF_PHASE ?= primary
 GBIF_PYTHON ?= python
 
@@ -43,9 +44,10 @@ PAPER_TESTS := \
 	tests.test_holdout_visual_notebook \
 	tests.test_publication_30seed_pipeline \
 	tests.test_gbif_oligochaeta \
-	tests.test_gbif_domain_experiment
+	tests.test_gbif_domain_experiment \
+	tests.test_gbif_combined_results_notebook
 
-.PHONY: help ablation-pipeline paper-report holdout-visual-report adult-taxon-ablation-pipeline adult-taxon-report publication-pipeline publication-resolution-gapfill publication-resolution-gapfill-submit publication-data-metrics publication-resume publication-status publication-report gbif-oligochaeta-scope gbif-oligochaeta-audit-scope gbif-oligochaeta-request gbif-oligochaeta-download-status gbif-oligochaeta-download-dwca gbif-oligochaeta-manifest gbif-oligochaeta-download-images gbif-oligochaeta-prune-missing-images-dry-run gbif-oligochaeta-prune-missing-images gbif-oligochaeta-filter-dataset-dry-run gbif-oligochaeta-filter-dataset gbif-oligochaeta-transfer-check gbif-oligochaeta-transfer-dry-run gbif-oligochaeta-transfer gbif-oligochaeta-transfer-verify gbif-oligochaeta-pull-genome-results gbif-oligochaeta-push-curation gbif-oligochaeta-genome-dry-run gbif-oligochaeta-genome-submit gbif-oligochaeta-embed gbif-oligochaeta-cluster gbif-oligochaeta-curate gbif-oligochaeta-infer-existing gbif-oligochaeta-notebook gbif-oligochaeta-notebook-execute gbif-check gbif-prepare gbif-infer-dry-run gbif-infer gbif-train-dry-run gbif-train gbif-dino-dry-run gbif-dino gbif-status gbif-resume gbif-report test
+.PHONY: help ablation-pipeline paper-report holdout-visual-report adult-taxon-ablation-pipeline adult-taxon-report publication-pipeline publication-resolution-gapfill publication-resolution-gapfill-submit publication-data-metrics publication-resume publication-status publication-report gbif-oligochaeta-scope gbif-oligochaeta-audit-scope gbif-oligochaeta-request gbif-oligochaeta-download-status gbif-oligochaeta-download-dwca gbif-oligochaeta-manifest gbif-oligochaeta-download-images gbif-oligochaeta-prune-missing-images-dry-run gbif-oligochaeta-prune-missing-images gbif-oligochaeta-filter-dataset-dry-run gbif-oligochaeta-filter-dataset gbif-oligochaeta-transfer-check gbif-oligochaeta-transfer-dry-run gbif-oligochaeta-transfer gbif-oligochaeta-transfer-verify gbif-oligochaeta-pull-genome-results gbif-oligochaeta-push-curation gbif-oligochaeta-genome-dry-run gbif-oligochaeta-genome-submit gbif-oligochaeta-embed gbif-oligochaeta-cluster gbif-oligochaeta-curate gbif-oligochaeta-infer-existing gbif-oligochaeta-notebook gbif-oligochaeta-notebook-execute gbif-check gbif-prepare gbif-cache gbif-infer-dry-run gbif-infer gbif-train-dry-run gbif-train gbif-dino-dry-run gbif-dino gbif-status gbif-resume gbif-evaluate gbif-report test
 
 help: ## Show the paper-pipeline commands.
 	@echo "Worm Species paper pipeline"
@@ -99,10 +101,12 @@ help: ## Show the paper-pipeline commands.
 	@echo "  make gbif-oligochaeta-notebook            Regenerate the dataset-audit notebook."
 	@echo "  make gbif-oligochaeta-notebook-execute    Explicitly execute it in place."
 	@echo "  make gbif-check                          Validate the approved Genome config."
+	@echo "  make gbif-cache                          Explicitly build/reuse preprocessed images."
 	@echo "  make gbif-infer GBIF_CHECKPOINT=/path/best_model.pt"
 	@echo "                                             Submit 12 one-GPU inference shards."
-	@echo "  make gbif-train                          Submit ViT/ResNet/ConvNeXt arrays."
-	@echo "  make gbif-dino                           Submit the later 3-seed DINO arrays."
+	@echo "  make gbif-train                          Submit 24 ConvNeXt transfer trajectories (manual)."
+	@echo "  make gbif-evaluate GBIF_CHECKPOINT=...   Evaluate one completed checkpoint."
+	@echo "  make gbif-dino                           Submit optional legacy DINO arrays."
 	@echo "  make gbif-status                         Read output completion state."
 	@echo "  make gbif-resume GBIF_PHASE=primary      Resubmit skip-safe incomplete work."
 	@echo "  make gbif-report                         Build the combined results notebook."
@@ -290,6 +294,10 @@ gbif-prepare: ## Build deterministic union labels and leakage-safe GBIF splits.
 	PYTHONPATH=.:src $(GBIF_PYTHON) scripts/gbif_domain_experiment.py \
 		--config "$(GBIF_TRAINING_CONFIG)" prepare
 
+gbif-cache: gbif-prepare ## Build/reuse the persistent lossless training-image cache.
+	PYTHONPATH=.:src $(GBIF_PYTHON) scripts/gbif_domain_experiment.py \
+		--config "$(GBIF_TRAINING_CONFIG)" build-cache
+
 gbif-infer-dry-run: ## Render the 12-shard one-GPU inference array without sbatch.
 	@test -n "$(GBIF_CHECKPOINT)" || (echo "Set GBIF_CHECKPOINT=/path/to/best_model.pt" >&2; exit 2)
 	PYTHONPATH=.:src $(GBIF_PYTHON) scripts/gbif_domain_experiment.py \
@@ -306,7 +314,7 @@ gbif-train-dry-run: ## Prepare and render primary model arrays without sbatch.
 	PYTHONPATH=.:src $(GBIF_PYTHON) scripts/gbif_domain_experiment.py \
 		--config "$(GBIF_TRAINING_CONFIG)" render-training --phase primary
 
-gbif-train: ## Submit five-seed ViT, ResNet, and ConvNeXt arrays on Genome.
+gbif-train: ## Submit the 24 final ConvNeXt transfer trajectories (user-run only).
 	PYTHONPATH=.:src $(GBIF_PYTHON) scripts/gbif_domain_experiment.py \
 		--config "$(GBIF_TRAINING_CONFIG)" submit-training --phase primary
 
@@ -327,7 +335,14 @@ gbif-resume: ## Resubmit a skip-safe primary or DINO phase from Genome.
 	PYTHONPATH=.:src $(GBIF_PYTHON) scripts/gbif_domain_experiment.py \
 		--config "$(GBIF_TRAINING_CONFIG)" submit-training --phase "$(GBIF_PHASE)"
 
-gbif-report: ## Generate and execute the combined inference/training/DINO notebook.
+gbif-evaluate: ## Evaluate one completed checkpoint on PETI and GBIF test manifests.
+	@test -n "$(GBIF_CHECKPOINT)" || (echo "Set GBIF_CHECKPOINT=/path/to/best_model.pt" >&2; exit 2)
+	@test -n "$(GBIF_EVALUATION_OUTPUT)" || (echo "Set GBIF_EVALUATION_OUTPUT=/path/to/evaluation" >&2; exit 2)
+	PYTHONPATH=.:src $(GBIF_PYTHON) scripts/evaluate_gbif_transfer.py \
+		--config "$(GBIF_TRAINING_CONFIG)" --checkpoint "$(GBIF_CHECKPOINT)" \
+		--output "$(GBIF_EVALUATION_OUTPUT)" --device cuda
+
+gbif-report: ## Generate and execute the combined inference/training results notebook.
 	PYTHONPATH=.:src $(GBIF_PYTHON) scripts/build_gbif_combined_results_notebook.py \
 		--config "$(GBIF_TRAINING_CONFIG)" --execute
 

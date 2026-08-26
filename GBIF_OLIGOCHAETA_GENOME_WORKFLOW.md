@@ -149,23 +149,37 @@ CPU job refuses to merge missing, duplicated, unexpected, or mixed-checkpoint
 outputs. Reported agreement with GBIF occurrence labels is not independently
 verified image-level accuracy.
 
-The primary training phase runs `vit_b_16`, `resnet50`, and `convnext_base`
-with five seeds. Each model uses the curated→Petri, Petri→curated, and balanced
-mixed regimes. Fixed optimizer steps rather than equal epochs give every regime
-the same number of image draws from each differently sized domain. Hierarchy
-loss is disabled. Early stopping has a 6,000-step floor and twelve-validation
-patience. Jobs request one GPU, 16 CPUs, 20 GB host memory, 12 DataLoader
-workers, and may run on `gpu-short`, `gpu-l40s`, or `gpu-h200`. Array concurrency
-is capped at 12.
+The fixed transfer experiment uses the ConvNeXt-Base PETI checkpoint as
+`PETI_ONLY` and prepares four strategies: `gbif_only` (Base→GBIF),
+`peti_to_gbif`, `gbif_to_peti`, and balanced `mixed`. Each has hierarchy weights
+0.0 and 0.5 (`species → genus`) and seeds 40, 140, and 240: 24 final
+trajectories. The GBIF age label is masked; no unknown-age class or pseudo-label
+is created. The PETI→GBIF stage freezes the age head, while GBIF→PETI restores
+age supervision in stage 2. Jobs request one GPU, 16 CPUs, 20 GB host memory,
+12 DataLoader workers, and may run on `gpu-short`, `gpu-l40s`, or `gpu-h200`.
+Array concurrency is capped at 12. The generated `plan.json` records every
+stage, initial checkpoint, hierarchy condition, seed, and output directory.
+
+Before the first GPU wave, a dependent CPU job converts every prepared GBIF
+and Petri image once to a lossless 224-pixel PNG cache on shared storage. Each
+physical compute node then copies that verified cache under `/tmp` once using a
+node-wide `flock`; later array tasks on the same node reuse it. Training fails
+closed if the cache identity, ready marker, manifest coverage, or copied image
+count is invalid. Checkpoints and metrics still write to shared storage. The
+submission command creates the preprocessing dependency automatically; to
+build or inspect the persistent cache separately, use `make gbif-cache` and
+`make gbif-status`.
 
 ```bash
 make gbif-train-dry-run
-make gbif-train
+make gbif-train                 # user submits manually
 make gbif-status
 make gbif-resume GBIF_PHASE=primary
 ```
 
-Only after the primary phase, run the three-seed DINOv3 ViT-B/16 phase:
+The optional legacy DINOv3 phase remains separately renderable; it is not part
+of the 24-trajectory PETI↔GBIF experiment. Do not submit it unless explicitly
+needed.
 
 ```bash
 make gbif-dino-dry-run
@@ -177,7 +191,7 @@ W&B logs scalar training, validation, test, domain, model, regime, stage, and
 seed metadata. Checkpoints remain on Genome and are never uploaded as W&B model
 artifacts. Set `WANDB_MODE=offline` when compute nodes cannot contact W&B.
 
-After inference and both training phases finish, build and execute the single
+After inference and the transfer runs finish, build and execute the single
 editable results notebook:
 
 ```bash
@@ -187,6 +201,14 @@ make gbif-report
 It writes `notebooks/gbif_inference_training_dino_results.ipynb` and exports
 source tables plus SVG/PDF figures below the configured output root. Missing
 jobs are displayed as pending and are never represented as scientific results.
+
+For each completed checkpoint, run the common evaluator (image-level PETI and
+GBIF metrics plus GBIF occurrence-level aggregation) with:
+
+```bash
+make gbif-evaluate GBIF_CHECKPOINT=/absolute/path/to/best_model.pt \
+  GBIF_EVALUATION_OUTPUT=/absolute/path/to/evaluation
+```
 
 The dataset-audit notebook remains unexecuted. Generate or explicitly execute it
 with `make gbif-oligochaeta-notebook` and

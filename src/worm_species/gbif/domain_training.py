@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import math
 import os
@@ -22,7 +23,10 @@ from ..data.datasets import MultiTaskWormImageDataset
 from ..data.labels import MISSING_LABEL
 from ..data.transforms import build_split_transform
 from ..models.multitask import build_multitask_model
-from .domain_data import DOMAINS, TASK_COLUMNS, file_sha256, prepared_paths
+from ..training.losses import build_child_to_parent_matrix
+from ..training.losses import hierarchy_consistency_loss
+from .domain_cache import NODE_CACHE_ENV, load_cached_domain_frames
+from .domain_data import DOMAINS, TASK_COLUMNS, file_sha256
 
 
 _STOP_REQUESTED = False
@@ -165,7 +169,10 @@ def _criteria(config: dict, train_frames: dict[str, pd.DataFrame], label_maps: d
     return criteria
 
 
-def _loss_for_batch(model, batch, criteria, config, device, scaler, optimizer=None):
+def _loss_for_batch(
+    model, batch, criteria, config, device, scaler,
+    hierarchy_config, child_to_parent_matrix, optimizer=None,
+):
     train = optimizer is not None
     images = batch["image"].to(device, non_blocking=True)
     labels = {
@@ -193,6 +200,24 @@ def _loss_for_batch(model, batch, criteria, config, device, scaler, optimizer=No
                 total = total + weight * task_loss
                 active_weight += weight
                 task_losses[task] = float(task_loss.detach().item())
+            if bool(hierarchy_config.get("enabled", False)):
+                parent_task = hierarchy_config["parent_task"]
+                child_task = hierarchy_config["child_task"]
+                hierarchy_valid = (
+                    labels[parent_task].ne(MISSING_LABEL)
+                    & labels[child_task].ne(MISSING_LABEL)
+                )
+                hierarchy_loss = hierarchy_consistency_loss(
+                    parent_logits=outputs[parent_task],
+                    child_logits=outputs[child_task],
+                    child_to_parent_matrix=child_to_parent_matrix,
+                    valid_mask=hierarchy_valid,
+                )
+                if hierarchy_loss is not None:
+                    hierarchy_weight = float(hierarchy_config["weight"])
+                    total = total + hierarchy_weight * hierarchy_loss
+                    active_weight += hierarchy_weight
+                    task_losses["hierarchy"] = float(hierarchy_loss.detach().item())
             if active_weight == 0:
                 raise ValueError("A training batch contains no active task labels")
             total = total / active_weight
@@ -203,7 +228,10 @@ def _loss_for_batch(model, batch, criteria, config, device, scaler, optimizer=No
     return float(total.detach().item()), task_losses, outputs, labels
 
 
-def _evaluate(model, loader, criteria, config, device) -> dict:
+def _evaluate(
+    model, loader, criteria, config, device,
+    hierarchy_config, child_to_parent_matrix,
+) -> dict:
     model.eval()
     losses = []
     truths = {task: [] for task in TASK_COLUMNS}
@@ -212,7 +240,8 @@ def _evaluate(model, loader, criteria, config, device) -> dict:
     with torch.inference_mode():
         for batch in loader:
             loss, _, outputs, labels = _loss_for_batch(
-                model, batch, criteria, config, device, dummy_scaler, optimizer=None
+                model, batch, criteria, config, device, dummy_scaler,
+                hierarchy_config, child_to_parent_matrix, optimizer=None,
             )
             losses.append(loss)
             for task in TASK_COLUMNS:
@@ -243,9 +272,15 @@ def _evaluate(model, loader, criteria, config, device) -> dict:
     return metrics
 
 
-def _domain_metrics(model, loaders, criteria, config, device) -> dict:
+def _domain_metrics(
+    model, loaders, criteria, config, device,
+    hierarchy_config, child_to_parent_matrix,
+) -> dict:
     metrics = {
-        domain: _evaluate(model, loader, criteria, config, device)
+        domain: _evaluate(
+            model, loader, criteria, config, device,
+            hierarchy_config, child_to_parent_matrix,
+        )
         for domain, loader in loaders.items()
     }
     values = []
@@ -369,13 +404,19 @@ def train_stage(config: dict, spec: dict) -> dict:
         raise FileNotFoundError(prepared_summary_path)
     spec["prepared_summary_sha256"] = file_sha256(prepared_summary_path)
     label_maps = json.loads((prepared / "label_maps.json").read_text(encoding="utf-8"))
-    frames = {
-        domain: {
-            split: pd.read_csv(prepared_paths(config, domain, split), dtype=str, keep_default_na=False)
-            for split in ("train", "validation", "test")
-        }
-        for domain in DOMAINS
-    }
+    node_cache_root = os.environ.get(NODE_CACHE_ENV)
+    if not node_cache_root:
+        raise RuntimeError(
+            f"{NODE_CACHE_ENV} is required; training must use the staged node-local cache"
+        )
+    frames = load_cached_domain_frames(config, node_cache_root)
+    spec["runtime"]["node_cache_root"] = str(Path(node_cache_root).resolve())
+    for domain in DOMAINS:
+        train_frame = frames[domain]["train"]
+        active = train_frame[list(TASK_COLUMNS.values())].ne("").any(axis=1)
+        frames[domain]["train"] = train_frame.loc[active].reset_index(drop=True)
+        if frames[domain]["train"].empty:
+            raise ValueError(f"No PETI-vocabulary training labels remain for domain {domain}")
     preprocessing = {
         "image_size": int(config["data"]["image_size"]),
         "normalisation": {
@@ -436,14 +477,32 @@ def train_stage(config: dict, spec: dict) -> dict:
     model = build_multitask_model(
         model_cfg, {task: len(mapping) for task, mapping in label_maps.items()}
     ).to(device)
+    if bool(spec.get("freeze_age_head", False)):
+        for parameter in model.heads["age"].parameters():
+            parameter.requires_grad = False
     optimizer = torch.optim.AdamW([
-        {"params": model.backbone.parameters(), "lr": float(config["training"]["backbone_lr"])},
-        {"params": model.heads.parameters(), "lr": float(config["training"]["head_lr"])},
+        {
+            "params": [p for p in model.backbone.parameters() if p.requires_grad],
+            "lr": float(config["training"]["backbone_lr"]),
+        },
+        {
+            "params": [p for p in model.heads.parameters() if p.requires_grad],
+            "lr": float(config["training"]["head_lr"]),
+        },
     ], weight_decay=float(config["training"]["weight_decay"]))
     total_budget = int(config["training"]["steps_per_domain"]) * 2
     scheduler = _scheduler(optimizer, int(config["training"]["warmup_steps"]), total_budget)
     scaler = torch.amp.GradScaler(enabled=bool(config["training"]["use_amp"]))
     criteria = _criteria(config, {domain: frames[domain]["train"] for domain in DOMAINS}, label_maps, device)
+    hierarchy_config = dict(spec.get("hierarchy_loss", {}))
+    child_to_parent_matrix = None
+    if bool(hierarchy_config.get("enabled", False)):
+        child_to_parent_matrix = build_child_to_parent_matrix(
+            label_maps,
+            hierarchy_config["parent_task"],
+            hierarchy_config["child_task"],
+            device,
+        )
 
     global_step = 0
     stage_step = 0
@@ -458,11 +517,18 @@ def train_stage(config: dict, spec: dict) -> dict:
         if checkpoint["label_to_index_by_task"] != label_maps:
             raise ValueError("Checkpoint fixed label maps do not match prepared label maps")
         model.load_state_dict(checkpoint["model_state"], strict=True)
-        optimizer.load_state_dict(checkpoint["optimizer_state"])
-        scheduler.load_state_dict(checkpoint["scheduler_state"])
-        scaler.load_state_dict(checkpoint["scaler_state"])
+        # External transfer checkpoints are model initialisers, not resumes.
+        # Their optimizer parameter groups may differ (PETI -> GBIF freezes
+        # the age head), so only restore optimizer state for this stage's own
+        # interrupted checkpoint.  Sequential stages deliberately start with
+        # the fixed Stage-2 optimizer policy.
+        is_resume = checkpoint_path == resume_path
+        if is_resume:
+            optimizer.load_state_dict(checkpoint["optimizer_state"])
+            scheduler.load_state_dict(checkpoint["scheduler_state"])
+            scaler.load_state_dict(checkpoint["scaler_state"])
         global_step = int(checkpoint.get("global_step", 0))
-        if checkpoint_path == resume_path:
+        if is_resume:
             stage_step = int(checkpoint.get("stage_step", 0))
             best_score = float(checkpoint.get("best_val_score", best_score))
             best_step = int(checkpoint.get("best_step", 0))
@@ -479,24 +545,36 @@ def train_stage(config: dict, spec: dict) -> dict:
     patience = int(config["training"]["early_stopping_patience"])
     min_delta = float(config["training"]["early_stopping_min_delta"])
     stopped_early = False
+    samples_seen = {"gbif": 0, "petri": 0}
     while stage_step < max_steps:
         model.train()
         batch = next(train_iterator)
         loss, task_losses, _, _ = _loss_for_batch(
-            model, batch, criteria, config, device, scaler, optimizer=optimizer
+            model, batch, criteria, config, device, scaler,
+            hierarchy_config, child_to_parent_matrix, optimizer=optimizer,
         )
         scheduler.step()
         stage_step += 1
         global_step += 1
+        if spec["domain"] == "mixed":
+            samples_seen["gbif"] += int(config["training"]["mixed_batch_per_domain"])
+            samples_seen["petri"] += int(config["training"]["mixed_batch_per_domain"])
+        else:
+            samples_seen[spec["domain"]] += batch_size
         record = {
             "stage_step": stage_step, "global_step": global_step,
             "train_loss": loss, **{f"train_{task}_loss": value for task, value in task_losses.items()},
             "backbone_lr": optimizer.param_groups[0]["lr"],
             "head_lr": optimizer.param_groups[1]["lr"],
+            "gbif_samples_seen": samples_seen["gbif"],
+            "peti_samples_seen": samples_seen["petri"],
         }
         validate = stage_step % validation_interval == 0 or stage_step == max_steps
         if validate:
-            validation = _domain_metrics(model, validation_loaders, criteria, config, device)
+            validation = _domain_metrics(
+                model, validation_loaders, criteria, config, device,
+                hierarchy_config, child_to_parent_matrix,
+            )
             score = float(validation["domain_balanced_macro_f1"])
             record["validation"] = validation
             improved = score > best_score + min_delta
@@ -537,7 +615,10 @@ def train_stage(config: dict, spec: dict) -> dict:
             if validate and improved:
                 _save_checkpoint(payload, output / "best_model.pt")
         if _STOP_REQUESTED:
-            status = {"status": "interrupted", "stage_step": stage_step, "global_step": global_step}
+            status = {
+                "status": "interrupted", "stage_step": stage_step, "global_step": global_step,
+                "samples_seen": {"gbif": samples_seen["gbif"], "peti": samples_seen["petri"]},
+            }
             _atomic_json(status_path, status)
             if run is not None:
                 run.finish(exit_code=3)
@@ -549,7 +630,10 @@ def train_stage(config: dict, spec: dict) -> dict:
     if bool(spec.get("final_model", False)) and (output / "best_model.pt").is_file():
         best_checkpoint = torch.load(output / "best_model.pt", map_location="cpu")
         model.load_state_dict(best_checkpoint["model_state"], strict=True)
-    test_metrics = _domain_metrics(model, test_loaders, criteria, config, device)
+    test_metrics = _domain_metrics(
+        model, test_loaders, criteria, config, device,
+        hierarchy_config, child_to_parent_matrix,
+    )
     _atomic_json(output / "test_metrics.json", test_metrics)
     status = {
         "status": "complete", "run_id": spec["run_id"],
@@ -565,6 +649,13 @@ def train_stage(config: dict, spec: dict) -> dict:
                 if spec["domain"] in {domain, "mixed"} else 0.0
             )
             for domain in DOMAINS
+        },
+        "samples_seen": {
+            "gbif": int(samples_seen["gbif"]),
+            "peti": int(samples_seen["petri"]),
+            "total": int(sum(samples_seen.values())),
+            "gbif_fraction": float(samples_seen["gbif"] / max(sum(samples_seen.values()), 1)),
+            "peti_fraction": float(samples_seen["petri"] / max(sum(samples_seen.values()), 1)),
         },
     }
     _atomic_json(status_path, status)
