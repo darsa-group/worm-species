@@ -21,7 +21,7 @@ class GBIFCombinedResultsNotebookTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             output_root = root / "outputs"
-            inference_root = output_root / "inference" / "baseline"
+            inference_root = output_root / "inference" / "baseline" / "convnext_base"
             inference_root.mkdir(parents=True)
             predictions = pd.DataFrame({
                 "image_id": ["image-1", "image-2", "image-3", "image-4"],
@@ -49,6 +49,7 @@ class GBIFCombinedResultsNotebookTests(unittest.TestCase):
             config_path = root / "config.yaml"
             config_path.write_text(yaml.safe_dump({
                 "paths": {"output_root": str(output_root)},
+                "models": {"primary": ["convnext_base"]},
                 "reporting": {"formats": ["png"]},
             }))
             notebook_path = root / "report.ipynb"
@@ -58,7 +59,7 @@ class GBIFCombinedResultsNotebookTests(unittest.TestCase):
             namespace = {"display": lambda _value: None}
             markers = (
                 "from pathlib import Path",
-                "inference_path =",
+                "inference_frames =",
                 "coverage_rows =",
                 "prediction_distribution_rows =",
                 "if not inference.empty:",

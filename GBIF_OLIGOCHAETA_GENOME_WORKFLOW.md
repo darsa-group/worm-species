@@ -88,22 +88,20 @@ time comparison, also without content hashing, is:
 
 ```bash
 make gbif-oligochaeta-transfer-verify
+```
 
-On Genome, continue with the parallel cache/training preparation:
+After pulling this branch and activating `wormspecies` on Genome, inspect the
+complete dependency graph without submitting:
 
 ```bash
 cd /faststorage/project/worm-species/source
-make gbif-check
-make gbif-prepare
-make gbif-cache
-make gbif-status
 make gbif-train-dry-run
 ```
 
-`gbif-cache` uses the configured 16 preprocessing workers. The generated
-training arrays run independently with up to 12 active one-GPU tasks and share
-one locked node-local cache copy per physical node.
-```
+The dry-run replaces the former five-command preparation sequence. It selects
+the three publication checkpoints used for inference, freezes the prepared
+manifests, renders the 36-task inference array, renders the CPU cache job, and
+renders both training waves without calling `sbatch`.
 
 ## 4. Embed and cluster on Genome
 
@@ -153,32 +151,64 @@ masked and are recorded in the preparation audit. The two Petri-only exact
 labels `Aporrectodea_tuberculata` and
 `Lumbricus_terrestris_herculeus` remain distinct.
 
-Run and inspect baseline inference first:
+The unified command scans the completed 30-seed publication baseline directory
+for `convnext_base`, `vit_b_16`, and `resnet50`. For inference only, it selects
+the completed original-condition checkpoint with the lowest saved validation
+loss for each backbone. It records every candidate and the deterministic
+selection before submitting one combined 36-task array (three models × twelve
+hash shards), capped at twelve active one-GPU tasks. A dependent CPU merge
+validates exact coverage and checkpoint identity separately for each model.
+Agreement with GBIF occurrence labels is not independently verified image-level
+accuracy.
+
+The old publication checkpoints are not used to initialise transfer training.
+All new transfer stages start from the matching torchvision ImageNet backbone.
+The four fixed-budget trajectories are:
+
+1. `gbif_only`: ImageNet → 10,000 GBIF steps;
+2. `peti_to_gbif`: ImageNet → 10,000 Petri steps → 10,000 GBIF steps;
+3. `gbif_to_peti`: ImageNet → 10,000 GBIF steps → 10,000 Petri steps; and
+4. `mixed`: ImageNet → 20,000 balanced steps with 64 GBIF and 64 Petri images
+   per batch.
+
+Every stage uses a fresh AdamW optimiser and a stage-local warmup/cosine
+scheduler. Sequential Stage 2 loads only the validation-selected Stage-1 model
+weights, never historical optimiser or scheduler state. Every stage finishes
+its full budget and retains both the final-step `last_model.pt` and the highest
+validation-score `best_model.pt`. The best checkpoint is evaluated on both
+fixed test domains. This makes the saved Stage-1 and Stage-2 tests a direct
+retention/catastrophic-forgetting comparison.
+
+Checkpoint selection is trajectory-specific and excludes missing task metrics:
+
+- GBIF selection score = mean of genus and species macro-F1;
+- Petri selection score = mean of genus, species, and age macro-F1;
+- `gbif_only`, `peti_to_gbif` Stage 2, and `gbif_to_peti` Stage 1 use GBIF
+  validation only;
+- `peti_to_gbif` Stage 1 and `gbif_to_peti` Stage 2 use Petri validation only;
+- `mixed` uses the equal-weight mean of the GBIF and Petri domain scores.
+
+GBIF age is missing and remains `NA`; it never enters a mean as zero. Each
+trajectory is run with hierarchy-consistency weights 0.0 and 0.5, seeds 40,
+140, and 240, for all three backbones: 72 final models and 108 total stage jobs.
+The training arrays request one GPU, 16 CPUs, 20 GB memory, and four hours per
+task on `gpu-short`, `gpu-l40s`, or `gpu-h200`, with twelve active tasks maximum.
+
+The 16-CPU cache sbatch job and inference array start without a dependency and
+can run concurrently. Wave 1 waits for both the cache and inference merge;
+Wave 2 waits for all Wave-1 tasks. One command submits the complete graph:
 
 ```bash
-make gbif-check
-make gbif-infer-dry-run GBIF_CHECKPOINT=/absolute/path/to/best_model.pt
-make gbif-infer GBIF_CHECKPOINT=/absolute/path/to/best_model.pt
+make gbif-train
 ```
 
-Inference is one 12-element Slurm array (`0-11%12`), not a twelve-GPU job.
-Each task requests one GPU and processes a deterministic hash shard. A dependent
-CPU job refuses to merge missing, duplicated, unexpected, or mixed-checkpoint
-outputs. Reported agreement with GBIF occurrence labels is not independently
-verified image-level accuracy.
+All generated artifacts are contained below
+`/faststorage/project/worm-species/source/outputs/gbif_training_3backbone_fixed_budget`,
+including the persistent cache, manifests, Slurm scripts and logs, inference,
+checkpoints, metrics, notebook exports, figures, and source tables. The curated
+GBIF image bundle remains a read-only input at its configured data path.
 
-The fixed transfer experiment uses the ConvNeXt-Base PETI checkpoint as
-`PETI_ONLY` and prepares four strategies: `gbif_only` (Base→GBIF),
-`peti_to_gbif`, `gbif_to_peti`, and balanced `mixed`. Each has hierarchy weights
-0.0 and 0.5 (`species → genus`) and seeds 40, 140, and 240: 24 final
-trajectories. The GBIF age label is masked; no unknown-age class or pseudo-label
-is created. The PETI→GBIF stage freezes the age head, while GBIF→PETI restores
-age supervision in stage 2. Jobs request one GPU, 16 CPUs, 20 GB host memory,
-12 DataLoader workers, and may run on `gpu-short`, `gpu-l40s`, or `gpu-h200`.
-Array concurrency is capped at 12. The generated `plan.json` records every
-stage, initial checkpoint, hierarchy condition, seed, and output directory.
-
-Before the first GPU wave, a dependent CPU job converts every prepared GBIF
+The cache job converts every prepared GBIF
 and Petri image once to a lossless 224-pixel PNG cache on shared storage. Each
 physical compute node then copies that verified cache under `/tmp` once using a
 node-wide `flock`; later array tasks on the same node reuse it. Training fails
@@ -188,15 +218,12 @@ submission command creates the preprocessing dependency automatically; to
 build or inspect the persistent cache separately, use `make gbif-cache` and
 `make gbif-status`.
 
-```bash
-make gbif-train-dry-run
-make gbif-train                 # user submits manually
-make gbif-status
-make gbif-resume GBIF_PHASE=primary
-```
+`make gbif-status` reports selection, per-backbone inference, cache readiness,
+and every training stage. `make gbif-resume GBIF_PHASE=primary` remains the
+explicit skip-safe recovery command after failed jobs.
 
 The optional legacy DINOv3 phase remains separately renderable; it is not part
-of the 24-trajectory PETI↔GBIF experiment. Do not submit it unless explicitly
+of the 72-trajectory PETI↔GBIF experiment. Do not submit it unless explicitly
 needed.
 
 ```bash
@@ -216,9 +243,13 @@ editable results notebook:
 make gbif-report
 ```
 
-It writes `notebooks/gbif_inference_training_dino_results.ipynb` and exports
-source tables plus SVG/PDF figures below the configured output root. Missing
-jobs are displayed as pending and are never represented as scientific results.
+It writes and executes `notebooks/gbif_inference_training_dino_results.ipynb`.
+The notebook is the authoritative results artifact: every figure is displayed
+there with its methods, checkpoint-selection rule, seed count, uncertainty,
+chance provenance where applicable, and exported source table. It reports the
+three old-checkpoint inference baselines separately from new transfer training,
+paired hierarchy-loss effects, and Stage-1→Stage-2 retention/forgetting.
+Missing jobs are displayed as pending and are never represented as results.
 
 For each completed checkpoint, run the common evaluator (image-level PETI and
 GBIF metrics plus GBIF occurrence-level aggregation) with:

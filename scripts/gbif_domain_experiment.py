@@ -15,7 +15,9 @@ from worm_species.gbif.domain_data import prepare_domain_manifests
 from worm_species.gbif.domain_orchestration import experiment_status
 from worm_species.gbif.domain_orchestration import _training_specs
 from worm_species.gbif.domain_orchestration import render_inference
+from worm_species.gbif.domain_orchestration import render_primary_pipeline
 from worm_species.gbif.domain_orchestration import render_training
+from worm_species.gbif.domain_orchestration import submit_primary_pipeline
 from worm_species.gbif.domain_orchestration import submit_inference
 from worm_species.gbif.domain_orchestration import submit_training
 from worm_species.gbif.domain_training import train_stage
@@ -37,6 +39,8 @@ def build_parser() -> argparse.ArgumentParser:
     cache_status = commands.add_parser("cache-status")
     cache_status.add_argument("--cache-root")
     cache_status.add_argument("--verify-files", action="store_true")
+    commands.add_parser("render-primary-pipeline")
+    commands.add_parser("submit-primary-pipeline")
     for name in ("render-training", "submit-training"):
         command = commands.add_parser(name)
         command.add_argument("--phase", choices=("primary", "dino"), required=True)
@@ -68,7 +72,15 @@ def main() -> None:
                 "seeds": config["models"]["primary_seeds"],
                 "hierarchy_loss_weights": config["training"]["hierarchy_loss"]["weights"],
                 "wave1_jobs": len(wave1), "wave2_jobs": len(wave2),
+                "total_stage_jobs": len(wave1) + len(wave2),
                 "final_trajectories": sum(spec["final_model"] for spec in wave1 + wave2),
+                "fixed_budget": bool(config["training"]["fixed_budget"]),
+                "checkpoint_selection": {
+                    "gbif_only": ["gbif"],
+                    "peti_to_gbif": {"stage1": ["petri"], "stage2": ["gbif"]},
+                    "gbif_to_peti": {"stage1": ["gbif"], "stage2": ["petri"]},
+                    "mixed": ["gbif", "petri"],
+                },
             },
         })
     elif args.command == "prepare":
@@ -86,6 +98,10 @@ def main() -> None:
         _print(status)
         if not status["ready"]:
             raise SystemExit(2)
+    elif args.command == "render-primary-pipeline":
+        _print(render_primary_pipeline(config, args.config))
+    elif args.command == "submit-primary-pipeline":
+        _print(submit_primary_pipeline(config, args.config))
     elif args.command == "render-training":
         _print(render_training(config, args.config, args.phase, prepare=True))
     elif args.command == "submit-training":

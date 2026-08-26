@@ -14,10 +14,16 @@ from .domain_data import prepare_domain_manifests
 
 
 STRATEGIES = {
-    "gbif_only": (("gbif", None, True),),
-    "peti_to_gbif": (("gbif", "peti_checkpoint", True),),
-    "gbif_to_peti": (("gbif", None, False), ("petri", "stage1", True)),
-    "mixed": (("mixed", None, True),),
+    "gbif_only": (("gbif", None, True, ("gbif",)),),
+    "peti_to_gbif": (
+        ("petri", None, False, ("petri",)),
+        ("gbif", "stage1", True, ("gbif",)),
+    ),
+    "gbif_to_peti": (
+        ("gbif", None, False, ("gbif",)),
+        ("petri", "stage1", True, ("petri",)),
+    ),
+    "mixed": (("mixed", None, True, ("gbif", "petri")),),
 }
 
 
@@ -39,7 +45,91 @@ def _atomic_json(path: Path, value: object) -> None:
     os.replace(temporary, path)
 
 
-def _training_specs(config: dict, phase: str) -> tuple[list[dict], list[dict]]:
+def discover_publication_checkpoints(config: dict) -> dict:
+    """Select one completed, validation-loss checkpoint per primary backbone."""
+    root = Path(config["paths"]["publication_baseline_root"])
+    if not root.is_dir():
+        raise FileNotFoundError(root)
+    expected = list(config["models"]["primary"])
+    candidates = {model: [] for model in expected}
+    rejected = []
+    for summary_path in sorted(root.glob("run_*/*/run_summary.json")):
+        try:
+            summary = json.loads(summary_path.read_text(encoding="utf-8"))
+            run_config = json.loads(
+                (summary_path.parent / "config.json").read_text(encoding="utf-8")
+            )
+        except (OSError, json.JSONDecodeError) as exc:
+            rejected.append({"path": str(summary_path), "reason": type(exc).__name__})
+            continue
+        model = str(summary.get("model", ""))
+        if model not in candidates:
+            continue
+        checkpoint = summary_path.parent / "best_model.pt"
+        run_status = summary_path.parent.parent / "run_status.txt"
+        reasons = []
+        if str(summary.get("train_condition", "")) != "original":
+            reasons.append("not_original_condition")
+        if str(summary.get("selection_metric", "")) != "loss":
+            reasons.append("selection_metric_is_not_loss")
+        try:
+            validation_loss = float(summary["best_val_score"])
+        except (KeyError, TypeError, ValueError):
+            validation_loss = None
+            reasons.append("invalid_best_val_score")
+        if not run_status.is_file() or run_status.read_text(encoding="utf-8").strip() != "0":
+            reasons.append("run_not_complete")
+        if not checkpoint.is_file():
+            reasons.append("missing_best_model")
+        configured_model = str((run_config.get("model") or {}).get("name", ""))
+        if configured_model != model:
+            reasons.append("model_metadata_mismatch")
+        seed = run_config.get("seed")
+        if not isinstance(seed, int):
+            reasons.append("invalid_seed")
+        record = {
+            "model": model,
+            "seed": seed,
+            "validation_loss": validation_loss,
+            "checkpoint": str(checkpoint.resolve()),
+            "run_dir": str(summary_path.parent.resolve()),
+        }
+        if reasons:
+            rejected.append({**record, "reason": ",".join(reasons)})
+        else:
+            candidates[model].append(record)
+    selected = {}
+    for model in expected:
+        if not candidates[model]:
+            raise RuntimeError(
+                f"No completed original-condition publication checkpoint found for {model} "
+                f"below {root}"
+            )
+        selected[model] = min(
+            candidates[model],
+            key=lambda row: (row["validation_loss"], row["checkpoint"]),
+        )
+    result = {
+        "schema_version": 1,
+        "selection_rule": "minimum_completed_original_validation_loss",
+        "publication_baseline_root": str(root.resolve()),
+        "selected": selected,
+        "candidates": candidates,
+        "rejected": rejected,
+    }
+    destination = (
+        Path(config["paths"]["output_root"])
+        / "generated" / "primary" / "selected_publication_checkpoints.json"
+    )
+    _atomic_json(destination, result)
+    result["manifest"] = str(destination)
+    return result
+
+
+def _training_specs(
+    config: dict,
+    phase: str,
+) -> tuple[list[dict], list[dict]]:
     if phase not in {"primary", "dino"}:
         raise ValueError("phase must be primary or dino")
     models = config["models"][phase]
@@ -66,15 +156,12 @@ def _training_specs(config: dict, phase: str) -> tuple[list[dict], list[dict]]:
                     "weight": hierarchy_weight,
                 }
                 for strategy, stages in STRATEGIES.items():
-                    first_domain, first_initial, first_final = stages[0]
+                    first_domain, _first_initial, first_final, first_selection = stages[0]
                     strategy_root = seed_root / strategy
                     first_id = f"{phase}-{model}-seed{seed}{run_suffix}-{strategy}-stage1"
                     first_output = strategy_root / "stage1"
                     first_checkpoint = None
                     freeze_age = False
-                    if first_initial == "peti_checkpoint":
-                        first_checkpoint = str(config["paths"]["peti_checkpoint"])
-                        freeze_age = True
                     first = {
                         "phase": phase, "model": model, "seed": int(seed),
                         "strategy": strategy, "regime": strategy,
@@ -84,12 +171,13 @@ def _training_specs(config: dict, phase: str) -> tuple[list[dict], list[dict]]:
                         "initial_checkpoint": first_checkpoint,
                         "final_model": bool(first_final and len(stages) == 1),
                         "freeze_age_head": freeze_age,
+                        "selection_domains": list(first_selection),
                         "hierarchy_loss": hierarchy_spec,
                         "hierarchy_loss_weight": hierarchy_weight,
                     }
                     wave1.append(first)
                     if len(stages) > 1:
-                        second_domain, second_initial, second_final = stages[1]
+                        second_domain, _second_initial, second_final, second_selection = stages[1]
                         second_id = f"{phase}-{model}-seed{seed}{run_suffix}-{strategy}-stage2"
                         second_output = strategy_root / "stage2"
                         wave2.append({
@@ -98,9 +186,10 @@ def _training_specs(config: dict, phase: str) -> tuple[list[dict], list[dict]]:
                             "stage": "stage2", "domain": second_domain,
                             "max_steps": steps, "run_id": second_id,
                             "output_dir": str(second_output),
-                            "initial_checkpoint": str(first_output / "last_model.pt"),
+                            "initial_checkpoint": str(first_output / "best_model.pt"),
                             "final_model": bool(second_final),
                             "freeze_age_head": False,
+                            "selection_domains": list(second_selection),
                             "hierarchy_loss": hierarchy_spec,
                             "hierarchy_loss_weight": hierarchy_weight,
                         })
@@ -225,7 +314,13 @@ srun python scripts/gbif_domain_experiment.py --config {shlex.quote(str(config_p
 """
 
 
-def render_training(config: dict, config_path: str | Path, phase: str, *, prepare: bool) -> dict:
+def render_training(
+    config: dict,
+    config_path: str | Path,
+    phase: str,
+    *,
+    prepare: bool,
+) -> dict:
     if prepare:
         prepare_domain_manifests(config)
     wave1, wave2 = _training_specs(config, phase)
@@ -289,6 +384,7 @@ def render_training(config: dict, config_path: str | Path, phase: str, *, prepar
                 "run_id": spec["run_id"], "strategy": spec["strategy"],
                 "stage": spec["stage"], "seed": spec["seed"],
                 "hierarchy_loss_weight": spec["hierarchy_loss_weight"],
+                "selection_domains": spec["selection_domains"],
                 "initial_checkpoint": spec.get("initial_checkpoint"),
                 "output_dir": spec["output_dir"], "final_model": spec["final_model"],
             }
@@ -316,15 +412,21 @@ def _sbatch(script: str | Path, dependency: str | None = None) -> str:
 
 def submit_training(config: dict, config_path: str | Path, phase: str) -> dict:
     _require_training_runtime(phase)
+    publication_checkpoints = None
     if phase == "primary":
-        inference = (
-            Path(config["paths"]["output_root"])
-            / "inference" / "baseline" / "predictions.csv"
-        )
-        if not inference.is_file():
+        discovery = discover_publication_checkpoints(config)
+        publication_checkpoints = {
+            model: row["checkpoint"]
+            for model, row in discovery["selected"].items()
+        }
+        missing_inference = [
+            model for model, checkpoint in publication_checkpoints.items()
+            if not _primary_inference_ready(config, model, checkpoint)
+        ]
+        if missing_inference:
             raise RuntimeError(
-                "Baseline curated-GBIF inference must finish before primary training; "
-                f"missing {inference}"
+                "All selected publication checkpoints must finish curated-GBIF inference "
+                f"before primary training; incomplete models: {missing_inference}"
             )
     else:
         primary = experiment_status(config)["primary"]["counts"]
@@ -336,19 +438,12 @@ def submit_training(config: dict, config_path: str | Path, phase: str) -> dict:
                 "primary stage jobs "
                 f"to be complete; current counts: {primary}"
             )
-    manifest = render_training(config, config_path, phase, prepare=True)
-    specs = _training_specs(config, phase)
-    reference_paths = {
-        Path(spec["initial_checkpoint"])
-        for spec in specs[0] + specs[1]
-        if spec.get("initial_checkpoint") == config["paths"]["peti_checkpoint"]
-    }
-    missing_reference = [path for path in reference_paths if not path.is_file()]
-    if missing_reference:
-        raise FileNotFoundError(
-            "PETI_ONLY reference checkpoint is missing: "
-            + ", ".join(str(path) for path in missing_reference)
-        )
+    manifest = render_training(
+        config,
+        config_path,
+        phase,
+        prepare=True,
+    )
     cache_status = domain_cache_status(config, verify_files=True)
     preprocessing_id = None
     wave1_dependency = None
@@ -478,6 +573,290 @@ def submit_inference(config: dict, config_path: str | Path, checkpoint: str | Pa
     return receipt
 
 
+def _primary_inference_output(config: dict, model: str) -> Path:
+    return (
+        Path(config["paths"]["output_root"])
+        / "inference" / "baseline" / model / "predictions.csv"
+    )
+
+
+def _primary_inference_ready(config: dict, model: str, checkpoint: str | Path) -> bool:
+    output = _primary_inference_output(config, model)
+    summary_path = output.with_suffix(".summary.json")
+    if not output.is_file() or not summary_path.is_file():
+        return False
+    try:
+        summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return False
+    return (
+        summary.get("coverage_validated") is True
+        and summary.get("checkpoint_model") == model
+        and Path(str(summary.get("checkpoint", ""))).resolve() == Path(checkpoint).resolve()
+    )
+
+
+def _multi_inference_array_script(
+    config: dict,
+    index_path: Path,
+    count: int,
+) -> str:
+    slurm = config["slurm"]
+    paths = config["paths"]
+    inference = config["inference"]
+    log_dir = Path(paths["output_root"]) / "logs" / "inference"
+    return f"""#!/usr/bin/env bash
+#SBATCH --job-name=gbif-infer-3model
+#SBATCH --account={slurm['account']}
+#SBATCH --partition={slurm['partition']}
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task={slurm['cpus_per_task']}
+#SBATCH --mem={slurm['memory']}
+#SBATCH --time={slurm['time_limit']}
+#SBATCH --gres=gpu:1
+#SBATCH --array=0-{count - 1}%{slurm['array_max_active']}
+#SBATCH --output={log_dir}/%x-%A_%a.out
+#SBATCH --error={log_dir}/%x-%A_%a.err
+
+set -euo pipefail
+mkdir -p {shlex.quote(str(log_dir))}
+source {shlex.quote(paths['conda_sh'])}
+conda activate {shlex.quote(paths['conda_env'])}
+row=$(awk -F '\t' -v array_id="$SLURM_ARRAY_TASK_ID" 'NR > 1 && $1 == array_id {{print $2 "\t" $3 "\t" $4 "\t" $5}}' {shlex.quote(str(index_path))})
+[[ -n "$row" ]] || {{ echo "Missing inference spec for array index $SLURM_ARRAY_TASK_ID" >&2; exit 2; }}
+IFS=$'\t' read -r model shard checkpoint output <<< "$row"
+mkdir -p "$(dirname "$output")"
+cd {shlex.quote(paths['project_root'])}
+export PYTHONPATH={shlex.quote(paths['project_root'])}/src
+srun python scripts/gbif_oligochaeta_pipeline.py infer-existing \
+  --manifest {shlex.quote(paths['gbif_manifest'])} \
+  --checkpoint "$checkpoint" --output "$output" \
+  --batch-size {inference['batch_size']} --workers {inference['num_workers']} \
+  --prefetch-factor {inference['prefetch_factor']} --device cuda \
+  --shard-index "$shard" --shard-count {inference['shards']}
+"""
+
+
+def _multi_inference_merge_script(
+    config: dict,
+    pending_models: list[str],
+) -> str:
+    merge = config["slurm"]["merge"]
+    paths = config["paths"]
+    log_dir = Path(paths["output_root"]) / "logs" / "inference"
+    commands = []
+    for model in pending_models:
+        output = _primary_inference_output(config, model)
+        commands.append(
+            "srun python scripts/gbif_oligochaeta_pipeline.py merge-inference "
+            f"--manifest {shlex.quote(paths['gbif_manifest'])} "
+            f"--shard-dir {shlex.quote(str(output.parent / 'shards'))} "
+            f"--output {shlex.quote(str(output))} "
+            f"--shard-count {config['inference']['shards']}"
+        )
+    body = "\n".join(commands)
+    return f"""#!/usr/bin/env bash
+#SBATCH --job-name=gbif-infer-merge-3model
+#SBATCH --account={config['slurm']['account']}
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task={merge['cpus_per_task']}
+#SBATCH --mem={merge['memory']}
+#SBATCH --time={merge['time_limit']}
+#SBATCH --output={log_dir}/%x-%j.out
+#SBATCH --error={log_dir}/%x-%j.err
+
+set -euo pipefail
+source {shlex.quote(paths['conda_sh'])}
+conda activate {shlex.quote(paths['conda_env'])}
+cd {shlex.quote(paths['project_root'])}
+export PYTHONPATH={shlex.quote(paths['project_root'])}/src
+{body}
+"""
+
+
+def render_primary_inference(
+    config: dict,
+    checkpoints: dict[str, str],
+) -> dict:
+    pending = [
+        model for model in config["models"]["primary"]
+        if not _primary_inference_ready(config, model, checkpoints[model])
+    ]
+    root = Path(config["paths"]["output_root"]) / "inference" / "baseline" / "generated"
+    root.mkdir(parents=True, exist_ok=True)
+    (Path(config["paths"]["output_root"]) / "logs" / "inference").mkdir(
+        parents=True, exist_ok=True
+    )
+    rows = ["array_index\tmodel\tshard\tcheckpoint\toutput"]
+    index = 0
+    for model in pending:
+        output_root = _primary_inference_output(config, model).parent / "shards"
+        for shard in range(int(config["inference"]["shards"])):
+            rows.append(
+                f"{index}\t{model}\t{shard}\t{checkpoints[model]}\t"
+                f"{output_root / f'shard-{shard:03d}.csv'}"
+            )
+            index += 1
+    index_path = root / "inference_tasks.tsv"
+    index_path.write_text("\n".join(rows) + "\n", encoding="utf-8")
+    manifest = {
+        "schema_version": 1,
+        "models": list(config["models"]["primary"]),
+        "pending_models": pending,
+        "reused_models": [model for model in config["models"]["primary"] if model not in pending],
+        "task_count": index,
+        "array_max_active": int(config["slurm"]["array_max_active"]),
+        "index": str(index_path),
+        "array_script": None,
+        "merge_script": None,
+    }
+    if pending:
+        array_script = root / "inference_array.sbatch"
+        merge_script = root / "merge.sbatch"
+        array_script.write_text(
+            _multi_inference_array_script(config, index_path, index),
+            encoding="utf-8",
+        )
+        merge_script.write_text(
+            _multi_inference_merge_script(config, pending), encoding="utf-8"
+        )
+        array_script.chmod(0o755)
+        merge_script.chmod(0o755)
+        manifest.update(array_script=str(array_script), merge_script=str(merge_script))
+    _atomic_json(root / "manifest.json", manifest)
+    return manifest
+
+
+def _pipeline_receipt_path(config: dict) -> Path:
+    return (
+        Path(config["paths"]["output_root"])
+        / "generated" / "primary" / "pipeline_submission_receipt.json"
+    )
+
+
+def _active_receipt_jobs(receipt: dict) -> list[str]:
+    job_ids = sorted({
+        str(value) for key, value in receipt.items()
+        if key.endswith("_job_id") and value is not None and str(value).isdigit()
+    })
+    if not job_ids:
+        return []
+    completed = subprocess.run(
+        ["squeue", "--noheader", "--jobs", ",".join(job_ids), "--format=%i"],
+        check=False,
+        text=True,
+        capture_output=True,
+    )
+    if completed.returncode:
+        raise RuntimeError(
+            "Could not check the previous GBIF pipeline receipt with squeue: "
+            f"{completed.stderr.strip()}"
+        )
+    return sorted({line.strip() for line in completed.stdout.splitlines() if line.strip()})
+
+
+def render_primary_pipeline(config: dict, config_path: str | Path) -> dict:
+    discovery = discover_publication_checkpoints(config)
+    checkpoints = {
+        model: row["checkpoint"] for model, row in discovery["selected"].items()
+    }
+    preparation = prepare_domain_manifests(config)
+    inference = render_primary_inference(config, checkpoints)
+    training = render_training(
+        config,
+        config_path,
+        "primary",
+        prepare=False,
+    )
+    cache = domain_cache_status(config, verify_files=True)
+    manifest = {
+        "schema_version": 1,
+        "phase": "primary",
+        "checkpoint_manifest": discovery["manifest"],
+        "selected_checkpoints": checkpoints,
+        "prepared_status": preparation.get("status", "prepared"),
+        "cache_ready": bool(cache["ready"]),
+        "cache_status": cache,
+        "inference": inference,
+        "training": training,
+        "dag": {
+            "parallel_roots": ["inference", "preprocessed_cache"],
+            "wave1_dependency": "afterok:inference_merge+preprocessed_cache",
+            "wave2_dependency": "afterok:wave1",
+        },
+    }
+    destination = (
+        Path(config["paths"]["output_root"])
+        / "generated" / "primary" / "pipeline_manifest.json"
+    )
+    _atomic_json(destination, manifest)
+    manifest["manifest"] = str(destination)
+    return manifest
+
+
+def submit_primary_pipeline(config: dict, config_path: str | Path) -> dict:
+    _require_training_runtime("primary")
+    receipt_path = _pipeline_receipt_path(config)
+    if receipt_path.is_file():
+        previous = json.loads(receipt_path.read_text(encoding="utf-8"))
+        active = _active_receipt_jobs(previous)
+        if active:
+            raise RuntimeError(
+                "A GBIF primary pipeline receipt still has active Slurm jobs: "
+                + ", ".join(active)
+            )
+    manifest = render_primary_pipeline(config, config_path)
+    receipt = {
+        "phase": "primary",
+        "pipeline_manifest": manifest["manifest"],
+        "checkpoint_manifest": manifest["checkpoint_manifest"],
+        "inference_array_job_id": None,
+        "inference_merge_job_id": None,
+        "preprocessing_job_id": None,
+        "preprocessed_cache_reused": bool(manifest["cache_ready"]),
+        "wave1_job_id": None,
+        "wave2_job_id": None,
+        "all_jobs_submitted": False,
+    }
+    _atomic_json(receipt_path, receipt)
+
+    dependencies = []
+    inference = manifest["inference"]
+    if inference["task_count"]:
+        receipt["inference_array_job_id"] = _sbatch(inference["array_script"])
+        _atomic_json(receipt_path, receipt)
+        receipt["inference_merge_job_id"] = _sbatch(
+            inference["merge_script"],
+            f"afterok:{receipt['inference_array_job_id']}",
+        )
+        dependencies.append(receipt["inference_merge_job_id"])
+        _atomic_json(receipt_path, receipt)
+
+    training = manifest["training"]
+    if not manifest["cache_ready"]:
+        receipt["preprocessing_job_id"] = _sbatch(
+            training["preprocessed_cache"]["script"]
+        )
+        dependencies.append(receipt["preprocessing_job_id"])
+        _atomic_json(receipt_path, receipt)
+
+    wave1_dependency = (
+        "afterok:" + ":".join(dependencies) if dependencies else None
+    )
+    receipt["wave1_job_id"] = _sbatch(
+        training["wave1"]["script"], wave1_dependency
+    )
+    _atomic_json(receipt_path, receipt)
+    receipt["wave2_job_id"] = _sbatch(
+        training["wave2"]["script"], f"afterok:{receipt['wave1_job_id']}"
+    )
+    receipt["all_jobs_submitted"] = True
+    _atomic_json(receipt_path, receipt)
+    return receipt
+
+
 def experiment_status(config: dict) -> dict:
     result = {}
     for phase in ("primary", "dino"):
@@ -496,8 +875,34 @@ def experiment_status(config: dict) -> dict:
             counts[state if state in counts else "failed"] += 1
             rows.append({"run_id": spec["run_id"], "status": state})
         result[phase] = {"counts": counts, "runs": rows}
-    inference = Path(config["paths"]["output_root"]) / "inference" / "baseline" / "predictions.csv"
-    result["inference"] = {"complete": inference.is_file(), "output": str(inference)}
+    selection = (
+        Path(config["paths"]["output_root"])
+        / "generated" / "primary" / "selected_publication_checkpoints.json"
+    )
+    selected_checkpoints = {}
+    if selection.is_file():
+        try:
+            payload = json.loads(selection.read_text(encoding="utf-8"))
+            selected_checkpoints = {
+                model: row["checkpoint"]
+                for model, row in payload.get("selected", {}).items()
+            }
+        except (OSError, json.JSONDecodeError, KeyError, TypeError):
+            selected_checkpoints = {}
+    result["inference"] = {
+        model: {
+            "complete": (
+                _primary_inference_ready(config, model, selected_checkpoints[model])
+                if model in selected_checkpoints else False
+            ),
+            "output": str(_primary_inference_output(config, model)),
+        }
+        for model in config["models"]["primary"]
+    }
+    result["publication_checkpoint_selection"] = {
+        "complete": selection.is_file(),
+        "manifest": str(selection),
+    }
     try:
         result["preprocessed_cache"] = domain_cache_status(
             config, verify_files=False

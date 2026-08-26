@@ -28,10 +28,24 @@ def build_notebook(config_path: str, output_path: Path) -> None:
     notebook["cells"] = [
         markdown(
             "# GBIF–PETI transfer and domain-order results\n\n"
-            "This notebook combines baseline inference with the four fixed transfer "
-            "strategies (GBIF only, PETI → GBIF, GBIF → PETI, and mixed), two hierarchy "
-            "weights, and three seeds. It reads completed artifacts only and never trains "
+            "This notebook combines three validation-selected publication baselines with "
+            "the four fixed transfer strategies (GBIF only, PETI → GBIF, GBIF → PETI, "
+            "and mixed), two hierarchy weights, and three seeds. It reads completed artifacts only and never trains "
             "or submits jobs. GBIF metrics are agreement with occurrence metadata."
+        ),
+        markdown(
+            "## Experiment contract\n\n"
+            "**Backbones:** ConvNeXt-Base, ViT-B/16, and ResNet-50. **Seeds:** 40, "
+            "140, and 240. **Hierarchy conditions:** species→genus consistency weights "
+            "0.0 and 0.5. **Optimisation:** AdamW with backbone LR 1e-5, head LR "
+            "1e-4, weight decay 0.05, 1,000-step warmup, and stage-local cosine decay. "
+            "All new training starts from ImageNet and completes a fixed budget.\n\n"
+            "GBIF checkpoints are selected from GBIF validation genus/species macro-F1; "
+            "Petri checkpoints use Petri validation genus/species/age macro-F1; mixed "
+            "training uses the equal-weight mean of those two domain scores. Missing "
+            "GBIF age is NA, never zero. Both fixed test domains are evaluated only after "
+            "checkpoint selection. Old publication checkpoints are used solely for the "
+            "three-backbone inference benchmark."
         ),
         code(f"""from pathlib import Path
 import hashlib
@@ -72,6 +86,19 @@ if prepared_summary_path.is_file():
 else:
     prepared_summary = None
     print('Pending: prepared dataset summary is not available.')
+checkpoint_selection_path = OUTPUT_ROOT / 'generated' / 'primary' / 'selected_publication_checkpoints.json'
+if checkpoint_selection_path.is_file():
+    checkpoint_selection = json.loads(checkpoint_selection_path.read_text())
+    selected_checkpoint_rows = pd.DataFrame(checkpoint_selection['selected']).T.reset_index(
+        names='model'
+    )
+    display(selected_checkpoint_rows)
+    selected_checkpoint_rows.to_csv(
+        REPORT_ROOT / 'selected_publication_checkpoints.csv', index=False
+    )
+else:
+    checkpoint_selection = None
+    print('Pending: publication-checkpoint selection manifest is not available.')
 """),
         markdown(
             "## Baseline inference on curated GBIF\n\n"
@@ -81,18 +108,24 @@ else:
             "the model prediction with GBIF occurrence metadata and is **not independently "
             "verified accuracy**."
         ),
-        code("""inference_path = OUTPUT_ROOT / 'inference' / 'baseline' / 'predictions.csv'
-inference_summary_path = inference_path.with_suffix('.summary.json')
-if inference_path.is_file() and inference_summary_path.is_file():
-    inference = pd.read_csv(inference_path, dtype=str, keep_default_na=False)
-    inference_summary = json.loads(inference_summary_path.read_text())
-    display(pd.Series(inference_summary, name='value').to_frame())
+        code("""inference_frames = []
+inference_summaries = {}
+for baseline_model in config['models']['primary']:
+    inference_path = OUTPUT_ROOT / 'inference' / 'baseline' / baseline_model / 'predictions.csv'
+    inference_summary_path = inference_path.with_suffix('.summary.json')
+    if not inference_path.is_file() or not inference_summary_path.is_file():
+        print(f'Pending inference for {baseline_model}: {inference_path}')
+        continue
+    frame = pd.read_csv(inference_path, dtype=str, keep_default_na=False)
+    frame['baseline_model'] = baseline_model
+    inference_frames.append(frame)
+    inference_summaries[baseline_model] = json.loads(inference_summary_path.read_text())
+inference = pd.concat(inference_frames, ignore_index=True) if inference_frames else pd.DataFrame()
+inference_summary = inference_summaries
+if inference_summaries:
+    display(pd.DataFrame(inference_summaries).T)
 else:
-    inference = pd.DataFrame()
-    inference_summary = None
-    print('Pending: merged 12-shard baseline inference is not available.')
-    print('Expected predictions:', inference_path)
-    print('Expected summary:', inference_summary_path)
+    print('Pending: no merged three-backbone inference outputs are available.')
 """),
         markdown(
             "### Coverage and agreement with GBIF metadata\n\n"
@@ -103,28 +136,29 @@ else:
         ),
         code("""coverage_rows = []
 known_class_recall_rows = []
-for task, label_column in (('genus', 'genus'), ('species', 'species_label')):
+for baseline_model, model_inference in inference.groupby('baseline_model') if not inference.empty else []:
+  for task, label_column in (('genus', 'genus'), ('species', 'species_label')):
     scope_column = f'checkpoint_{task}_scope'
     prediction_column = f'predicted_{task}'
     confidence_column = f'predicted_{task}_confidence'
-    if inference.empty or scope_column not in inference:
+    if scope_column not in model_inference:
         continue
-    scope_values = inference[scope_column].astype(str).str.lower()
+    scope_values = model_inference[scope_column].astype(str).str.lower()
     known = scope_values.eq('known')
     confidence = (
-        pd.to_numeric(inference[confidence_column], errors='coerce')
-        if confidence_column in inference else pd.Series(np.nan, index=inference.index)
+        pd.to_numeric(model_inference[confidence_column], errors='coerce')
+        if confidence_column in model_inference else pd.Series(np.nan, index=model_inference.index)
     )
     evaluation = pd.DataFrame()
-    if label_column in inference and prediction_column in inference:
+    if label_column in model_inference and prediction_column in model_inference:
         valid = (
             known
-            & inference[label_column].astype(str).ne('')
-            & inference[prediction_column].astype(str).ne('')
+            & model_inference[label_column].astype(str).ne('')
+            & model_inference[prediction_column].astype(str).ne('')
         )
         evaluation = pd.DataFrame({
-            'label': inference.loc[valid, label_column].astype(str),
-            'prediction': inference.loc[valid, prediction_column].astype(str),
+            'label': model_inference.loc[valid, label_column].astype(str),
+            'prediction': model_inference.loc[valid, prediction_column].astype(str),
         })
         evaluation['correct'] = evaluation['label'].eq(evaluation['prediction'])
     class_recalls = []
@@ -134,7 +168,7 @@ for task, label_column in (('genus', 'genus'), ('species', 'species_label')):
             recall = float(values['correct'].mean())
             class_recalls.append(recall)
             known_class_recall_rows.append({
-                'task': task, 'label': label, 'rows': int(len(values)),
+                'model': baseline_model, 'task': task, 'label': label, 'rows': int(len(values)),
                 'correct_rows': correct_rows, 'recall': recall,
             })
         label_counts = evaluation['label'].value_counts()
@@ -150,8 +184,8 @@ for task, label_column in (('genus', 'genus'), ('species', 'species_label')):
         balanced_accuracy = np.nan
         balanced_chance = np.nan
     coverage_rows.append({
-        'task': task,
-        'rows': int(len(inference)),
+        'model': baseline_model, 'task': task,
+        'rows': int(len(model_inference)),
         'known_rows': int(known.sum()),
         'unknown_rows': int((~known).sum()),
         'known_coverage': float(known.mean()),
@@ -202,40 +236,41 @@ else:
         code("""prediction_distribution_rows = []
 confidence_summary_rows = []
 confidence_by_task = {}
-for task in ('genus', 'species', 'age'):
+for baseline_model, model_inference in inference.groupby('baseline_model') if not inference.empty else []:
+  for task in ('genus', 'species', 'age'):
     prediction_column = f'predicted_{task}'
     confidence_column = f'predicted_{task}_confidence'
-    if inference.empty or prediction_column not in inference:
+    if prediction_column not in model_inference:
         continue
-    predictions = inference[prediction_column].replace('', pd.NA).dropna()
+    predictions = model_inference[prediction_column].replace('', pd.NA).dropna()
     counts = predictions.value_counts()
     shown = counts.head(15)
     for rank, (label, count) in enumerate(shown.items(), start=1):
         prediction_distribution_rows.append({
-            'task': task, 'rank': rank, 'predicted_label': label,
+            'model': baseline_model, 'task': task, 'rank': rank, 'predicted_label': label,
             'rows': int(count), 'fraction': float(count / len(predictions)),
         })
     other = int(counts.iloc[15:].sum())
     if other:
         prediction_distribution_rows.append({
-            'task': task, 'rank': 16, 'predicted_label': 'Other labels',
+            'model': baseline_model, 'task': task, 'rank': 16, 'predicted_label': 'Other labels',
             'rows': other, 'fraction': float(other / len(predictions)),
         })
-    if confidence_column not in inference:
+    if confidence_column not in model_inference:
         continue
-    confidence = pd.to_numeric(inference[confidence_column], errors='coerce')
+    confidence = pd.to_numeric(model_inference[confidence_column], errors='coerce')
     scope_column = f'checkpoint_{task}_scope'
     scope = (
-        inference[scope_column].astype(str).str.lower()
-        if scope_column in inference else pd.Series('all rows', index=inference.index)
+        model_inference[scope_column].astype(str).str.lower()
+        if scope_column in model_inference else pd.Series('all rows', index=model_inference.index)
     )
-    confidence_by_task[task] = (confidence, scope)
+    confidence_by_task[(baseline_model, task)] = (confidence, scope)
     for scope_name in sorted(scope.dropna().unique()):
         values = confidence.loc[scope.eq(scope_name)].dropna()
         if values.empty:
             continue
         confidence_summary_rows.append({
-            'task': task, 'scope': scope_name, 'rows': int(len(values)),
+            'model': baseline_model, 'task': task, 'scope': scope_name, 'rows': int(len(values)),
             'mean': float(values.mean()), 'median': float(values.median()),
             'q10': float(values.quantile(0.10)), 'q90': float(values.quantile(0.90)),
         })
@@ -254,12 +289,14 @@ if not confidence_summary.empty:
     confidence_summary.to_csv(REPORT_ROOT / 'baseline_confidence_summary.csv', index=False)
 
 if confidence_by_task:
+    columns = 3
+    rows = (len(confidence_by_task) + columns - 1) // columns
     fig, axes = plt.subplots(
-        1, len(confidence_by_task), figsize=(6 * len(confidence_by_task), 4), squeeze=False
+        rows, columns, figsize=(16, 4 * rows), squeeze=False
     )
     colours = {'known': '#0072B2', 'unknown': '#D55E00', 'all rows': '#009E73'}
     bins = np.linspace(0, 1, 21)
-    for ax, (task, (confidence, scope)) in zip(axes[0], confidence_by_task.items()):
+    for ax, ((baseline_model, task), (confidence, scope)) in zip(axes.flat, confidence_by_task.items()):
         for scope_name in sorted(scope.dropna().unique()):
             values = confidence.loc[scope.eq(scope_name)].dropna().to_numpy()
             if not len(values):
@@ -272,9 +309,11 @@ if confidence_by_task:
         ax.set_xlim(0, 1)
         ax.set_xlabel('Top-1 model confidence')
         ax.set_ylabel('Within-scope fraction per bin')
-        ax.set_title(task.capitalize())
+        ax.set_title(f'{baseline_model} — {task}')
         ax.grid(axis='y', alpha=0.2)
         ax.legend(fontsize=8)
+    for ax in list(axes.flat)[len(confidence_by_task):]:
+        ax.set_visible(False)
     fig.suptitle('Baseline inference confidence distributions')
     fig.tight_layout()
     for suffix in config['reporting']['formats']:
@@ -292,21 +331,23 @@ else:
         'checkpoint_species_scope', 'species_label_agreement',
         'predicted_age', 'predicted_age_confidence',
     ) if column in inference]
-    representative_predictions = (
-        inference.sort_values('image_id').sample(
-            n=min(20, len(inference)), random_state=2026
-        ).sort_values('image_id')[representative_columns]
-    )
+    representative_predictions = pd.concat([
+        values.sort_values('image_id').sample(
+            n=min(20, len(values)), random_state=2026
+        ).sort_values('image_id')
+        for _, values in inference.groupby('baseline_model')
+    ], ignore_index=True)[['baseline_model', *representative_columns]]
     display(representative_predictions)
     representative_predictions.to_csv(
         REPORT_ROOT / 'baseline_representative_predictions.csv', index=False
     )
-    print('Rows are a deterministic random sample (seed 2026), not hand-selected examples.')
+    print('Rows are a deterministic random sample per backbone (seed 2026), not hand-selected examples.')
 else:
     representative_predictions = pd.DataFrame()
 """),
         markdown("## Collect all completed training stages"),
         code("""rows = []
+stage_rows = []
 for metrics_path in sorted((OUTPUT_ROOT / 'runs').glob('*/*/seed-*/*/**/test_metrics.json')):
     run_dir = metrics_path.parent
     status_path = run_dir / 'run_status.json'
@@ -318,6 +359,16 @@ for metrics_path in sorted((OUTPUT_ROOT / 'runs').glob('*/*/seed-*/*/**/test_met
         continue
     spec = json.loads(spec_path.read_text())
     metrics = json.loads(metrics_path.read_text())
+    stage_rows.append({
+        **{k: spec.get(k, '') for k in ('phase', 'model', 'seed', 'strategy', 'stage', 'domain')},
+        'hierarchy_loss_weight': float(spec.get('hierarchy_loss_weight', spec.get('hierarchy_loss', {}).get('weight', 0.0))),
+        'selection_domains': '+'.join(spec.get('selection_domains', [])),
+        'best_validation_score': status.get('best_validation_score'),
+        'best_step': status.get('best_step'),
+        'completed_steps': status.get('stage_step'),
+        'fixed_budget_complete': bool(status.get('fixed_budget_complete', False)),
+        'final_model': bool(spec.get('final_model', False)),
+    })
     for domain in ('gbif', 'petri'):
         for task in ('genus', 'species', 'age'):
             value = metrics.get(domain, {}).get(f'{task}_macro_f1')
@@ -330,16 +381,27 @@ for metrics_path in sorted((OUTPUT_ROOT / 'runs').glob('*/*/seed-*/*/**/test_met
                 'evaluation_domain': domain, 'task': task,
                 'macro_f1': float(value), 'n': int(n),
                 'final_model': bool(spec.get('final_model', False)),
-                'stopped_early': bool(status.get('stopped_early', False)),
+                'selection_domains': '+'.join(spec.get('selection_domains', [])),
+                'fixed_budget_complete': bool(status.get('fixed_budget_complete', False)),
                 'completed_steps': int(status.get('stage_step', 0)),
             })
 metrics = pd.DataFrame(rows)
+stage_selection = pd.DataFrame(stage_rows)
 print(f'Collected {len(metrics)} completed domain-task rows.')
 display(metrics.head()) if not metrics.empty else print('Pending: no completed training stages.')
 if not metrics.empty:
     metrics.to_csv(REPORT_ROOT / 'all_stage_metrics.csv', index=False)
+if not stage_selection.empty:
+    display(stage_selection)
+    stage_selection.to_csv(REPORT_ROOT / 'stage_checkpoint_selection.csv', index=False)
 """),
-        markdown("## Final model comparison"),
+        markdown(
+            "## Final model comparison\n\n"
+            "Every point is one fixed-budget seed. Black markers show the seed mean and "
+            "95% Student-t confidence interval. Checkpoints were selected only from the "
+            "trajectory-specific validation domain(s); both fixed test domains are shown "
+            "after selection. GBIF age is absent and therefore never plotted as zero."
+        ),
         code("""final_metrics = metrics.loc[metrics['final_model']].copy() if not metrics.empty else pd.DataFrame()
 if not final_metrics.empty:
     summary = final_metrics.groupby(
@@ -393,7 +455,44 @@ if not final_metrics.empty:
 else:
     print('Pending: final model comparisons require completed runs.')
 """),
-        markdown("## Sequential transfer and forgetting"),
+        markdown(
+            "## Hierarchy-consistency effect\n\n"
+            "The hierarchy-loss comparison is paired within backbone, trajectory, seed, "
+            "evaluation domain, and task. Positive values favour hierarchy weight 0.5 over "
+            "the matched 0.0 run."
+        ),
+        code("""if not final_metrics.empty:
+    hierarchy_wide = final_metrics.pivot_table(
+        index=['phase', 'model', 'strategy', 'seed', 'evaluation_domain', 'task'],
+        columns='hierarchy_loss_weight', values='macro_f1', aggfunc='first'
+    ).reset_index()
+    if {0.0, 0.5}.issubset(hierarchy_wide.columns):
+        hierarchy_wide['hloss_0p5_minus_0p0'] = hierarchy_wide[0.5] - hierarchy_wide[0.0]
+        hierarchy_wide.to_csv(REPORT_ROOT / 'hierarchy_loss_paired_deltas.csv', index=False)
+        hierarchy_summary = hierarchy_wide.groupby(
+            ['model', 'strategy', 'evaluation_domain', 'task'], as_index=False
+        ).agg(
+            mean_delta=('hloss_0p5_minus_0p0', 'mean'),
+            sd=('hloss_0p5_minus_0p0', 'std'),
+            pairs=('hloss_0p5_minus_0p0', 'count'),
+        )
+        hierarchy_summary['ci95'] = (
+            student_t.ppf(0.975, hierarchy_summary['pairs'] - 1)
+            * hierarchy_summary['sd'] / np.sqrt(hierarchy_summary['pairs'])
+        )
+        display(hierarchy_summary)
+        hierarchy_summary.to_csv(REPORT_ROOT / 'hierarchy_loss_summary.csv', index=False)
+    else:
+        print('Pending: matched hierarchy-loss pairs are incomplete.')
+else:
+    print('Pending: hierarchy-loss results require completed final models.')
+"""),
+        markdown(
+            "## Sequential transfer and forgetting\n\n"
+            "Both sequential directions retain and test their validation-selected Stage-1 "
+            "checkpoint before Stage 2. Stage-2 minus Stage-1 therefore measures retention "
+            "or forgetting without an additional training run."
+        ),
         code("""if not metrics.empty:
     sequential = metrics.loc[metrics['strategy'].isin(['peti_to_gbif', 'gbif_to_peti'])].copy()
     wide = sequential.pivot_table(
@@ -409,7 +508,11 @@ else:
 else:
     print('Pending: sequential metrics are not available.')
 """),
-        markdown("## Learning curves and early stopping"),
+        markdown(
+            "## Fixed-budget validation curves\n\n"
+            "All stages finish their prescribed 10,000 or 20,000 steps. Curves show the "
+            "trajectory-specific checkpoint-selection score; they are not test metrics."
+        ),
         code("""history_rows = []
 for history_path in sorted((OUTPUT_ROOT / 'runs').glob('*/*/seed-*/*/**/history.jsonl')):
     spec_path = history_path.parent / 'spec.json'
@@ -422,6 +525,7 @@ for history_path in sorted((OUTPUT_ROOT / 'runs').glob('*/*/seed-*/*/**/history.
             history_rows.append({
                 **{k: spec.get(k, '') for k in ('phase', 'model', 'strategy', 'regime', 'stage')},
                 'hierarchy_loss_weight': float(spec.get('hierarchy_loss_weight', spec.get('hierarchy_loss', {}).get('weight', 0.0))),
+                'selection_domains': '+'.join(spec.get('selection_domains', [])),
                 'global_step': row['global_step'], 'stage_step': row['stage_step'],
                 'validation_score': row['validation']['domain_balanced_macro_f1'],
                 'train_loss': row['train_loss'],
@@ -430,9 +534,9 @@ history = pd.DataFrame(history_rows)
 if not history.empty:
     history.to_csv(REPORT_ROOT / 'validation_history.csv', index=False)
     fig, ax = plt.subplots(figsize=(11, 6))
-        for keys, values in history.groupby(['phase', 'model', 'strategy', 'hierarchy_loss_weight']):
+    for keys, values in history.groupby(['phase', 'model', 'strategy', 'hierarchy_loss_weight']):
         curve = values.groupby('global_step')['validation_score'].mean()
-            ax.plot(curve.index, curve.values, label=' / '.join(map(str, keys)))
+        ax.plot(curve.index, curve.values, label=' / '.join(map(str, keys)))
     ax.set_xlabel('Optimizer step')
     ax.set_ylabel('Domain-balanced validation macro-F1')
     ax.grid(alpha=0.2)
@@ -455,6 +559,7 @@ record = {
     'config': str(CONFIG_PATH),
     'config_sha256': sha256(CONFIG_PATH),
     'prepared_summary': prepared_summary,
+    'publication_checkpoint_selection': checkpoint_selection,
     'inference_summary': inference_summary,
     'completed_metric_rows': int(len(metrics)),
     'completed_final_models': int(final_metrics[['phase','model','seed','strategy','hierarchy_loss_weight']].drop_duplicates().shape[0]) if not final_metrics.empty else 0,

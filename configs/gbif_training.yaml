@@ -6,10 +6,10 @@ paths:
   gbif_manifest: /faststorage/project/worm-species/data/gbif_oligochaeta/curation/curated_manifest.csv
   petri_split_dir: /faststorage/project/worm-species/source/split_csv
   petri_data_root: /faststorage/project/worm-species/data
-  output_root: /faststorage/project/worm-species/outputs/gbif_training
+  output_root: /faststorage/project/worm-species/source/outputs/gbif_training_3backbone_fixed_budget
   conda_sh: /home/devd/miniconda3/etc/profile.d/conda.sh
   conda_env: wormspecies
-  peti_checkpoint: /faststorage/project/worm-species/source/publication_30seed_result/runs/baseline/run_012_convnext_base_original_loss_genus-1.0_species-0.5_age-2.0_seed_1240_hloss_0.0_20260805153055/lr_0.0003_hloss_False_f7435e3a_train_original/best_model.pt
+  publication_baseline_root: /faststorage/project/worm-species/source/publication_30seed_result/runs/baseline
 
 data:
   curation_labels: [keep]
@@ -20,7 +20,7 @@ data:
   target_columns: {genus: genus, species: species, age: age}
 
 models:
-  primary: [convnext_base]
+  primary: [convnext_base, vit_b_16, resnet50]
   primary_seeds: [40, 140, 240]
   dino: [dinov3_vitb16]
   dino_seeds: [40, 140, 240]
@@ -42,9 +42,8 @@ training:
   head_lr: 0.0001
   weight_decay: 0.05
   warmup_steps: 1000
-  minimum_steps_before_early_stopping: 6000
-  early_stopping_patience: 12
-  early_stopping_min_delta: 0.0001
+  fixed_budget: true
+  checkpoint_selection_min_delta: 0.0
   class_weight: true
   loss_weights: {genus: 1.0, species: 0.5, age: 2.0}
   hierarchy_loss:
@@ -62,7 +61,7 @@ training:
 # once per physical compute node for all training array tasks on that node.
 preprocessed_cache:
   enabled: true
-  root: /faststorage/project/worm-species/data/gbif_training_preprocessed
+  root: /faststorage/project/worm-species/source/outputs/gbif_training_3backbone_fixed_budget/preprocessed_cache
   node_root: /tmp/${USER}/worm_species/gbif_training
   format: png
   workers: 16
@@ -80,7 +79,7 @@ wandb:
   project: worm-species-gbif-transfer
   entity: null
   mode: online
-  group: gbif-petri-order-v1
+  group: gbif-petri-order-3backbone-fixed-budget-v1
   save_code: false
   log_model: false
 

@@ -37,13 +37,13 @@ def load_domain_config(path: str | Path) -> dict:
     required_paths = {
         "project_root", "gbif_manifest", "petri_split_dir",
         "petri_data_root", "output_root", "conda_sh", "conda_env",
-        "peti_checkpoint",
+        "publication_baseline_root",
     }
     missing = required_paths.difference(config.get("paths", {}))
     if missing:
         raise ValueError(f"Missing GBIF training paths: {sorted(missing)}")
-    if not str(config["paths"]["peti_checkpoint"]):
-        raise ValueError("paths.peti_checkpoint must identify the fixed PETI reference")
+    if not Path(str(config["paths"]["publication_baseline_root"])).is_absolute():
+        raise ValueError("paths.publication_baseline_root must be an absolute path")
     slurm = config.get("slurm", {})
     if int(slurm.get("gpus_per_task", 0)) != 1:
         raise ValueError("Every GBIF training/inference task must request one GPU")
@@ -66,6 +66,10 @@ def load_domain_config(path: str | Path) -> dict:
         raise ValueError("training.prefetch_factor must be 4")
     if not bool(training.get("persistent_workers", False)):
         raise ValueError("training.persistent_workers must be true")
+    if not bool(training.get("fixed_budget", False)):
+        raise ValueError("GBIF trajectories must use fixed training budgets")
+    if float(training.get("checkpoint_selection_min_delta", -1.0)) < 0.0:
+        raise ValueError("training.checkpoint_selection_min_delta must be non-negative")
     hierarchy = training.get("hierarchy_loss", {}) or {}
     if hierarchy.get("parent_task") != "genus" or hierarchy.get("child_task") != "species":
         raise ValueError("GBIF hierarchy loss must map species to genus")
@@ -102,8 +106,10 @@ def load_domain_config(path: str | Path) -> dict:
     if int(inference.get("num_workers", 0)) != 12:
         raise ValueError("inference.num_workers must be 12")
     models = config.get("models", {})
-    if models.get("primary") != ["convnext_base"]:
-        raise ValueError("The transfer experiment uses the ConvNeXt-Base PETI reference architecture")
+    if models.get("primary") != ["convnext_base", "vit_b_16", "resnet50"]:
+        raise ValueError(
+            "The primary transfer experiment must use convnext_base, vit_b_16, and resnet50"
+        )
     if models.get("primary_seeds") != [40, 140, 240]:
         raise ValueError("Approved transfer seeds are 40, 140, and 240")
     if models.get("dino") != ["dinov3_vitb16"] or models.get("dino_seeds") != [40, 140, 240]:
@@ -556,15 +562,9 @@ def prepare_domain_manifests(config: dict) -> dict:
             "summary_path": str(taxonomy_summary_path.resolve()),
             "summary_sha256": file_sha256(taxonomy_summary_path),
         },
-        "peti_reference": {
-            "name": "PETI_ONLY",
-            "checkpoint": str(Path(config["paths"]["peti_checkpoint"]).resolve()),
-            "checkpoint_sha256": (
-                file_sha256(config["paths"]["peti_checkpoint"])
-                if Path(config["paths"]["peti_checkpoint"]).is_file()
-                else None
-            ),
-            "architecture": "convnext_base",
+        "training_initialisation": {
+            "source": "torchvision_default_imagenet",
+            "publication_checkpoints_used": False,
             "input_size": int(config["data"]["image_size"]),
         },
         "label_counts": {task: len(mapping) for task, mapping in label_maps.items()},

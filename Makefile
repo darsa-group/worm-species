@@ -105,7 +105,7 @@ help: ## Show the paper-pipeline commands.
 	@echo "  make gbif-cache                          Explicitly build/reuse preprocessed images."
 	@echo "  make gbif-infer GBIF_CHECKPOINT=/path/best_model.pt"
 	@echo "                                             Submit 12 one-GPU inference shards."
-	@echo "  make gbif-train                          Submit 24 ConvNeXt transfer trajectories (manual)."
+	@echo "  make gbif-train                          Submit 3-model inference, cache, and 72 trajectories."
 	@echo "  make gbif-evaluate GBIF_CHECKPOINT=...   Evaluate one completed checkpoint."
 	@echo "  make gbif-dino                           Submit optional legacy DINO arrays."
 	@echo "  make gbif-status                         Read output completion state."
@@ -313,13 +313,13 @@ gbif-infer: ## Submit inference locally from a Genome terminal; no SSH.
 		--config "$(GBIF_TRAINING_CONFIG)" submit-inference \
 		--checkpoint "$(GBIF_CHECKPOINT)"
 
-gbif-train-dry-run: ## Prepare and render primary model arrays without sbatch.
+gbif-train-dry-run: ## Discover three baselines and render the complete primary DAG.
 	PYTHONPATH=.:src $(GBIF_PYTHON) scripts/gbif_domain_experiment.py \
-		--config "$(GBIF_TRAINING_CONFIG)" render-training --phase primary
+		--config "$(GBIF_TRAINING_CONFIG)" render-primary-pipeline
 
-gbif-train: ## Submit the 24 final ConvNeXt transfer trajectories (user-run only).
+gbif-train: ## Submit inference + cache + 72 final trajectories as one DAG.
 	PYTHONPATH=.:src $(GBIF_PYTHON) scripts/gbif_domain_experiment.py \
-		--config "$(GBIF_TRAINING_CONFIG)" submit-training --phase primary
+		--config "$(GBIF_TRAINING_CONFIG)" submit-primary-pipeline
 
 gbif-dino-dry-run: ## Prepare and render the later three-seed DINO arrays.
 	PYTHONPATH=.:src $(GBIF_PYTHON) scripts/gbif_domain_experiment.py \

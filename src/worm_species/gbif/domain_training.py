@@ -274,7 +274,7 @@ def _evaluate(
 
 def _domain_metrics(
     model, loaders, criteria, config, device,
-    hierarchy_config, child_to_parent_matrix,
+    hierarchy_config, child_to_parent_matrix, selection_domains,
 ) -> dict:
     metrics = {
         domain: _evaluate(
@@ -283,14 +283,41 @@ def _domain_metrics(
         )
         for domain, loader in loaders.items()
     }
-    values = []
-    for domain in DOMAINS:
+    domain_scores, selection_score = _domain_selection_score(
+        metrics, selection_domains
+    )
+    metrics["domain_macro_f1"] = domain_scores
+    metrics["selection_domains"] = list(selection_domains)
+    metrics["domain_balanced_macro_f1"] = selection_score
+    return metrics
+
+
+def _domain_selection_score(
+    metrics: dict,
+    selection_domains,
+) -> tuple[dict[str, float | None], float]:
+    domain_scores = {}
+    for domain in metrics:
+        if domain not in DOMAINS:
+            continue
+        values = []
         for task in TASK_COLUMNS:
             value = metrics[domain].get(f"{task}_macro_f1")
             if value is not None:
                 values.append(float(value))
-    metrics["domain_balanced_macro_f1"] = float(np.mean(values)) if values else None
-    return metrics
+        domain_scores[domain] = float(np.mean(values)) if values else None
+    selected = [
+        domain_scores[domain]
+        for domain in selection_domains
+        if domain_scores.get(domain) is not None
+    ]
+    if len(selected) != len(selection_domains):
+        missing = [
+            domain for domain in selection_domains
+            if domain_scores.get(domain) is None
+        ]
+        raise ValueError(f"Selection domains have no validation metrics: {missing}")
+    return domain_scores, float(np.mean(selected))
 
 
 def _scheduler(optimizer, warmup_steps: int, total_steps: int):
@@ -451,13 +478,16 @@ def train_stage(config: dict, spec: dict) -> dict:
             batch_size=batch_size, shuffle=True, seed=int(spec["seed"]),
         )
         train_iterator = _cycle(train_loader)
+    selection_domains = tuple(spec["selection_domains"])
+    if not selection_domains or any(domain not in DOMAINS for domain in selection_domains):
+        raise ValueError(f"Invalid checkpoint-selection domains: {selection_domains}")
     validation_loaders = {
         domain: _loader(
             frames[domain]["validation"], label_maps, eval_transform, config,
             batch_size=batch_size, shuffle=False, seed=int(spec["seed"]),
             num_workers_override=2, persistent_workers_override=False,
         )
-        for domain in DOMAINS
+        for domain in selection_domains
     }
     test_loaders = {
         domain: _loader(
@@ -490,8 +520,8 @@ def train_stage(config: dict, spec: dict) -> dict:
             "lr": float(config["training"]["head_lr"]),
         },
     ], weight_decay=float(config["training"]["weight_decay"]))
-    total_budget = int(config["training"]["steps_per_domain"]) * 2
-    scheduler = _scheduler(optimizer, int(config["training"]["warmup_steps"]), total_budget)
+    max_steps = int(spec["max_steps"])
+    scheduler = _scheduler(optimizer, int(config["training"]["warmup_steps"]), max_steps)
     scaler = torch.amp.GradScaler(enabled=bool(config["training"]["use_amp"]))
     criteria = _criteria(config, {domain: frames[domain]["train"] for domain in DOMAINS}, label_maps, device)
     hierarchy_config = dict(spec.get("hierarchy_loss", {}))
@@ -538,13 +568,9 @@ def train_stage(config: dict, spec: dict) -> dict:
 
     run = _wandb_run(config, spec, output)
     history_path = output / "history.jsonl"
-    max_steps = int(spec["max_steps"])
     validation_interval = int(config["training"]["validation_interval_steps"])
     checkpoint_interval = int(config["training"]["checkpoint_interval_steps"])
-    min_steps = int(config["training"]["minimum_steps_before_early_stopping"])
-    patience = int(config["training"]["early_stopping_patience"])
-    min_delta = float(config["training"]["early_stopping_min_delta"])
-    stopped_early = False
+    min_delta = float(config["training"]["checkpoint_selection_min_delta"])
     samples_seen = {"gbif": 0, "petri": 0}
     while stage_step < max_steps:
         model.train()
@@ -573,7 +599,7 @@ def train_stage(config: dict, spec: dict) -> dict:
         if validate:
             validation = _domain_metrics(
                 model, validation_loaders, criteria, config, device,
-                hierarchy_config, child_to_parent_matrix,
+                hierarchy_config, child_to_parent_matrix, selection_domains,
             )
             score = float(validation["domain_balanced_macro_f1"])
             record["validation"] = validation
@@ -587,7 +613,7 @@ def train_stage(config: dict, spec: dict) -> dict:
             record.update(best_score=best_score, best_step=best_step, stale_validations=stale)
             print(
                 f"[{spec['run_id']}] step {stage_step}/{max_steps} "
-                f"loss={loss:.4f} validation={score:.4f} stale={stale}/{patience}",
+                f"loss={loss:.4f} validation={score:.4f} stale={stale}",
                 flush=True,
             )
         with history_path.open("a", encoding="utf-8") as handle:
@@ -623,22 +649,22 @@ def train_stage(config: dict, spec: dict) -> dict:
             if run is not None:
                 run.finish(exit_code=3)
             return status
-        if validate and stage_step >= min_steps and stale >= patience:
-            stopped_early = True
-            break
-
-    if bool(spec.get("final_model", False)) and (output / "best_model.pt").is_file():
+    if (output / "best_model.pt").is_file():
         best_checkpoint = torch.load(output / "best_model.pt", map_location="cpu")
         model.load_state_dict(best_checkpoint["model_state"], strict=True)
+    else:
+        raise RuntimeError(f"Fixed-budget stage did not produce a best checkpoint: {output}")
     test_metrics = _domain_metrics(
         model, test_loaders, criteria, config, device,
-        hierarchy_config, child_to_parent_matrix,
+        hierarchy_config, child_to_parent_matrix, DOMAINS,
     )
     _atomic_json(output / "test_metrics.json", test_metrics)
     status = {
         "status": "complete", "run_id": spec["run_id"],
         "stage_step": stage_step, "global_step": global_step,
-        "stopped_early": stopped_early, "best_step": best_step,
+        "fixed_budget_complete": stage_step == max_steps,
+        "checkpoint_selection_domains": list(selection_domains),
+        "best_step": best_step,
         "best_validation_score": best_score,
         "equivalent_epochs": {
             domain: (

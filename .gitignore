@@ -285,3 +285,6 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Genome-generated experiment outputs (configured below the source checkout)
+/outputs/
