@@ -122,8 +122,17 @@ class _BalancedDomainBatchSampler(Sampler[list[int]]):
             yield indices[order].tolist()
 
 
+def mixed_batch_per_domain(config: dict) -> int:
+    """Return the enforced half-batch used for each mixed-training domain."""
+    batch_size = int(config["training"]["batch_size"])
+    if batch_size <= 0 or batch_size % 2:
+        raise ValueError("Mixed training requires a positive even training.batch_size")
+    return batch_size // 2
+
+
 def _mixed_loader(frames: dict[str, pd.DataFrame], label_maps: dict, transform, config: dict, seed: int) -> DataLoader:
     training = config["training"]
+    per_domain = mixed_batch_per_domain(config)
     gbif = frames["gbif"].reset_index(drop=True)
     petri = frames["petri"].reset_index(drop=True)
     combined = pd.concat([gbif, petri], ignore_index=True)
@@ -133,7 +142,7 @@ def _mixed_loader(frames: dict[str, pd.DataFrame], label_maps: dict, transform, 
         crop_to_foreground=False,
     )
     sampler = _BalancedDomainBatchSampler(
-        len(gbif), len(petri), int(training["mixed_batch_per_domain"]),
+        len(gbif), len(petri), per_domain,
         int(training["mixed_steps"]), seed,
     )
     return DataLoader(
@@ -466,6 +475,7 @@ def train_stage(config: dict, spec: dict) -> dict:
         apply_augmentation=False,
     )
     batch_size = int(config["training"]["batch_size"])
+    per_domain_mixed_batch = mixed_batch_per_domain(config)
     if spec["domain"] == "mixed":
         train_loader = _mixed_loader(
             {domain: frames[domain]["train"] for domain in DOMAINS},
@@ -583,8 +593,8 @@ def train_stage(config: dict, spec: dict) -> dict:
         stage_step += 1
         global_step += 1
         if spec["domain"] == "mixed":
-            samples_seen["gbif"] += int(config["training"]["mixed_batch_per_domain"])
-            samples_seen["petri"] += int(config["training"]["mixed_batch_per_domain"])
+            samples_seen["gbif"] += per_domain_mixed_batch
+            samples_seen["petri"] += per_domain_mixed_batch
         else:
             samples_seen[spec["domain"]] += batch_size
         record = {
@@ -669,7 +679,7 @@ def train_stage(config: dict, spec: dict) -> dict:
         "equivalent_epochs": {
             domain: (
                 stage_step * (
-                    int(config["training"]["mixed_batch_per_domain"])
+                    per_domain_mixed_batch
                     if spec["domain"] == "mixed" else batch_size
                 ) / max(len(frames[domain]["train"]), 1)
                 if spec["domain"] in {domain, "mixed"} else 0.0

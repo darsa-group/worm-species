@@ -62,6 +62,12 @@ def main() -> None:
             "valid": True,
             "partition": config["slurm"]["partition"],
             "array_max_active": config["slurm"]["array_max_active"],
+            "slurm_resources": {
+                "training": config["slurm"]["training"],
+                "inference": config["slurm"]["inference"],
+                "preprocessing": config["slurm"]["preprocessing"],
+                "merge": config["slurm"]["merge"],
+            },
             "training_models": config["models"]["primary"],
             "dino_models": config["models"]["dino"],
             "inference_shards": config["inference"]["shards"],
@@ -75,6 +81,8 @@ def main() -> None:
                 "total_stage_jobs": len(wave1) + len(wave2),
                 "final_trajectories": sum(spec["final_model"] for spec in wave1 + wave2),
                 "fixed_budget": bool(config["training"]["fixed_budget"]),
+                "training_batch_size": int(config["training"]["batch_size"]),
+                "mixed_batch_per_domain": int(config["training"]["batch_size"]) // 2,
                 "checkpoint_selection": {
                     "gbif_only": ["gbif"],
                     "peti_to_gbif": {"stage1": ["petri"], "stage2": ["gbif"]},

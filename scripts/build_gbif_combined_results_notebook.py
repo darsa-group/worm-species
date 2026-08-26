@@ -39,7 +39,10 @@ def build_notebook(config_path: str, output_path: Path) -> None:
             "140, and 240. **Hierarchy conditions:** species→genus consistency weights "
             "0.0 and 0.5. **Optimisation:** AdamW with backbone LR 1e-5, head LR "
             "1e-4, weight decay 0.05, 1,000-step warmup, and stage-local cosine decay. "
-            "All new training starts from ImageNet and completes a fixed budget.\n\n"
+            "All new training starts from ImageNet and completes a fixed budget. The "
+            "configured batch must be even; mixed training always assigns exactly half "
+            "to GBIF and half to Petri. Slurm CPU, memory, and time requests are configured "
+            "independently for training and inference.\n\n"
             "GBIF checkpoints are selected from GBIF validation genus/species macro-F1; "
             "Petri checkpoints use Petri validation genus/species/age macro-F1; mixed "
             "training uses the equal-weight mean of those two domain scores. Missing "
@@ -76,6 +79,30 @@ REPORT_ROOT.mkdir(parents=True, exist_ok=True)
 FIGURE_ROOT.mkdir(parents=True, exist_ok=True)
 print('Configuration:', CONFIG_PATH)
 print('Results:', OUTPUT_ROOT)
+"""),
+        code("""training_batch = int(config['training']['batch_size'])
+resource_rows = {
+    'training': config['slurm']['training'],
+    'inference': config['slurm']['inference'],
+    'preprocessing': config['slurm']['preprocessing'],
+    'merge': config['slurm']['merge'],
+}
+experiment_contract = pd.DataFrame({
+    'setting': [
+        'training_batch_size', 'mixed_gbif_batch', 'mixed_petri_batch',
+        'steps_per_domain', 'mixed_steps',
+    ],
+    'value': [
+        training_batch, training_batch // 2, training_batch // 2,
+        config['training']['steps_per_domain'], config['training']['mixed_steps'],
+    ],
+})
+display(experiment_contract)
+display(pd.DataFrame(resource_rows).T.rename_axis('slurm_job'))
+experiment_contract.to_csv(REPORT_ROOT / 'experiment_contract.csv', index=False)
+pd.DataFrame(resource_rows).T.rename_axis('slurm_job').to_csv(
+    REPORT_ROOT / 'slurm_resources.csv'
+)
 """),
         markdown("## Dataset and provenance"),
         code("""prepared_summary_path = OUTPUT_ROOT / 'prepared' / 'summary.json'

@@ -168,8 +168,9 @@ The four fixed-budget trajectories are:
 1. `gbif_only`: ImageNet → 10,000 GBIF steps;
 2. `peti_to_gbif`: ImageNet → 10,000 Petri steps → 10,000 GBIF steps;
 3. `gbif_to_peti`: ImageNet → 10,000 GBIF steps → 10,000 Petri steps; and
-4. `mixed`: ImageNet → 20,000 balanced steps with 64 GBIF and 64 Petri images
-   per batch.
+4. `mixed`: ImageNet → 20,000 balanced steps. Its batch is always split
+   exactly in half by domain; the default batch of 256 gives 128 GBIF and 128
+   Petri images per step.
 
 Every stage uses a fresh AdamW optimiser and a stage-local warmup/cosine
 scheduler. Sequential Stage 2 loads only the validation-selected Stage-1 model
@@ -191,8 +192,12 @@ Checkpoint selection is trajectory-specific and excludes missing task metrics:
 GBIF age is missing and remains `NA`; it never enters a mean as zero. Each
 trajectory is run with hierarchy-consistency weights 0.0 and 0.5, seeds 40,
 140, and 240, for all three backbones: 72 final models and 108 total stage jobs.
-The training arrays request one GPU, 16 CPUs, 20 GB memory, and four hours per
-task on `gpu-short`, `gpu-l40s`, or `gpu-h200`, with twelve active tasks maximum.
+Training and inference have independent, configurable Slurm resources. The
+defaults are one GPU, 16 CPUs, 20 GB memory, and four hours for training versus
+one GPU, 12 CPUs, 16 GB memory, and two hours for inference. Both use
+`gpu-short`, `gpu-l40s`, or `gpu-h200`, with twelve active tasks maximum. The
+training batch is configurable and defaults to 256; it must be even so mixed
+training can derive an exact 50/50 domain split.
 
 The 16-CPU cache sbatch job and inference array start without a dependency and
 can run concurrently. Wave 1 waits for both the cache and inference merge;

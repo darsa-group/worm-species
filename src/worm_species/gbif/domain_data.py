@@ -53,15 +53,12 @@ def load_domain_config(path: str | Path) -> dict:
         raise ValueError(
             "slurm.partition must be gpu-short,gpu-l40s,gpu-h200"
         )
-    if str(slurm.get("memory")) != "20G":
-        raise ValueError("slurm.memory must be 20G")
     training = config.get("training", {})
     if int(training.get("num_workers", 0)) != 12:
         raise ValueError("training.num_workers must be 12")
-    if int(slurm.get("cpus_per_task", 0)) != 16:
-        raise ValueError("slurm.cpus_per_task must be 16")
-    if int(training.get("batch_size", 0)) != 128:
-        raise ValueError("training.batch_size must be 128")
+    batch_size = int(training.get("batch_size", 0))
+    if batch_size <= 0 or batch_size % 2:
+        raise ValueError("training.batch_size must be a positive even number")
     if int(training.get("prefetch_factor", 0)) != 4:
         raise ValueError("training.prefetch_factor must be 4")
     if not bool(training.get("persistent_workers", False)):
@@ -93,6 +90,14 @@ def load_domain_config(path: str | Path) -> dict:
         raise ValueError("preprocessed_cache.progress_interval_images must be positive")
     if int(cache.get("tmp_reserve_gb", -1)) < 0:
         raise ValueError("preprocessed_cache.tmp_reserve_gb must be non-negative")
+    for job_name in ("training", "inference"):
+        job = slurm.get(job_name, {})
+        if int(job.get("cpus_per_task", 0)) <= 0:
+            raise ValueError(f"slurm.{job_name}.cpus_per_task must be positive")
+        if not str(job.get("memory", "")):
+            raise ValueError(f"slurm.{job_name}.memory is required")
+        if not str(job.get("time_limit", "")):
+            raise ValueError(f"slurm.{job_name}.time_limit is required")
     preprocessing_job = slurm.get("preprocessing", {})
     if int(preprocessing_job.get("cpus_per_task", 0)) <= 0:
         raise ValueError("slurm.preprocessing.cpus_per_task must be positive")
@@ -115,8 +120,8 @@ def load_domain_config(path: str | Path) -> dict:
     if models.get("dino") != ["dinov3_vitb16"] or models.get("dino_seeds") != [40, 140, 240]:
         raise ValueError("Approved final DINOv3 seeds are 40, 140, and 240")
     if (
-        int(training.get("batch_size", 0)) * int(training.get("steps_per_domain", 0))
-        != int(training.get("mixed_batch_per_domain", 0)) * int(training.get("mixed_steps", 0))
+        batch_size * int(training.get("steps_per_domain", 0))
+        != (batch_size // 2) * int(training.get("mixed_steps", 0))
     ):
         raise ValueError("Sequential and mixed domain image exposures must be equal")
     if bool((config.get("wandb", {}) or {}).get("log_model", True)):

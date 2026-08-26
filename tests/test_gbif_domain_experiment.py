@@ -19,6 +19,7 @@ from src.worm_species.gbif.domain_cache import domain_cache_directory
 from src.worm_species.gbif.domain_cache import load_cached_domain_frames
 from src.worm_species.gbif.domain_training import _wandb_run
 from src.worm_species.gbif.domain_training import _domain_selection_score
+from src.worm_species.gbif.domain_training import mixed_batch_per_domain
 from src.worm_species.gbif.domain_orchestration import discover_publication_checkpoints
 from src.worm_species.gbif.domain_orchestration import render_primary_inference
 from src.worm_species.gbif.domain_orchestration import render_training
@@ -68,9 +69,23 @@ class GBIFDomainExperimentTests(unittest.TestCase):
         self.assertEqual(config["models"]["dino"], ["dinov3_vitb16"])
         self.assertEqual(config["models"]["dino_seeds"], [40, 140, 240])
         self.assertEqual(config["slurm"]["partition"], "gpu-short,gpu-l40s,gpu-h200")
-        self.assertEqual(config["slurm"]["memory"], "20G")
-        self.assertEqual(config["slurm"]["cpus_per_task"], 16)
         self.assertEqual(config["slurm"]["array_max_active"], 12)
+        self.assertEqual(
+            config["slurm"]["training"],
+            {"cpus_per_task": 16, "memory": "20G", "time_limit": "04:00:00"},
+        )
+        self.assertEqual(
+            config["slurm"]["inference"],
+            {"cpus_per_task": 12, "memory": "16G", "time_limit": "02:00:00"},
+        )
+        self.assertEqual(config["training"]["batch_size"], 256)
+        self.assertNotIn("mixed_batch_per_domain", config["training"])
+        self.assertEqual(mixed_batch_per_domain(config), 128)
+        config["training"]["batch_size"] = 64
+        self.assertEqual(mixed_batch_per_domain(config), 32)
+        config["training"]["batch_size"] = 63
+        with self.assertRaisesRegex(ValueError, "positive even"):
+            mixed_batch_per_domain(config)
         self.assertEqual(config["training"]["num_workers"], 12)
         self.assertEqual(config["training"]["hierarchy_loss"]["weights"], [0.0, 0.5])
         self.assertEqual(config["inference"]["shards"], 12)
@@ -97,6 +112,7 @@ class GBIFDomainExperimentTests(unittest.TestCase):
             self.assertIn("#SBATCH --array=0-71%12", script)
             self.assertIn("#SBATCH --mem=20G", script)
             self.assertIn("#SBATCH --cpus-per-task=16", script)
+            self.assertIn("#SBATCH --time=04:00:00", script)
             self.assertIn('-v array_id="$SLURM_ARRAY_TASK_ID"', script)
             self.assertNotIn('-v index=', script)
             self.assertIn('flock -x 200', script)
@@ -302,6 +318,9 @@ class GBIFDomainExperimentTests(unittest.TestCase):
             self.assertEqual(manifest["pending_models"], config["models"]["primary"])
             script = Path(manifest["array_script"]).read_text()
             self.assertIn("#SBATCH --array=0-35%12", script)
+            self.assertIn("#SBATCH --cpus-per-task=12", script)
+            self.assertIn("#SBATCH --mem=16G", script)
+            self.assertIn("#SBATCH --time=02:00:00", script)
             tasks = pd.read_csv(manifest["index"], sep="\t")
             self.assertEqual(tasks.groupby("model").size().to_dict(), {
                 model: 12 for model in config["models"]["primary"]

@@ -233,6 +233,7 @@ srun python scripts/gbif_domain_experiment.py --config {shlex.quote(str(config_p
 
 def _training_array_script(config: dict, config_path: Path, index_path: Path, count: int, phase: str, wave: int) -> str:
     slurm = config["slurm"]
+    resources = slurm["training"]
     paths = config["paths"]
     log_dir = Path(paths["output_root"]) / "logs" / phase
     max_active = int(slurm["array_max_active"])
@@ -243,9 +244,9 @@ def _training_array_script(config: dict, config_path: Path, index_path: Path, co
 #SBATCH --partition={slurm['partition']}
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task={slurm['cpus_per_task']}
-#SBATCH --mem={slurm['memory']}
-#SBATCH --time={slurm['time_limit']}
+#SBATCH --cpus-per-task={resources['cpus_per_task']}
+#SBATCH --mem={resources['memory']}
+#SBATCH --time={resources['time_limit']}
 #SBATCH --gres=gpu:{slurm['gpus_per_task']}
 #SBATCH --array=0-{count - 1}%{max_active}
 #SBATCH --signal=B:USR1@300
@@ -468,6 +469,7 @@ def submit_training(config: dict, config_path: str | Path, phase: str) -> dict:
 
 def _inference_array_script(config: dict, config_path: Path, checkpoint: Path, root: Path) -> str:
     slurm = config["slurm"]
+    resources = slurm["inference"]
     paths = config["paths"]
     inference = config["inference"]
     shards = int(inference["shards"])
@@ -479,9 +481,9 @@ def _inference_array_script(config: dict, config_path: Path, checkpoint: Path, r
 #SBATCH --partition={slurm['partition']}
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task={slurm['cpus_per_task']}
-#SBATCH --mem={slurm['memory']}
-#SBATCH --time={slurm['time_limit']}
+#SBATCH --cpus-per-task={resources['cpus_per_task']}
+#SBATCH --mem={resources['memory']}
+#SBATCH --time={resources['time_limit']}
 #SBATCH --gres=gpu:1
 #SBATCH --array=0-{shards - 1}%{slurm['array_max_active']}
 #SBATCH --output={log_dir}/%x-%A_%a.out
@@ -602,6 +604,7 @@ def _multi_inference_array_script(
     count: int,
 ) -> str:
     slurm = config["slurm"]
+    resources = slurm["inference"]
     paths = config["paths"]
     inference = config["inference"]
     log_dir = Path(paths["output_root"]) / "logs" / "inference"
@@ -611,9 +614,9 @@ def _multi_inference_array_script(
 #SBATCH --partition={slurm['partition']}
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task={slurm['cpus_per_task']}
-#SBATCH --mem={slurm['memory']}
-#SBATCH --time={slurm['time_limit']}
+#SBATCH --cpus-per-task={resources['cpus_per_task']}
+#SBATCH --mem={resources['memory']}
+#SBATCH --time={resources['time_limit']}
 #SBATCH --gres=gpu:1
 #SBATCH --array=0-{count - 1}%{slurm['array_max_active']}
 #SBATCH --output={log_dir}/%x-%A_%a.out

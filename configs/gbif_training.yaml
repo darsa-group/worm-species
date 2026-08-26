@@ -27,8 +27,9 @@ models:
   pretrained: true
 
 training:
-  batch_size: 128
-  mixed_batch_per_domain: 64
+  # Must be a positive even number. Mixed training always derives an exact
+  # half-batch per domain (256 -> 128 GBIF + 128 Petri).
+  batch_size: 256
   num_workers: 12
   prefetch_factor: 4
   persistent_workers: true
@@ -87,10 +88,15 @@ slurm:
   account: worm-species
   partition: gpu-short,gpu-l40s,gpu-h200
   gpus_per_task: 1
-  cpus_per_task: 16
-  memory: 20G
-  time_limit: "04:00:00"
   array_max_active: 12
+  training:
+    cpus_per_task: 16
+    memory: 20G
+    time_limit: "04:00:00"
+  inference:
+    cpus_per_task: 12
+    memory: 16G
+    time_limit: "02:00:00"
   preprocessing:
     cpus_per_task: 16
     memory: 20G
