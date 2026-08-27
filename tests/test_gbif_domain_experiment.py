@@ -21,6 +21,7 @@ from src.worm_species.gbif.domain_training import _wandb_run
 from src.worm_species.gbif.domain_training import _domain_selection_score
 from src.worm_species.gbif.domain_training import mixed_batch_per_domain
 from src.worm_species.gbif.domain_orchestration import discover_publication_checkpoints
+from src.worm_species.gbif.domain_orchestration import _training_specs
 from src.worm_species.gbif.domain_orchestration import render_primary_inference
 from src.worm_species.gbif.domain_orchestration import render_training
 from src.worm_species.gbif.domain_orchestration import submit_primary_pipeline
@@ -120,6 +121,10 @@ class GBIFDomainExperimentTests(unittest.TestCase):
             self.assertIn('cache-status --cache-root "$partial" --verify-files', script)
             self.assertIn('copied_image_count=$(find "$partial/images"', script)
             self.assertIn('export WORM_GBIF_NODE_CACHE="$NODE_CACHE"', script)
+            self.assertLess(
+                script.index("stage-complete --spec"),
+                script.index("PERSISTENT_CACHE=$("),
+            )
             preprocessing = Path(primary["preprocessed_cache"]["script"])
             self.assertTrue(preprocessing.is_file())
             self.assertIn("build-cache", preprocessing.read_text())
@@ -207,10 +212,146 @@ class GBIFDomainExperimentTests(unittest.TestCase):
                 submit.call_args_list[1].args,
                 ("/jobs/wave1.sbatch", "afterok:100"),
             )
+            self.assertEqual(submit.call_args_list[1].kwargs, {"array": "0-71%12"})
             self.assertEqual(
                 submit.call_args_list[2].args,
                 ("/jobs/wave2.sbatch", "afterok:101"),
             )
+            self.assertEqual(submit.call_args_list[2].kwargs, {"array": "0-35%12"})
+
+    def test_resume_submits_only_incomplete_stage_indices(self) -> None:
+        config = load_domain_config(CONFIG)
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            config["paths"]["output_root"] = str(root)
+            wave1, _wave2 = _training_specs(config, "primary")
+            missing_wave1 = {3, 15, 39}
+            for index, spec in enumerate(wave1):
+                if index in missing_wave1:
+                    continue
+                output = Path(spec["output_dir"])
+                output.mkdir(parents=True)
+                (output / "last_model.pt").touch()
+                (output / "run_status.json").write_text(
+                    json.dumps({"status": "complete"}), encoding="utf-8"
+                )
+            manifest = {
+                "preprocessed_cache": {"script": "/jobs/preprocess.sbatch"},
+                "wave1": {"script": "/jobs/wave1.sbatch"},
+                "wave2": {"script": "/jobs/wave2.sbatch"},
+            }
+            with (
+                patch("src.worm_species.gbif.domain_orchestration._require_training_runtime"),
+                patch(
+                    "src.worm_species.gbif.domain_orchestration.discover_publication_checkpoints",
+                    return_value={
+                        "selected": {
+                            model: {"checkpoint": str(root / f"{model}.pt")}
+                            for model in config["models"]["primary"]
+                        }
+                    },
+                ),
+                patch(
+                    "src.worm_species.gbif.domain_orchestration._primary_inference_ready",
+                    return_value=True,
+                ),
+                patch(
+                    "src.worm_species.gbif.domain_orchestration.render_training",
+                    return_value=manifest,
+                ),
+                patch(
+                    "src.worm_species.gbif.domain_orchestration.domain_cache_status",
+                    return_value={"ready": True},
+                ),
+                patch(
+                    "src.worm_species.gbif.domain_orchestration._sbatch",
+                    side_effect=["200", "201"],
+                ) as submit,
+            ):
+                receipt = submit_training(config, CONFIG, "primary")
+
+            self.assertEqual(receipt["wave1_task_count"], 3)
+            self.assertEqual(receipt["wave1_array_indices"], [3, 15, 39])
+            self.assertEqual(receipt["wave2_task_count"], 36)
+            self.assertEqual(
+                submit.call_args_list[0].args,
+                ("/jobs/wave1.sbatch", None),
+            )
+            self.assertEqual(
+                submit.call_args_list[0].kwargs,
+                {"array": "3,15,39%12"},
+            )
+            self.assertEqual(
+                submit.call_args_list[1].args,
+                ("/jobs/wave2.sbatch", "afterok:200"),
+            )
+            self.assertEqual(
+                submit.call_args_list[1].kwargs,
+                {"array": "0-35%12"},
+            )
+
+    def test_resume_can_submit_wave2_without_relaunching_complete_wave1(self) -> None:
+        config = load_domain_config(CONFIG)
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            config["paths"]["output_root"] = str(root)
+            wave1 = [{"run_id": "wave1", "output_dir": str(root / "wave1")}]
+            wave2 = [{"run_id": "wave2", "output_dir": str(root / "wave2")}]
+            wave1_output = Path(wave1[0]["output_dir"])
+            wave1_output.mkdir(parents=True)
+            (wave1_output / "last_model.pt").touch()
+            (wave1_output / "run_status.json").write_text(
+                json.dumps({"status": "complete"}), encoding="utf-8"
+            )
+            manifest = {
+                "preprocessed_cache": {"script": "/jobs/preprocess.sbatch"},
+                "wave1": {"script": "/jobs/wave1.sbatch"},
+                "wave2": {"script": "/jobs/wave2.sbatch"},
+            }
+            with (
+                patch("src.worm_species.gbif.domain_orchestration._require_training_runtime"),
+                patch(
+                    "src.worm_species.gbif.domain_orchestration.discover_publication_checkpoints",
+                    return_value={
+                        "selected": {
+                            model: {"checkpoint": str(root / f"{model}.pt")}
+                            for model in config["models"]["primary"]
+                        }
+                    },
+                ),
+                patch(
+                    "src.worm_species.gbif.domain_orchestration._primary_inference_ready",
+                    return_value=True,
+                ),
+                patch(
+                    "src.worm_species.gbif.domain_orchestration.render_training",
+                    return_value=manifest,
+                ),
+                patch(
+                    "src.worm_species.gbif.domain_orchestration._training_specs",
+                    return_value=(wave1, wave2),
+                ),
+                patch(
+                    "src.worm_species.gbif.domain_orchestration.domain_cache_status",
+                    return_value={"ready": False},
+                ),
+                patch(
+                    "src.worm_species.gbif.domain_orchestration._sbatch",
+                    side_effect=["300", "301"],
+                ) as submit,
+            ):
+                receipt = submit_training(config, CONFIG, "primary")
+
+            self.assertIsNone(receipt["wave1_job_id"])
+            self.assertEqual(receipt["wave1_task_count"], 0)
+            self.assertEqual(receipt["wave2_job_id"], "301")
+            self.assertEqual(receipt["wave2_task_count"], 1)
+            self.assertEqual(submit.call_args_list[0].args, ("/jobs/preprocess.sbatch",))
+            self.assertEqual(
+                submit.call_args_list[1].args,
+                ("/jobs/wave2.sbatch", "afterok:300"),
+            )
+            self.assertEqual(submit.call_args_list[1].kwargs, {"array": "0%12"})
 
     def test_domain_balanced_selection_excludes_missing_tasks_and_balances_domains(self) -> None:
         metrics = {

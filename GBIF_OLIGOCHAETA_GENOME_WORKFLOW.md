@@ -225,7 +225,10 @@ build or inspect the persistent cache separately, use `make gbif-cache` and
 
 `make gbif-status` reports selection, per-backbone inference, cache readiness,
 and every training stage. `make gbif-resume GBIF_PHASE=primary` remains the
-explicit skip-safe recovery command after failed jobs.
+explicit skip-safe recovery command after failed jobs. Resume refuses to run
+while a previous receipt still has active Slurm jobs, submits only incomplete
+array indices, and checks completion again inside each array task before
+staging the shared cache to node-local storage.
 
 The optional legacy DINOv3 phase remains separately renderable; it is not part
 of the 72-trajectory PETI↔GBIF experiment. Do not submit it unless explicitly

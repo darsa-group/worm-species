@@ -45,6 +45,19 @@ def _atomic_json(path: Path, value: object) -> None:
     os.replace(temporary, path)
 
 
+def stage_is_complete(spec: dict) -> bool:
+    """Return whether a stage has the artifacts required for a safe skip."""
+    output = Path(spec["output_dir"])
+    status_path = output / "run_status.json"
+    if not status_path.is_file() or not (output / "last_model.pt").is_file():
+        return False
+    try:
+        status = json.loads(status_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return False
+    return status.get("status") == "complete"
+
+
 def _seed_everything(seed: int) -> None:
     random.seed(seed)
     np.random.seed(seed)
@@ -416,11 +429,10 @@ def train_stage(config: dict, spec: dict) -> dict:
     spec = copy.deepcopy(spec)
     output = Path(spec["output_dir"])
     status_path = output / "run_status.json"
-    if status_path.is_file():
+    if stage_is_complete(spec):
         status = json.loads(status_path.read_text(encoding="utf-8"))
-        if status.get("status") == "complete" and (output / "last_model.pt").is_file():
-            print(f"{spec['run_id']} is already complete; skipping.")
-            return status
+        print(f"{spec['run_id']} is already complete; skipping.")
+        return status
     output.mkdir(parents=True, exist_ok=True)
     _seed_everything(int(spec["seed"]))
     if not torch.cuda.is_available():

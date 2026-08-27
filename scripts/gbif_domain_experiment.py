@@ -21,6 +21,7 @@ from worm_species.gbif.domain_orchestration import submit_primary_pipeline
 from worm_species.gbif.domain_orchestration import submit_inference
 from worm_species.gbif.domain_orchestration import submit_training
 from worm_species.gbif.domain_training import train_stage
+from worm_species.gbif.domain_training import stage_is_complete
 
 
 def _print(value: object) -> None:
@@ -49,6 +50,8 @@ def build_parser() -> argparse.ArgumentParser:
         command.add_argument("--checkpoint", required=True)
     stage = commands.add_parser("train-stage")
     stage.add_argument("--spec", required=True)
+    stage_complete = commands.add_parser("stage-complete")
+    stage_complete.add_argument("--spec", required=True)
     commands.add_parser("status")
     return parser
 
@@ -135,6 +138,12 @@ def main() -> None:
         _print(status)
         if status.get("status") != "complete":
             raise SystemExit(3)
+    elif args.command == "stage-complete":
+        spec = json.loads(Path(args.spec).read_text(encoding="utf-8"))
+        if stage_is_complete(spec):
+            print(f"{spec['run_id']} is already complete; skipping before cache staging.")
+        else:
+            raise SystemExit(1)
     elif args.command == "status":
         _print(experiment_status(config))
     else:  # pragma: no cover

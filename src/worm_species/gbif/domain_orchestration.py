@@ -11,6 +11,7 @@ from pathlib import Path
 
 from .domain_cache import READY_MARKER, domain_cache_status
 from .domain_data import prepare_domain_manifests
+from .domain_training import stage_is_complete
 
 
 STRATEGIES = {
@@ -261,6 +262,10 @@ spec=$(awk -F '\t' -v array_id="$SLURM_ARRAY_TASK_ID" 'NR > 1 && $1 == array_id 
 [[ -n "$spec" && -f "$spec" ]] || {{ echo "Missing spec for array index $SLURM_ARRAY_TASK_ID" >&2; exit 2; }}
 cd {shlex.quote(paths['project_root'])}
 export PYTHONPATH={shlex.quote(paths['project_root'])}/src
+if python scripts/gbif_domain_experiment.py --config {shlex.quote(str(config_path))} \
+    stage-complete --spec "$spec"; then
+    exit 0
+fi
 PERSISTENT_CACHE=$(python scripts/gbif_domain_experiment.py --config {shlex.quote(str(config_path))} cache-path)
 CACHE_READY="$PERSISTENT_CACHE/{READY_MARKER}"
 [[ -d "$PERSISTENT_CACHE" && -f "$CACHE_READY" ]] || {{
@@ -397,10 +402,17 @@ def render_training(
     return manifest
 
 
-def _sbatch(script: str | Path, dependency: str | None = None) -> str:
+def _sbatch(
+    script: str | Path,
+    dependency: str | None = None,
+    *,
+    array: str | None = None,
+) -> str:
     argv = ["sbatch", "--parsable"]
     if dependency:
         argv.append(f"--dependency={dependency}")
+    if array:
+        argv.append(f"--array={array}")
     argv.append(str(script))
     completed = subprocess.run(argv, check=False, text=True, capture_output=True)
     if completed.returncode:
@@ -411,8 +423,43 @@ def _sbatch(script: str | Path, dependency: str | None = None) -> str:
     return job_id
 
 
+def _incomplete_stage_indices(specs: list[dict]) -> list[int]:
+    return [index for index, spec in enumerate(specs) if not stage_is_complete(spec)]
+
+
+def _array_override(indices: list[int], max_active: int) -> str:
+    if not indices:
+        raise ValueError("Cannot render an empty Slurm array override")
+    ordered = sorted(set(indices))
+    ranges: list[str] = []
+    start = previous = ordered[0]
+    for index in ordered[1:]:
+        if index == previous + 1:
+            previous = index
+            continue
+        ranges.append(str(start) if start == previous else f"{start}-{previous}")
+        start = previous = index
+    ranges.append(str(start) if start == previous else f"{start}-{previous}")
+    return f"{','.join(ranges)}%{max_active}"
+
+
 def submit_training(config: dict, config_path: str | Path, phase: str) -> dict:
     _require_training_runtime(phase)
+    root = Path(config["paths"]["output_root"]) / "generated" / phase
+    receipt_path = root / "submission_receipt.json"
+    prior_receipts = [receipt_path]
+    if phase == "primary":
+        prior_receipts.append(root / "pipeline_submission_receipt.json")
+    active_jobs = set()
+    for prior_receipt in prior_receipts:
+        if prior_receipt.is_file():
+            previous = json.loads(prior_receipt.read_text(encoding="utf-8"))
+            active_jobs.update(_active_receipt_jobs(previous))
+    if active_jobs:
+        raise RuntimeError(
+            f"A GBIF {phase} receipt still has active Slurm jobs: "
+            + ", ".join(sorted(active_jobs))
+        )
     publication_checkpoints = None
     if phase == "primary":
         discovery = discover_publication_checkpoints(config)
@@ -445,25 +492,44 @@ def submit_training(config: dict, config_path: str | Path, phase: str) -> dict:
         phase,
         prepare=True,
     )
+    wave1_specs, wave2_specs = _training_specs(config, phase)
+    wave1_indices = _incomplete_stage_indices(wave1_specs)
+    wave2_indices = _incomplete_stage_indices(wave2_specs)
+    max_active = int(config["slurm"]["array_max_active"])
     cache_status = domain_cache_status(config, verify_files=True)
     preprocessing_id = None
-    wave1_dependency = None
-    if not cache_status["ready"]:
+    has_training_work = bool(wave1_indices or wave2_indices)
+    if has_training_work and not cache_status["ready"]:
         preprocessing_id = _sbatch(manifest["preprocessed_cache"]["script"])
-        wave1_dependency = f"afterok:{preprocessing_id}"
-    wave1_id = _sbatch(manifest["wave1"]["script"], wave1_dependency)
-    root = Path(config["paths"]["output_root"]) / "generated" / phase
+    wave1_id = None
+    if wave1_indices:
+        wave1_dependency = f"afterok:{preprocessing_id}" if preprocessing_id else None
+        wave1_id = _sbatch(
+            manifest["wave1"]["script"],
+            wave1_dependency,
+            array=_array_override(wave1_indices, max_active),
+        )
     receipt = {
         "phase": phase,
         "preprocessing_job_id": preprocessing_id,
         "preprocessed_cache_reused": bool(cache_status["ready"]),
         "wave1_job_id": wave1_id,
+        "wave1_task_count": len(wave1_indices),
+        "wave1_array_indices": wave1_indices,
         "wave2_job_id": None,
+        "wave2_task_count": len(wave2_indices),
+        "wave2_array_indices": wave2_indices,
     }
-    _atomic_json(root / "submission_receipt.json", receipt)
-    wave2_id = _sbatch(manifest["wave2"]["script"], f"afterok:{wave1_id}")
-    receipt["wave2_job_id"] = wave2_id
-    _atomic_json(root / "submission_receipt.json", receipt)
+    _atomic_json(receipt_path, receipt)
+    if wave2_indices:
+        dependency_id = wave1_id or preprocessing_id
+        wave2_dependency = f"afterok:{dependency_id}" if dependency_id else None
+        receipt["wave2_job_id"] = _sbatch(
+            manifest["wave2"]["script"],
+            wave2_dependency,
+            array=_array_override(wave2_indices, max_active),
+        )
+    _atomic_json(receipt_path, receipt)
     return receipt
 
 
