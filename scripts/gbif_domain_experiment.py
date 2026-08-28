@@ -70,6 +70,7 @@ def main() -> None:
                 "inference": config["slurm"]["inference"],
                 "preprocessing": config["slurm"]["preprocessing"],
                 "merge": config["slurm"]["merge"],
+                "analysis": config["slurm"]["analysis"],
             },
             "training_models": config["models"]["primary"],
             "dino_models": config["models"]["dino"],

@@ -259,6 +259,37 @@ three old-checkpoint inference baselines separately from new transfer training,
 paired hierarchy-loss effects, and Stage-1→Stage-2 retention/forgetting.
 Missing jobs are displayed as pending and are never represented as results.
 
+For the completed-run per-image transfer, rarity, hierarchy, quality, and
+checkpoint audit, first render and validate the inference-only dependency graph:
+
+```bash
+make gbif-transfer-analysis-dry-run
+```
+
+Then submit it from the Genome terminal:
+
+```bash
+make gbif-transfer-analysis
+```
+
+This submits 36 one-GPU checkpoint inference tasks (three backbones × three
+seeds × two hierarchy weights × `gbif_only`/`peti_to_gbif`) with at most twelve
+active tasks. A dependent CPU-only report job requests 128 cores, 64 GB, and
+two hours. Both scripts activate `${HOME}/miniforge3`'s `wormspecies`
+environment. No training is started.
+
+The report retains every raw GBIF species and assigns fixed training-image
+rarity bands `0`, `1–10`, `11–25`, `26–100`, and `>100`. It tests Petri benefit
+both across those bands and continuously against log training count. Exact
+species accuracy and top-k metrics are restricted to species represented in
+the trained classifier vocabulary. `petri_seen_species` uses the frozen
+GBIF-to-Petri taxonomy mapping and presence in the Petri training split; the
+exact raw-name match is also exported separately. Petri-seen versus
+Petri-unseen comparisons use genus performance for all genus-evaluable GBIF
+taxa. Outputs are written below `transfer_analysis/`, including compressed row-level probabilities,
+per-seed and per-species tables, objective image-quality measures, checkpoint
+equivalence audits, and editable SVG/PDF figures.
+
 For each completed checkpoint, run the common evaluator (image-level PETI and
 GBIF metrics plus GBIF occurrence-level aggregation) with:
 

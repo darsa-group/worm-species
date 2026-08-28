@@ -79,6 +79,16 @@ class GBIFDomainExperimentTests(unittest.TestCase):
             config["slurm"]["inference"],
             {"cpus_per_task": 12, "memory": "16G", "time_limit": "02:00:00"},
         )
+        self.assertEqual(
+            config["slurm"]["analysis"],
+            {
+                "partition": None,
+                "cpus_per_task": 128,
+                "memory": "64G",
+                "time_limit": "02:00:00",
+            },
+        )
+        self.assertEqual(config["analysis"]["quality_workers"], 128)
         self.assertEqual(config["training"]["batch_size"], 256)
         self.assertNotIn("mixed_batch_per_domain", config["training"])
         self.assertEqual(mixed_batch_per_domain(config), 128)

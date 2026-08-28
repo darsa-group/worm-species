@@ -46,9 +46,10 @@ PAPER_TESTS := \
 	tests.test_publication_30seed_pipeline \
 	tests.test_gbif_oligochaeta \
 	tests.test_gbif_domain_experiment \
+	tests.test_gbif_transfer_analysis \
 	tests.test_gbif_combined_results_notebook
 
-.PHONY: help ablation-pipeline paper-report holdout-visual-report adult-taxon-ablation-pipeline adult-taxon-report publication-pipeline publication-resolution-gapfill publication-resolution-gapfill-submit publication-data-metrics publication-resume publication-status publication-report gbif-oligochaeta-scope gbif-oligochaeta-audit-scope gbif-oligochaeta-request gbif-oligochaeta-download-status gbif-oligochaeta-download-dwca gbif-oligochaeta-manifest gbif-oligochaeta-download-images gbif-oligochaeta-prune-missing-images-dry-run gbif-oligochaeta-prune-missing-images gbif-oligochaeta-filter-dataset-dry-run gbif-oligochaeta-filter-dataset gbif-oligochaeta-transfer-check gbif-oligochaeta-transfer-dry-run gbif-oligochaeta-transfer gbif-oligochaeta-transfer-verify gbif-oligochaeta-pull-genome-results gbif-oligochaeta-push-curation gbif-oligochaeta-genome-dry-run gbif-oligochaeta-genome-submit gbif-oligochaeta-embed gbif-oligochaeta-cluster gbif-oligochaeta-curate gbif-oligochaeta-infer-existing gbif-oligochaeta-notebook gbif-oligochaeta-notebook-execute gbif-check gbif-prepare gbif-cache gbif-infer-dry-run gbif-infer gbif-train-dry-run gbif-train gbif-dino-dry-run gbif-dino gbif-status gbif-resume gbif-evaluate gbif-report test
+.PHONY: help ablation-pipeline paper-report holdout-visual-report adult-taxon-ablation-pipeline adult-taxon-report publication-pipeline publication-resolution-gapfill publication-resolution-gapfill-submit publication-data-metrics publication-resume publication-status publication-report gbif-oligochaeta-scope gbif-oligochaeta-audit-scope gbif-oligochaeta-request gbif-oligochaeta-download-status gbif-oligochaeta-download-dwca gbif-oligochaeta-manifest gbif-oligochaeta-download-images gbif-oligochaeta-prune-missing-images-dry-run gbif-oligochaeta-prune-missing-images gbif-oligochaeta-filter-dataset-dry-run gbif-oligochaeta-filter-dataset gbif-oligochaeta-transfer-check gbif-oligochaeta-transfer-dry-run gbif-oligochaeta-transfer gbif-oligochaeta-transfer-verify gbif-oligochaeta-pull-genome-results gbif-oligochaeta-push-curation gbif-oligochaeta-genome-dry-run gbif-oligochaeta-genome-submit gbif-oligochaeta-embed gbif-oligochaeta-cluster gbif-oligochaeta-curate gbif-oligochaeta-infer-existing gbif-oligochaeta-notebook gbif-oligochaeta-notebook-execute gbif-check gbif-prepare gbif-cache gbif-infer-dry-run gbif-infer gbif-train-dry-run gbif-train gbif-dino-dry-run gbif-dino gbif-status gbif-resume gbif-evaluate gbif-report gbif-transfer-analysis-dry-run gbif-transfer-analysis test
 
 help: ## Show the paper-pipeline commands.
 	@echo "Worm Species paper pipeline"
@@ -111,6 +112,8 @@ help: ## Show the paper-pipeline commands.
 	@echo "  make gbif-status                         Read output completion state."
 	@echo "  make gbif-resume GBIF_PHASE=primary      Resubmit skip-safe incomplete work."
 	@echo "  make gbif-report                         Build the combined results notebook."
+	@echo "  make gbif-transfer-analysis-dry-run      Validate/render completed-run analysis."
+	@echo "  make gbif-transfer-analysis              Submit inference + 128-core report job."
 	@echo "  make test                                 Run the focused paper-pipeline tests."
 	@echo
 	@echo "Dry-run is the default; scheduler submission is always explicit."
@@ -348,6 +351,14 @@ gbif-evaluate: ## Evaluate one completed checkpoint on PETI and GBIF test manife
 gbif-report: ## Generate and execute the combined inference/training results notebook.
 	PYTHONPATH=.:src $(GBIF_PYTHON) scripts/build_gbif_combined_results_notebook.py \
 		--config "$(GBIF_TRAINING_CONFIG)" --execute
+
+gbif-transfer-analysis-dry-run: ## Validate and render the post-training analysis DAG.
+	PYTHONPATH=.:src $(GBIF_PYTHON) scripts/analyse_gbif_transfer.py \
+		--config "$(GBIF_TRAINING_CONFIG)" run --mode dry-run
+
+gbif-transfer-analysis: ## Submit inference and its dependent 128-core analysis job.
+	PYTHONPATH=.:src $(GBIF_PYTHON) scripts/analyse_gbif_transfer.py \
+		--config "$(GBIF_TRAINING_CONFIG)" run --mode submit
 
 test: ## Run the retained paper-pipeline verification surface.
 	MPLCONFIGDIR=/tmp/mplconfig PYTHONPATH=.:src $(PYTHON) -m unittest $(PAPER_TESTS)

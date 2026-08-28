@@ -105,6 +105,22 @@ def load_domain_config(path: str | Path) -> dict:
         raise ValueError("slurm.preprocessing.memory is required")
     if not str(preprocessing_job.get("time_limit", "")):
         raise ValueError("slurm.preprocessing.time_limit is required")
+    analysis_job = slurm.get("analysis", {})
+    if int(analysis_job.get("cpus_per_task", 0)) <= 0:
+        raise ValueError("slurm.analysis.cpus_per_task must be positive")
+    if not str(analysis_job.get("memory", "")):
+        raise ValueError("slurm.analysis.memory is required")
+    if not str(analysis_job.get("time_limit", "")):
+        raise ValueError("slurm.analysis.time_limit is required")
+    analysis = config.get("analysis", {})
+    if int(analysis.get("quality_workers", 0)) <= 0:
+        raise ValueError("analysis.quality_workers must be positive")
+    if int(analysis["quality_workers"]) > int(analysis_job["cpus_per_task"]):
+        raise ValueError(
+            "analysis.quality_workers cannot exceed slurm.analysis.cpus_per_task"
+        )
+    if [int(value) for value in analysis.get("top_k", [])] != [1, 3, 5]:
+        raise ValueError("analysis.top_k must be [1, 3, 5]")
     inference = config.get("inference", {})
     if int(inference.get("shards", 0)) != 12:
         raise ValueError("inference.shards must be 12")
