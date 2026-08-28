@@ -1,0 +1,77 @@
+schema_version: 1
+experiment_id: gbif_full_taxonomy_v1
+
+paths:
+  project_root: /faststorage/project/worm-species/source
+  gbif_manifest: /faststorage/project/worm-species/data/gbif_oligochaeta/curation/curated_manifest.csv
+  petri_split_dir: /faststorage/project/worm-species/source/split_csv
+  petri_data_root: /faststorage/project/worm-species/data
+  experiment_root: /faststorage/project/worm-species/source/outputs/gbif_full_taxonomy_v1
+  conda_sh: ${HOME}/miniforge3/etc/profile.d/conda.sh
+  conda_env: wormspecies
+
+data:
+  curation_labels: [keep]
+  image_size: 224
+  split_seed: 2026
+  target_proportions: {train: 0.65, validation: 0.15, test: 0.20}
+  connect_identical_perceptual_hashes: true
+  expected_raw_species_minimum: 200
+
+models:
+  backbones: [convnext_base, vit_b_16, resnet50]
+  seeds: [40, 140, 240]
+  imagenet_pretrained: true
+
+training:
+  batch_size: 256
+  num_workers: 12
+  prefetch_factor: 4
+  persistent_workers: true
+  pin_memory: true
+  use_amp: true
+  petri_steps: 10000
+  gbif_steps: 10000
+  validation_interval_steps: 500
+  checkpoint_interval_steps: 500
+  backbone_lr: 0.00001
+  head_lr: 0.0001
+  weight_decay: 0.05
+  warmup_steps: 1000
+  class_weight: true
+  loss_weights:
+    petri: {genus: 1.0, species: 0.5, age: 2.0}
+    gbif: {genus: 1.0, species: 0.5}
+  augmentation:
+    enabled: true
+    horizontal_flip: {enabled: true, probability: 0.5}
+    vertical_flip: {enabled: true, probability: 0.5}
+    rotation: {enabled: true, degrees: 180}
+  checkpoint_selection:
+    primary: validation_species_macro_f1
+    tie_break: [validation_genus_macro_f1, negative_validation_loss, earlier_step]
+  rng_offsets: {head: 10000, data: 20000, augmentation: 30000, training: 40000}
+  revised_hierarchy:
+    enabled: true
+    weight: 0.5
+    formulation: ground_truth_species_mass_within_true_genus
+
+analysis:
+  rarity_group_bands:
+    - {label: "1", minimum: 1, maximum: 1}
+    - {label: "2", minimum: 2, maximum: 2}
+    - {label: "3-5", minimum: 3, maximum: 5}
+    - {label: "6-10", minimum: 6, maximum: 10}
+    - {label: "11-25", minimum: 11, maximum: 25}
+    - {label: ">25", minimum: 26, maximum: null}
+  quality_workers: 128
+  top_k: [1, 3, 5]
+
+slurm:
+  account: worm-species
+  gpu_partition: gpu-short,gpu-l40s,gpu-h200
+  array_max_active: 12
+  audit: {partition: null, cpus_per_task: 128, memory: 64G, time_limit: "02:00:00"}
+  training: {cpus_per_task: 16, memory: 32G, time_limit: "08:00:00"}
+  inference: {cpus_per_task: 12, memory: 24G, time_limit: "02:00:00"}
+  report: {partition: null, cpus_per_task: 128, memory: 64G, time_limit: "02:00:00"}

@@ -192,3 +192,35 @@ def hierarchy_consistency_loss(
         )
 
         return 0.5 * (parent_loss + child_loss)
+
+
+def ground_truth_taxonomic_mass_loss(
+    child_logits: torch.Tensor,
+    true_parent_labels: torch.Tensor,
+    child_to_parent_matrix: torch.Tensor,
+    valid_mask: torch.Tensor,
+) -> torch.Tensor | None:
+    """Penalise child probability mass outside each sample's true parent.
+
+    Unlike :func:`hierarchy_consistency_loss`, this loss does not consume parent
+    logits and therefore cannot pull the parent head towards an incorrect child
+    prediction.  The calculation is forced to float32 for AMP stability.
+    """
+    if not torch.any(valid_mask):
+        return None
+    device_type = child_logits.device.type
+    with torch.autocast(device_type=device_type, enabled=False):
+        logits = child_logits[valid_mask].float()
+        parents = true_parent_labels[valid_mask].long()
+        matrix = child_to_parent_matrix.to(device=logits.device, dtype=torch.bool)
+        if matrix.ndim != 2 or matrix.shape[0] != logits.shape[1]:
+            raise ValueError("child_to_parent_matrix shape does not match child logits")
+        if parents.min() < 0 or parents.max() >= matrix.shape[1]:
+            raise ValueError("True parent label is outside the parent vocabulary")
+        allowed = matrix[:, parents].T
+        if not torch.all(allowed.any(dim=1)):
+            raise ValueError("A true parent has no child classes in the taxonomy mapping")
+        log_probs = F.log_softmax(logits, dim=1)
+        masked = log_probs.masked_fill(~allowed, -torch.inf)
+        true_parent_log_mass = torch.logsumexp(masked, dim=1)
+        return -true_parent_log_mass.mean()
