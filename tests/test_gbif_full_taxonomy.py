@@ -1,18 +1,23 @@
 from __future__ import annotations
 
+import json
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import pandas as pd
 import torch
 import yaml
 from PIL import Image
 
-from scripts.gbif_full_taxonomy_pipeline import build_specs, render_pipeline
+from scripts.gbif_full_taxonomy_pipeline import (
+    build_specs, render_pipeline, resume_pipeline,
+)
 from src.worm_species.gbif.full_taxonomy import (
     canonical_taxonomy, coverage_aware_split, load_full_taxonomy_config,
-    run_full_taxonomy_audit,
+    file_sha256, run_full_taxonomy_audit,
 )
 from src.worm_species.training.losses import (
     build_child_to_parent_matrix, ground_truth_taxonomic_mass_loss,
@@ -25,6 +30,56 @@ BASE_CONFIG = ROOT / "configs" / "gbif_full_taxonomy.yaml"
 
 
 class FullTaxonomyTests(unittest.TestCase):
+    def _resume_fixture(
+        self, root: Path, incomplete_hierarchy: tuple[int, ...] = (3, 15)
+    ) -> tuple[dict, list[dict]]:
+        config = load_full_taxonomy_config(BASE_CONFIG)
+        experiment_root = root / "gbif_full_taxonomy_resume_test"
+        config["paths"]["project_root"] = str(ROOT)
+        config["paths"]["experiment_root"] = str(experiment_root)
+        audit = experiment_root / "audit"
+        audit.mkdir(parents=True)
+        (audit / "audit_manifest.json").write_text(
+            json.dumps({
+                "status": "complete",
+                "fatal_leakage_rows": 0,
+                "experiment_id": config["experiment_id"],
+                "config_sha256": file_sha256(BASE_CONFIG),
+            }),
+            encoding="utf-8",
+        )
+        specs = build_specs(config)
+        incomplete = set(incomplete_hierarchy)
+        for phase in ("petri", "primary", "hierarchy"):
+            for index, spec in enumerate(specs[phase]):
+                if phase == "hierarchy" and index in incomplete:
+                    continue
+                output = Path(spec["output_dir"])
+                output.mkdir(parents=True, exist_ok=True)
+                (output / "best_model.pt").write_bytes(
+                    f"{phase}-{index}".encode("utf-8")
+                )
+                (output / "run_status.json").write_text(
+                    json.dumps({"status": "complete"}), encoding="utf-8"
+                )
+        final_specs = specs["primary"] + specs["hierarchy"]
+        for index, spec in enumerate(final_specs):
+            if index >= len(specs["primary"]) and (
+                index - len(specs["primary"])
+            ) in incomplete:
+                continue
+            checkpoint = Path(spec["output_dir"]) / "best_model.pt"
+            output = experiment_root / "inference" / f"{spec['run_id']}.csv.gz"
+            output.parent.mkdir(parents=True, exist_ok=True)
+            output.write_bytes(b"predictions")
+            summary = output.with_suffix("").with_suffix(".summary.json")
+            summary.write_text(json.dumps({
+                "status": "complete",
+                "checkpoint": str(checkpoint),
+                "checkpoint_sha256": file_sha256(checkpoint),
+            }), encoding="utf-8")
+        return config, final_specs
+
     def test_canonical_taxonomy_never_maps_into_petri_vocabulary(self) -> None:
         self.assertEqual(
             canonical_taxonomy("Lumbricus", "Lumbricus terrestris"),
@@ -132,6 +187,95 @@ class FullTaxonomyTests(unittest.TestCase):
             self.assertIn("#SBATCH --array=0-17%12", primary)
             self.assertIn("#SBATCH --cpus-per-task=128", report)
             self.assertIn("miniforge3", report)
+
+    def test_resume_plan_selects_only_incomplete_hierarchy_and_inference(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config, _ = self._resume_fixture(Path(temp_dir))
+            plan = resume_pipeline(config, BASE_CONFIG.resolve(), "dry-run")
+            self.assertEqual(plan["hierarchy_array_indices"], [3, 15])
+            self.assertEqual(plan["hierarchy_array"], "3,15%12")
+            self.assertEqual(plan["inference_array_indices"], [21, 33])
+            self.assertEqual(plan["inference_array"], "21,33%12")
+            self.assertTrue(plan["report_required"])
+            self.assertFalse(plan["all_work_complete"])
+
+    def test_resume_submission_chains_selective_arrays_and_report(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config, _ = self._resume_fixture(Path(temp_dir))
+            root = Path(config["paths"]["experiment_root"])
+            scripts = {
+                "hierarchy": str(root / "generated" / "phase_b_hierarchy.sbatch"),
+                "inference": str(root / "generated" / "phase_c_inference.sbatch"),
+                "report": str(root / "generated" / "phase_c_report.sbatch"),
+            }
+            with mock.patch(
+                "scripts.gbif_full_taxonomy_pipeline._submit",
+                side_effect=["501", "502", "503"],
+            ) as submit:
+                receipt = resume_pipeline(config, BASE_CONFIG.resolve(), "submit")
+            self.assertEqual(receipt["hierarchy_job_id"], "501")
+            self.assertEqual(receipt["inference_job_id"], "502")
+            self.assertEqual(receipt["report_job_id"], "503")
+            self.assertTrue(receipt["all_jobs_submitted"])
+            self.assertEqual(submit.call_args_list, [
+                mock.call(scripts["hierarchy"], array="3,15%12"),
+                mock.call(scripts["inference"], "501", array="21,33%12"),
+                mock.call(scripts["report"], "502"),
+            ])
+
+    def test_resume_refuses_while_prior_receipt_jobs_are_active(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config, _ = self._resume_fixture(Path(temp_dir))
+            generated = Path(config["paths"]["experiment_root"]) / "generated"
+            generated.mkdir(parents=True, exist_ok=True)
+            (generated / "submission_receipt.json").write_text(
+                json.dumps({"hierarchy_job_id": "700"}), encoding="utf-8"
+            )
+            active = subprocess.CompletedProcess(
+                args=[], returncode=0, stdout="700_3\n", stderr=""
+            )
+            with mock.patch(
+                "scripts.gbif_full_taxonomy_pipeline.subprocess.run",
+                return_value=active,
+            ):
+                with self.assertRaisesRegex(RuntimeError, "700_3"):
+                    resume_pipeline(config, BASE_CONFIG.resolve(), "dry-run")
+
+    def test_resume_refuses_incomplete_primary_prerequisite(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config, _ = self._resume_fixture(Path(temp_dir))
+            primary = build_specs(config)["primary"][4]
+            (Path(primary["output_dir"]) / "best_model.pt").unlink()
+            with self.assertRaisesRegex(RuntimeError, r"'primary': \[4\]"):
+                resume_pipeline(config, BASE_CONFIG.resolve(), "dry-run")
+
+    def test_resume_can_submit_inference_and_report_without_hierarchy_job(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config, final_specs = self._resume_fixture(
+                Path(temp_dir), incomplete_hierarchy=()
+            )
+            root = Path(config["paths"]["experiment_root"])
+            missing = root / "inference" / f"{final_specs[4]['run_id']}.csv.gz"
+            missing.unlink()
+            with mock.patch(
+                "scripts.gbif_full_taxonomy_pipeline._submit",
+                side_effect=["801", "802"],
+            ) as submit:
+                receipt = resume_pipeline(config, BASE_CONFIG.resolve(), "submit")
+            self.assertIsNone(receipt["hierarchy_job_id"])
+            self.assertEqual(receipt["inference_array_indices"], [4])
+            self.assertEqual(receipt["inference_job_id"], "801")
+            self.assertEqual(receipt["report_job_id"], "802")
+            self.assertEqual(submit.call_args_list, [
+                mock.call(
+                    str(root / "generated" / "phase_c_inference.sbatch"),
+                    None,
+                    array="4%12",
+                ),
+                mock.call(
+                    str(root / "generated" / "phase_c_report.sbatch"), "801"
+                ),
+            ])
 
     def test_synthetic_audit_reports_trainable_and_evaluable_counts(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

@@ -26,7 +26,7 @@ from torch.utils.data import DataLoader
 from worm_species.data.datasets import MultiTaskWormImageDataset
 from worm_species.data.transforms import build_split_transform
 from worm_species.gbif.full_taxonomy import (
-    GBIF_TASKS, atomic_json, file_sha256, load_full_taxonomy_config,
+    GBIF_TASKS, atomic_json, file_sha256, git_commit, load_full_taxonomy_config,
     run_full_taxonomy_audit,
 )
 from worm_species.gbif.full_taxonomy_training import (
@@ -136,7 +136,7 @@ srun python scripts/gbif_full_taxonomy_pipeline.py --config {shlex.quote(str(con
 """
 
 
-def render_pipeline(config: dict, config_path: Path) -> dict:
+def render_pipeline(config: dict, config_path: Path, *, resume: bool = False) -> dict:
     root = _root(config)
     generated = root / "generated"
     logs = root / "logs"
@@ -197,21 +197,29 @@ srun python scripts/gbif_full_taxonomy_pipeline.py --config {shlex.quote(str(con
         "created_utc": datetime.now(timezone.utc).isoformat(),
         "config": str(config_path), "config_sha256": file_sha256(config_path),
         "new_immutable_experiment_root": str(root),
-        "existing_restricted_experiment_reused": False,
+        "existing_restricted_experiment_reused": resume,
         "primary_final_model_count": len(specs["primary"]),
         "secondary_hierarchy_model_count": len(specs["hierarchy"]),
         "petri_pretraining_stage_count": len(specs["petri"]),
         "inference_task_count": len(inference_rows), "scripts": scripts,
         "dag": ["audit", "petri", "primary_h0", "revised_hierarchy", "inference", "report"],
     }
-    atomic_json(generated / "pipeline_manifest.json", manifest)
+    manifest_name = "resume_render_manifest.json" if resume else "pipeline_manifest.json"
+    atomic_json(generated / manifest_name, manifest)
     return manifest
 
 
-def _submit(script: str, dependency: str | None = None) -> str:
+def _submit(
+    script: str,
+    dependency: str | None = None,
+    *,
+    array: str | None = None,
+) -> str:
     command = ["sbatch", "--parsable"]
     if dependency:
         command.append(f"--dependency=afterok:{dependency}")
+    if array:
+        command.append(f"--array={array}")
     command.append(script)
     result = subprocess.run(command, text=True, capture_output=True, check=False)
     if result.returncode:
@@ -222,21 +230,203 @@ def _submit(script: str, dependency: str | None = None) -> str:
     return job_id
 
 
+def _active_receipt_jobs(receipt: dict) -> list[str]:
+    job_ids = sorted({
+        str(value) for key, value in receipt.items()
+        if key.endswith("_job_id") and value is not None and str(value).isdigit()
+    })
+    if not job_ids:
+        return []
+    active = subprocess.run(
+        ["squeue", "--noheader", "--jobs", ",".join(job_ids), "--format=%i"],
+        text=True, capture_output=True, check=False,
+    )
+    if active.returncode:
+        raise RuntimeError(
+            "Could not check prior full-taxonomy jobs with squeue: "
+            f"{active.stderr.strip()}"
+        )
+    return sorted({line.strip() for line in active.stdout.splitlines() if line.strip()})
+
+
+def _assert_no_active_receipt_jobs(root: Path) -> None:
+    active_jobs = set()
+    for name in ("submission_receipt.json", "resume_submission_receipt.json"):
+        path = root / "generated" / name
+        if path.is_file():
+            receipt = json.loads(path.read_text(encoding="utf-8"))
+            active_jobs.update(_active_receipt_jobs(receipt))
+    if active_jobs:
+        raise RuntimeError(
+            "Full-taxonomy receipts still have active Slurm jobs: "
+            + ", ".join(sorted(active_jobs))
+        )
+
+
+def _array_override(indices: list[int], max_active: int) -> str:
+    if not indices:
+        raise ValueError("Cannot render an empty Slurm array override")
+    ordered = sorted(set(indices))
+    ranges = []
+    start = previous = ordered[0]
+    for index in ordered[1:]:
+        if index == previous + 1:
+            previous = index
+            continue
+        ranges.append(str(start) if start == previous else f"{start}-{previous}")
+        start = previous = index
+    ranges.append(str(start) if start == previous else f"{start}-{previous}")
+    return f"{','.join(ranges)}%{max_active}"
+
+
+def _inference_task_complete(item: dict, training_complete: bool) -> bool:
+    if not training_complete:
+        return False
+    checkpoint = Path(item["checkpoint"])
+    output = Path(item["output"])
+    summary_path = output.with_suffix("").with_suffix(".summary.json")
+    if not checkpoint.is_file() or not output.is_file() or not summary_path.is_file():
+        return False
+    try:
+        summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return False
+    return (
+        summary.get("status") == "complete"
+        and summary.get("checkpoint") == str(checkpoint)
+        and summary.get("checkpoint_sha256") == file_sha256(checkpoint)
+    )
+
+
+def _report_complete(root: Path) -> bool:
+    manifest_path = root / "final_manifest.json"
+    report_path = root / "final_report.md"
+    if not manifest_path.is_file() or not report_path.is_file():
+        return False
+    try:
+        return json.loads(manifest_path.read_text(encoding="utf-8")).get("status") == "complete"
+    except (OSError, json.JSONDecodeError):
+        return False
+
+
+def resume_pipeline(config: dict, config_path: Path, mode: str = "dry-run") -> dict:
+    """Resume only incomplete hierarchy, inference, and report work."""
+    if mode not in {"dry-run", "submit"}:
+        raise ValueError("Resume mode must be 'dry-run' or 'submit'")
+    root = _root(config)
+    audit_path = root / "audit" / "audit_manifest.json"
+    if not audit_path.is_file():
+        raise FileNotFoundError("Immutable Phase-A audit is missing")
+    audit = json.loads(audit_path.read_text(encoding="utf-8"))
+    if audit.get("status") != "complete" or int(audit.get("fatal_leakage_rows", -1)) != 0:
+        raise RuntimeError("Phase-A integrity gates did not pass")
+    if (
+        audit.get("experiment_id") != config["experiment_id"]
+        or audit.get("config_sha256") != file_sha256(config_path)
+    ):
+        raise RuntimeError(
+            "Phase-A audit does not match the current full-taxonomy experiment/config"
+        )
+    _assert_no_active_receipt_jobs(root)
+
+    specs = build_specs(config)
+    incomplete_prerequisites = {
+        phase: [index for index, spec in enumerate(specs[phase]) if not stage_complete(spec)]
+        for phase in ("petri", "primary")
+    }
+    if any(incomplete_prerequisites.values()):
+        raise RuntimeError(
+            "Full-taxonomy hierarchy resume requires completed Petri and primary stages; "
+            f"incomplete indices: {incomplete_prerequisites}"
+        )
+
+    manifest = render_pipeline(config, config_path, resume=True)
+    hierarchy_indices = [
+        index for index, spec in enumerate(specs["hierarchy"])
+        if not stage_complete(spec)
+    ]
+    final_specs = specs["primary"] + specs["hierarchy"]
+    inference_table = pd.read_csv(
+        root / "generated" / "inference_tasks.tsv",
+        sep="\t", dtype=str, keep_default_na=False,
+    )
+    if len(inference_table) != len(final_specs):
+        raise RuntimeError("Full-taxonomy inference index does not match training specs")
+    inference_indices = []
+    inference_rows = inference_table.to_dict("records")
+    for expected_index, (item, spec) in enumerate(
+        zip(inference_rows, final_specs, strict=True)
+    ):
+        index = int(item["array_index"])
+        if index != expected_index:
+            raise RuntimeError("Full-taxonomy inference indices are not contiguous")
+        if not _inference_task_complete(item, stage_complete(spec)):
+            inference_indices.append(index)
+    max_active = int(config["slurm"]["array_max_active"])
+    report_required = bool(
+        hierarchy_indices or inference_indices or not _report_complete(root)
+    )
+    plan = {
+        "schema_version": 1,
+        "mode": mode,
+        "audit_manifest_sha256": file_sha256(audit_path),
+        "audit_git_commit": audit.get("git_commit"),
+        "resume_git_commit": git_commit(config["paths"]["project_root"]),
+        "hierarchy_task_count": len(hierarchy_indices),
+        "hierarchy_array_indices": hierarchy_indices,
+        "hierarchy_array": (
+            _array_override(hierarchy_indices, max_active) if hierarchy_indices else None
+        ),
+        "inference_task_count": len(inference_indices),
+        "inference_array_indices": inference_indices,
+        "inference_array": (
+            _array_override(inference_indices, max_active) if inference_indices else None
+        ),
+        "report_required": report_required,
+        "all_work_complete": not hierarchy_indices and not inference_indices and not report_required,
+    }
+    atomic_json(root / "generated" / "resume_plan.json", plan)
+    if mode == "dry-run":
+        return plan
+
+    scripts = manifest["scripts"]
+    receipt_path = root / "generated" / "resume_submission_receipt.json"
+    receipt = {
+        **plan,
+        "hierarchy_job_id": None,
+        "inference_job_id": None,
+        "report_job_id": None,
+        "all_jobs_submitted": False,
+    }
+    atomic_json(receipt_path, receipt)
+    if hierarchy_indices:
+        receipt["hierarchy_job_id"] = _submit(
+            scripts["hierarchy"], array=plan["hierarchy_array"]
+        )
+        atomic_json(receipt_path, receipt)
+    if inference_indices:
+        dependency = receipt["hierarchy_job_id"]
+        receipt["inference_job_id"] = _submit(
+            scripts["inference"], dependency, array=plan["inference_array"]
+        )
+        atomic_json(receipt_path, receipt)
+    if report_required:
+        dependency = receipt["inference_job_id"] or receipt["hierarchy_job_id"]
+        receipt["report_job_id"] = _submit(scripts["report"], dependency)
+        atomic_json(receipt_path, receipt)
+    receipt["all_jobs_submitted"] = True
+    atomic_json(receipt_path, receipt)
+    return receipt
+
+
 def submit_pipeline(config: dict, config_path: Path) -> dict:
     manifest = render_pipeline(config, config_path)
     receipt_path = _root(config) / "generated" / "submission_receipt.json"
     if receipt_path.is_file():
         previous = json.loads(receipt_path.read_text(encoding="utf-8"))
-        ids = [str(value) for key, value in previous.items() if key.endswith("_job_id") and value]
-        if ids:
-            active = subprocess.run(
-                ["squeue", "--noheader", "--jobs", ",".join(ids), "--format=%i"],
-                text=True, capture_output=True, check=False,
-            )
-            if active.returncode:
-                raise RuntimeError(f"Could not check prior receipt: {active.stderr.strip()}")
-            if active.stdout.strip():
-                raise RuntimeError(f"Full-taxonomy pipeline still has active jobs: {active.stdout.strip()}")
+        active = _active_receipt_jobs(previous)
+        if active:
+            raise RuntimeError(f"Full-taxonomy pipeline still has active jobs: {', '.join(active)}")
     scripts = manifest["scripts"]
     audit = _submit(scripts["audit"])
     petri = _submit(scripts["petri"], audit)
@@ -828,6 +1018,8 @@ def main() -> int:
     commands = parser.add_subparsers(dest="command", required=True)
     run = commands.add_parser("run")
     run.add_argument("--mode", choices=("dry-run", "submit"), default="dry-run")
+    resume = commands.add_parser("resume")
+    resume.add_argument("--mode", choices=("dry-run", "submit"), default="dry-run")
     commands.add_parser("audit")
     train = commands.add_parser("train-task")
     train.add_argument("--spec", type=Path, required=True)
@@ -840,6 +1032,8 @@ def main() -> int:
     config = load_full_taxonomy_config(config_path)
     if args.command == "run":
         result = render_pipeline(config, config_path) if args.mode == "dry-run" else submit_pipeline(config, config_path)
+    elif args.command == "resume":
+        result = resume_pipeline(config, config_path, args.mode)
     elif args.command == "audit":
         result = run_full_taxonomy_audit(config, config_path)
     elif args.command == "train-task":
