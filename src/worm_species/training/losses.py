@@ -204,7 +204,9 @@ def ground_truth_taxonomic_mass_loss(
 
     Unlike :func:`hierarchy_consistency_loss`, this loss does not consume parent
     logits and therefore cannot pull the parent head towards an incorrect child
-    prediction.  The calculation is forced to float32 for AMP stability.
+    prediction. Parents with no classes in the child vocabulary cannot define a
+    child-mass target and are excluded. The calculation is forced to float32 for
+    AMP stability.
     """
     if not torch.any(valid_mask):
         return None
@@ -218,8 +220,11 @@ def ground_truth_taxonomic_mass_loss(
         if parents.min() < 0 or parents.max() >= matrix.shape[1]:
             raise ValueError("True parent label is outside the parent vocabulary")
         allowed = matrix[:, parents].T
-        if not torch.all(allowed.any(dim=1)):
-            raise ValueError("A true parent has no child classes in the taxonomy mapping")
+        supported = allowed.any(dim=1)
+        if not torch.any(supported):
+            return None
+        logits = logits[supported]
+        allowed = allowed[supported]
         log_probs = F.log_softmax(logits, dim=1)
         masked = log_probs.masked_fill(~allowed, -torch.inf)
         true_parent_log_mass = torch.logsumexp(masked, dim=1)

@@ -78,6 +78,43 @@ class FullTaxonomyTests(unittest.TestCase):
         self.assertGreater(child.grad[0, 1].item(), 0.0)
         self.assertTrue(torch.isfinite(child.grad).all())
 
+    def test_ground_truth_loss_skips_parents_without_species_classes(self) -> None:
+        maps = {
+            "genus": {"G": 0, "H": 1},
+            "species": {"G_a": 0, "G_b": 1},
+        }
+        matrix = build_child_to_parent_matrix(
+            maps, "genus", "species", torch.device("cpu")
+        )
+        child = torch.tensor(
+            [[2.0, -2.0], [-3.0, 3.0]], requires_grad=True
+        )
+        loss = ground_truth_taxonomic_mass_loss(
+            child, torch.tensor([0, 1]), matrix, torch.tensor([True, True])
+        )
+        expected = ground_truth_taxonomic_mass_loss(
+            child[:1], torch.tensor([0]), matrix, torch.tensor([True])
+        )
+        self.assertTrue(torch.allclose(loss, expected))
+        loss.backward()
+        self.assertTrue(torch.equal(child.grad[1], torch.zeros(2)))
+
+    def test_ground_truth_loss_returns_none_when_no_parent_has_species_classes(self) -> None:
+        maps = {
+            "genus": {"G": 0, "H": 1},
+            "species": {"G_a": 0},
+        }
+        matrix = build_child_to_parent_matrix(
+            maps, "genus", "species", torch.device("cpu")
+        )
+        loss = ground_truth_taxonomic_mass_loss(
+            torch.tensor([[1.0]]),
+            torch.tensor([1]),
+            matrix,
+            torch.tensor([True]),
+        )
+        self.assertIsNone(loss)
+
     def test_rendered_pipeline_has_required_stage_counts_and_resources(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             config = load_full_taxonomy_config(BASE_CONFIG)
