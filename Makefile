@@ -19,7 +19,7 @@ PUBLICATION_RESULT ?= publication_30seed_result
 GBIF_CHECKPOINT ?= /faststorage/project/worm-species/source/publication_30seed_result/runs/baseline/run_012_convnext_base_original_loss_genus-1.0_species-0.5_age-2.0_seed_1240_hloss_0.0_20260805153055/lr_0.0003_hloss_False_f7435e3a_train_original/best_model.pt
 GBIF_CURATED_MANIFEST ?= gbif_oligochaeta/curation/curated_manifest.csv
 GBIF_EXISTING_PREDICTIONS ?= gbif_oligochaeta/predictions/existing_checkpoint.csv
-GBIF_DATASET_NOTEBOOK ?= notebooks/gbif_earthworm_dataset_audit.ipynb
+GBIF_DATASET_NOTEBOOK ?= notebooks/gbif_earthworm_dataset_overview.ipynb
 GBIF_NOTEBOOK_TIMEOUT ?= -1
 GBIF_DOWNLOAD_KEY ?=
 GBIF_BUNDLE_ROOT ?= gbif_oligochaeta
@@ -30,6 +30,8 @@ GBIF_GENOME_CONDA_ENV ?= wormspecies
 GBIF_TRANSFER_WORKERS ?= 4
 GBIF_TRAINING_CONFIG ?= configs/gbif_training.yaml
 GBIF_FULL_TAXONOMY_CONFIG ?= configs/gbif_full_taxonomy.yaml
+GBIF_FULL_TAXONOMY_STATUS_NOTEBOOK ?= notebooks/gbif_full_taxonomy_run_status.ipynb
+GBIF_FULL_TAXONOMY_STATUS_NOTEBOOK_TIMEOUT ?= -1
 GBIF_EVALUATION_OUTPUT ?=
 GBIF_PHASE ?= primary
 GBIF_PYTHON ?= python
@@ -49,9 +51,11 @@ PAPER_TESTS := \
 	tests.test_gbif_domain_experiment \
 	tests.test_gbif_transfer_analysis \
 	tests.test_gbif_full_taxonomy \
+	tests.test_gbif_dataset_overview_notebook \
+	tests.test_gbif_full_taxonomy_status_notebook \
 	tests.test_gbif_combined_results_notebook
 
-.PHONY: help ablation-pipeline paper-report holdout-visual-report adult-taxon-ablation-pipeline adult-taxon-report publication-pipeline publication-resolution-gapfill publication-resolution-gapfill-submit publication-data-metrics publication-resume publication-status publication-report gbif-oligochaeta-scope gbif-oligochaeta-audit-scope gbif-oligochaeta-request gbif-oligochaeta-download-status gbif-oligochaeta-download-dwca gbif-oligochaeta-manifest gbif-oligochaeta-download-images gbif-oligochaeta-prune-missing-images-dry-run gbif-oligochaeta-prune-missing-images gbif-oligochaeta-filter-dataset-dry-run gbif-oligochaeta-filter-dataset gbif-oligochaeta-transfer-check gbif-oligochaeta-transfer-dry-run gbif-oligochaeta-transfer gbif-oligochaeta-transfer-verify gbif-oligochaeta-pull-genome-results gbif-oligochaeta-push-curation gbif-oligochaeta-genome-dry-run gbif-oligochaeta-genome-submit gbif-oligochaeta-embed gbif-oligochaeta-cluster gbif-oligochaeta-curate gbif-oligochaeta-infer-existing gbif-oligochaeta-notebook gbif-oligochaeta-notebook-execute gbif-check gbif-prepare gbif-cache gbif-infer-dry-run gbif-infer gbif-train-dry-run gbif-train gbif-dino-dry-run gbif-dino gbif-status gbif-resume gbif-evaluate gbif-report gbif-transfer-analysis-dry-run gbif-transfer-analysis gbif-full-taxonomy-dry-run gbif-full-taxonomy gbif-full-taxonomy-resume-dry-run gbif-full-taxonomy-resume test
+.PHONY: help ablation-pipeline paper-report holdout-visual-report adult-taxon-ablation-pipeline adult-taxon-report publication-pipeline publication-resolution-gapfill publication-resolution-gapfill-submit publication-data-metrics publication-resume publication-status publication-report gbif-oligochaeta-scope gbif-oligochaeta-audit-scope gbif-oligochaeta-request gbif-oligochaeta-download-status gbif-oligochaeta-download-dwca gbif-oligochaeta-manifest gbif-oligochaeta-download-images gbif-oligochaeta-prune-missing-images-dry-run gbif-oligochaeta-prune-missing-images gbif-oligochaeta-filter-dataset-dry-run gbif-oligochaeta-filter-dataset gbif-oligochaeta-transfer-check gbif-oligochaeta-transfer-dry-run gbif-oligochaeta-transfer gbif-oligochaeta-transfer-verify gbif-oligochaeta-pull-genome-results gbif-oligochaeta-push-curation gbif-oligochaeta-genome-dry-run gbif-oligochaeta-genome-submit gbif-oligochaeta-embed gbif-oligochaeta-cluster gbif-oligochaeta-curate gbif-oligochaeta-infer-existing gbif-oligochaeta-notebook gbif-oligochaeta-notebook-execute gbif-check gbif-prepare gbif-cache gbif-infer-dry-run gbif-infer gbif-train-dry-run gbif-train gbif-dino-dry-run gbif-dino gbif-status gbif-resume gbif-evaluate gbif-report gbif-transfer-analysis-dry-run gbif-transfer-analysis gbif-full-taxonomy-dry-run gbif-full-taxonomy gbif-full-taxonomy-resume-dry-run gbif-full-taxonomy-resume gbif-full-taxonomy-status-notebook gbif-full-taxonomy-status-notebook-execute test
 
 help: ## Show the paper-pipeline commands.
 	@echo "Worm Species paper pipeline"
@@ -102,7 +106,7 @@ help: ## Show the paper-pipeline commands.
 	@echo "  make gbif-oligochaeta-curate              Open the interactive curation app."
 	@echo "  make gbif-oligochaeta-infer-existing GBIF_CHECKPOINT=/path/best_model.pt"
 	@echo "                                             Run a real existing checkpoint."
-	@echo "  make gbif-oligochaeta-notebook            Regenerate the dataset-audit notebook."
+	@echo "  make gbif-oligochaeta-notebook            Regenerate the GBIF dataset overview."
 	@echo "  make gbif-oligochaeta-notebook-execute    Explicitly execute it in place."
 	@echo "  make gbif-check                          Validate the approved Genome config."
 	@echo "  make gbif-cache                          Explicitly build/reuse preprocessed images."
@@ -120,6 +124,9 @@ help: ## Show the paper-pipeline commands.
 	@echo "  make gbif-full-taxonomy                  Submit audit → training → inference → report."
 	@echo "  make gbif-full-taxonomy-resume-dry-run   Preview selective hierarchy recovery."
 	@echo "  make gbif-full-taxonomy-resume           Resume hierarchy → inference → report."
+	@echo "  make gbif-full-taxonomy-status-notebook  Build the completed-run status notebook."
+	@echo "  make gbif-full-taxonomy-status-notebook-execute"
+	@echo "                                             Execute the read-only status notebook."
 	@echo "  make test                                 Run the focused paper-pipeline tests."
 	@echo
 	@echo "Dry-run is the default; scheduler submission is always explicit."
@@ -288,10 +295,10 @@ gbif-oligochaeta-infer-existing: ## Run an existing classifier on curated images
 		--checkpoint "$(GBIF_CHECKPOINT)" \
 		--output "$(GBIF_EXISTING_PREDICTIONS)"
 
-gbif-oligochaeta-notebook: ## Regenerate the reproducible dataset-audit notebook.
+gbif-oligochaeta-notebook: ## Regenerate the reproducible GBIF dataset overview.
 	PYTHONPATH=.:src $(PYTHON) scripts/build_gbif_earthworm_dataset_notebook.py
 
-gbif-oligochaeta-notebook-execute: ## Explicitly execute the existing audit notebook without regenerating it.
+gbif-oligochaeta-notebook-execute: ## Execute the generated GBIF dataset overview.
 	@test -f "$(GBIF_DATASET_NOTEBOOK)" || (echo "Run make gbif-oligochaeta-notebook first" >&2; exit 2)
 	MPLCONFIGDIR=/tmp/mplconfig JUPYTER_CONFIG_DIR=/tmp/jupyter-config \
 		JUPYTER_DATA_DIR=/tmp/jupyter-data PYTHONPATH=.:src $(PYTHON) -m jupyter \
@@ -381,6 +388,17 @@ gbif-full-taxonomy-resume-dry-run: ## Preview skip-safe incomplete full-taxonomy
 gbif-full-taxonomy-resume: ## Resume incomplete hierarchy, inference, and report work.
 	PYTHONPATH=.:src $(GBIF_PYTHON) scripts/gbif_full_taxonomy_pipeline.py \
 		--config "$(GBIF_FULL_TAXONOMY_CONFIG)" resume --mode submit
+
+gbif-full-taxonomy-status-notebook: ## Build the full-taxonomy completion/results notebook.
+	PYTHONPATH=.:src $(GBIF_PYTHON) scripts/build_gbif_full_taxonomy_status_notebook.py \
+		--config "$(GBIF_FULL_TAXONOMY_CONFIG)" \
+		--output "$(GBIF_FULL_TAXONOMY_STATUS_NOTEBOOK)"
+
+gbif-full-taxonomy-status-notebook-execute: gbif-full-taxonomy-status-notebook ## Execute the read-only status notebook.
+	MPLCONFIGDIR=/tmp/mplconfig JUPYTER_CONFIG_DIR=/tmp/jupyter-config \
+		JUPYTER_DATA_DIR=/tmp/jupyter-data PYTHONPATH=.:src $(GBIF_PYTHON) -m jupyter \
+		nbconvert --to notebook --execute --inplace "$(GBIF_FULL_TAXONOMY_STATUS_NOTEBOOK)" \
+		--ExecutePreprocessor.timeout=$(GBIF_FULL_TAXONOMY_STATUS_NOTEBOOK_TIMEOUT)
 
 test: ## Run the retained paper-pipeline verification surface.
 	MPLCONFIGDIR=/tmp/mplconfig PYTHONPATH=.:src $(PYTHON) -m unittest $(PAPER_TESTS)
