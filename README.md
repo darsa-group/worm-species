@@ -1,5 +1,178 @@
 # Worm Species paper-ablation pipeline
 
+## Combine the 2025 and 2026 images and segment both cameras
+
+```bash
+make dataset-setup
+make dataset-plan
+make dataset-gpu-check
+make dataset DEVICE=cuda:0
+```
+
+`dataset-setup` creates `.venv-segmentation` using the existing wormspecies
+environment's PyTorch. It installs the segmentation package; NVIDIA drivers
+must already work on the host. Fix the driver before the GPU commands, or use
+`make dataset DEVICE=cpu`. Override `PYTHON=/path/to/python` if needed.
+
+The inputs default to `/mnt/extssd/Earthworms/petridish-worm-images` and
+`/mnt/extssd/images`. The output is a **new, separate folder** at
+`/mnt/extssd/Earthworms/publication_dataset`:
+
+```text
+publication_dataset/
+├── README.md
+├── metadata/
+│   ├── images.csv
+│   ├── segmentation_status.csv
+│   ├── summary.json
+│   ├── sources/
+│   └── original_paper_splits/
+├── 2025/original_camera/
+│   ├── 00_RawData/metadata.csv
+│   ├── 01_Segmented/metadata.csv
+│   └── masks/
+└── 2026/
+    ├── gphoto2/
+    │   ├── 00_RawData/metadata.csv
+    │   ├── 01_Segmented/metadata.csv
+    │   ├── masks/
+    │   └── calibration/metadata.csv
+    └── webcam/
+        ├── 00_RawData/metadata.csv
+        ├── 01_Segmented/metadata.csv
+        ├── masks/
+        └── calibration/metadata.csv
+```
+
+Image files sit under `specimen barcode/capture session/filename` within each
+folder (`legacy` is the session for old images). Every raw and segmented folder
+has its **own CSV**: `image_path` is relative to that folder, and `rel_path_*`
+columns are relative to the dataset root. Location codes come from `captures.csv`
+and remain text, including leading zeros. Both cameras share the same specimen
+identity. Source metadata and original paper splits are preserved.
+
+The script copies images without changing the source folders, reuses existing
+historical segmentations, and runs the two-stage rotated-square method from
+`segment/inference_coco.py` on both new camera datasets and missing historical
+segmentations. It saves the segmented RGB, a mask in original coordinates, and
+a mask aligned with the segmented RGB. Historical masks retain their original
+coordinates and are not presented as masks aligned with segmented RGB.
+Calibration photos are retained separately and excluded from segmentation.
+Only successful segmentations enter each `01_Segmented/metadata.csv`; failures
+remain visible in the global status CSV. CSVs refresh every 25 attempts and at
+exit; completed per-image records allow interruption and resume. A rerun retries
+failed images. Exit code 2 means some images still have failed segmentation.
+
+Useful commands:
+
+```bash
+make dataset-prepare                  # Copy and organize only; no model required
+make dataset-segment DEVICE=cuda:0    # Resume segmentation without copying again
+make dataset-segment DEVICE=cpu SEGMENT_LIMIT=10  # Small check of pending images
+make dataset DATASET_ROOT=/path/to/new/folder DEVICE=cuda:0
+```
+
+The full dataset needs approximately 60 GB for copied inputs and historical
+outputs, plus space for the new segmentations. The script reserves new gphoto2
+worms as external test and webcam worms for later evaluation in metadata; these
+commands perform dataset preparation only. They do not train, evaluate classifiers,
+delete experiments, or modify the saved 30-seed results.
+
+### Explore the dataset while segmentation runs
+
+Open [`notebooks/publication_dataset_overview.ipynb`](notebooks/publication_dataset_overview.ipynb)
+and select **Run All**. Its settings cell defaults to the combined dataset above;
+change `DATASET_ROOT` for a different location. Use the wormspecies Python kernel
+(pandas, numpy, matplotlib, Pillow and IPython are required).
+
+The notebook reads a single metadata snapshot and covers image versus individual
+counts, recorded taxa and life stages, locations, camera overlap, segmentation
+progress and failures, capture dates, specimen weights, original split checks,
+sampled image properties, mask overlays, and paired camera examples. It preserves
+leading zeros in location codes, excludes calibration photos from worm counts,
+and distinguishes pending images from failed segmentations. Every plotting cell
+is editable. Image checks use small samples so they can run during segmentation.
+It never writes into the dataset or changes the running job.
+
+Rerun all cells to refresh progress; the metadata is updated every 25 segmentation
+attempts. `make dataset-notebook` regenerates the notebook from its builder and
+replaces notebook edits and saved outputs, so use that command only when you want
+to reset it to the generated version.
+
+## Test the new dataset with all 30 saved baseline seeds on Genome
+
+This evaluates the saved **ConvNeXt Base, ViT-B/16 and ResNet-50** checkpoints:
+30 seeds per model (`40, 140, ..., 2940`), separately on **gphoto2 and webcam**.
+There are 90 GPU array tasks, each evaluating both cameras, for 180 evaluations.
+Each task requests one GPU; at most 12 tasks run concurrently. This performs
+inference only and writes into a separate `publication_external_2026` directory.
+
+First finish segmentation and transfer the combined dataset to Genome, preserving
+its directory structure. The required inputs are `metadata/images.csv` and all
+segmented images it references. The default Genome dataset location is
+`/faststorage/project/worm-species/publication_dataset`; override it below if needed.
+The original `publication_30seed_result/runs/baseline` tree must contain all 90
+completed runs, their `best_model.pt`, configs, class maps, and original-test
+prediction CSVs. Symlinked checkpoints must resolve on Genome.
+
+Run these commands **in the Genome terminal**, from the updated source checkout:
+
+```bash
+conda activate wormspecies
+make publication-test-plan \
+  EXTERNAL_DATASET=/faststorage/project/worm-species/publication_dataset \
+  PUBLICATION_RESULT=/faststorage/project/worm-species/source/publication_30seed_result
+make publication-test-submit \
+  EXTERNAL_DATASET=/faststorage/project/worm-species/publication_dataset \
+  PUBLICATION_RESULT=/faststorage/project/worm-species/source/publication_30seed_result
+```
+
+Adjust the two input paths to their actual locations on Genome. Planning validates
+the inputs, freezes the cohort and renders jobs without submitting. Submission
+queues the GPU array and a CPU report dependent on successful array completion.
+Jobs use the Python executable from the activated environment; set
+`EXTERNAL_PYTHON=/path/to/python` to choose it explicitly. The script preserves
+checkpoint preprocessing, task vocabularies and taxonomy uncertainty rules.
+It does not apply the training rare-class filter to new images.
+
+Pending segmentation blocks planning. Failed segmentations are listed explicitly
+in `cohorts/excluded.csv`; successful images from each camera form its cohort.
+Unknown or uncertain labels remain in predictions, with an exclusion reason for
+each unscored task. They can still be scored on other known tasks. Specimens
+overlapping the original paper splits block planning.
+
+Resource overrides include `EXTERNAL_CPUS=8`, `EXTERNAL_MEMORY=32G`,
+`EXTERNAL_TIME=02:00:00`, `EXTERNAL_BATCH_SIZE=64`, `EXTERNAL_WORKERS=6`, and
+`EXTERNAL_MAX_ACTIVE=12`. Account and GPU partition are set with
+`EXTERNAL_ACCOUNT` and `EXTERNAL_PARTITION`. The CPU report has independent
+`EXTERNAL_REPORT_CPUS`, `EXTERNAL_REPORT_MEMORY`, `EXTERNAL_REPORT_TIME` and
+optional `EXTERNAL_REPORT_PARTITION` settings.
+
+```bash
+make publication-test-status       # File completion, not live scheduler status
+make publication-test-report       # Regenerate report after all evaluations finish
+```
+
+To resume after jobs stop, rerun the same `publication-test-submit` command.
+It refuses to resubmit while recorded jobs remain active, submits only checkpoint
+indices with incomplete outputs, and skips completed cameras before loading a
+model or building its node cache. If all evaluations completed but reporting failed,
+submission queues only the CPU report. Checksummed per-camera completion records
+detect missing or changed outputs. A changed input snapshot requires a new
+`EXTERNAL_RESULT`; keep code and inputs fixed while jobs run.
+
+Each camera/model/seed directory contains predictions, metrics and confusion
+matrices for age, genus and species. The `summary/` directory contains per-seed
+metrics, means and 95% intervals across seeds, paired differences from each
+checkpoint's original test results, and confusion-matrix CSV/PNG/SVG/PDF files.
+Balanced accuracy and the checkpoint's `1/K` uniform-chance reference are included.
+Metrics are image-level; intervals describe variation across training seeds,
+not specimen sampling uncertainty. Camera cohorts include all their successful
+images and can differ in composition. The report never counts repeated seed
+evaluations as additional specimens.
+
+## Existing paper experiment commands
+
 This branch contains only the code, configuration, documentation, and focused
 tests reachable from the Genome paper pipeline:
 

@@ -1,4 +1,7 @@
 #codex
+/publication_dataset/
+/publication_external_*/
+/.venv-segmentation/
 
 *.codex
 *.agents
