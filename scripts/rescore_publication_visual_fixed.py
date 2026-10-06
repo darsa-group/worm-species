@@ -19,7 +19,7 @@ def rescore_visual(cfg,root):
     stages=['visual_ablation','visual_interactions','resolution_gapfill']
     required=set()
     for stage in stages[:2]:
-        definitions=yaml.safe_load((ROOT/'configs/training'/f'{stage}.yaml').read_text())['sweep']['conditions']
+        definitions=yaml.safe_load((ROOT/'configs/visual_conditions.yaml').read_text())[stage]
         seeds=json.loads((Path(cfg['reference_analysis'])/'plan.json').read_text())['runs']
         required|={(d['name'],r['seed']) for d in definitions for r in seeds if r['model']=='convnext_base'}
     for stage in stages:

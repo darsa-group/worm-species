@@ -1,6 +1,6 @@
 # Paper analysis
 
-A smaller branch for analysing the earthworm paper's results and running local inference from existing models. Neural-network training and cluster setup are omitted. The full reproduction package remains on `paper-oublish`.
+A smaller branch for analysing the earthworm paper's results and running local inference from existing models. Neural-network training and cluster setup are omitted. Frozen visual-scoring conditions are retained in `configs/visual_conditions.yaml`. The full reproduction package remains on `paper-oublish`.
 
 ## Run the analysis
 

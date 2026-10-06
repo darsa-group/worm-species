@@ -90,6 +90,17 @@ class ReproductionTests(unittest.TestCase):
         self.assertEqual(found,[('saved',Path('/saved/results/reference/seed_40')),
                                 ('csv_only',Path('/saved/csv/reference/seed_40'))])
 
+    def test_visual_scoring_definitions_are_available(self):
+        definitions=yaml.safe_load((ROOT/'configs/visual_conditions.yaml').read_text())
+        self.assertEqual(set(definitions),{'visual_ablation','visual_interactions'})
+        names=[c['name'] for items in definitions.values() for c in items]
+        self.assertEqual(len(names),len(set(names)))
+        self.assertTrue(any(c['transform']=='saturation' for c in definitions['visual_ablation']))
+        for c in definitions['visual_interactions']:
+            operations=c['parameters']['operations']
+            self.assertEqual(operations[0]['transform'],'gaussian_blur_percent')
+            self.assertIn(operations[1]['transform'],['patch_shuffle','saturation'])
+
     def test_all_command_has_no_neural_training_or_inference(self):
         text=(ROOT/'Makefile').read_text();recipe=text.split('\nall:\n',1)[1].split('\nplan:',1)[0]
         for term in ['training-submit','controls-submit','inference','features','dataset-segment']:

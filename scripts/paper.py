@@ -108,7 +108,7 @@ def freeze_analysis(cfg, root, stage):
     paths = [Path(cfg['reference_analysis'])/'plan.json', Path(cfg['reference_transfer'])/'plan.json',
              Path(cfg['dataset_root'])/'metadata/images.csv', Path(__file__),
              ROOT/'scripts/run_publication_deployment_audit.py', ROOT/'src/worm_species/deployment_audit.py',
-             ROOT/'scripts/rescore_publication_visual_fixed.py']
+             ROOT/'scripts/rescore_publication_visual_fixed.py', ROOT/'configs/visual_conditions.yaml']
     receipt = dict(config=cfg, sources={str(p):io.sha(p) for p in paths})
     receipt['identity'] = io.identity(receipt)
     if (root/'plan.json').exists() and json.loads((root/'plan.json').read_text()) != receipt:
