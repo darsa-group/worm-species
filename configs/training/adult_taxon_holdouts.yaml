@@ -1,0 +1,434 @@
+seed: 42
+wandb:
+  enabled: true
+  project: worm-species-paper
+  entity: null
+  group: publication-30seed-taxon-holdouts
+  name: null
+  mode: offline
+  job_type: train
+  tags:
+  - publication
+  - data-ablation
+  - combination-holdout
+  - 30-seed
+  - h0
+  save_code: false
+  log_model: false
+  compact: true
+  focused_metrics: true
+data:
+  root_dir: data/original
+  metadata_csv: data/original/01_Segmented/global_metadata.csv
+  colour_retention: 1.0
+  image_col: rel_path_seg
+  mask_col: rel_path_segmask
+  target_col: genus
+  group_col: barcode
+  strip_final_number_from_group: false
+  min_individuals_per_class: 3
+  crop_to_foreground: false
+  crop_pad: 0.15
+  image_size: 224
+  barcode_col: barcode
+  species_requires_binomial: true
+  target_cols:
+    genus: genus
+    species: species_label
+    age: life_stage
+  split_target_col: __taxon_for_split__
+  taxonomic_uncertainty:
+    uncertain_species_labels:
+    - Lumbricus_sp
+    - Aporrectodea_caliginosa_tuberculata
+    uncertain_species_patterns:
+    - (?:^|_)sp(?:$|_)
+    resolved_species_label_overrides:
+      Lumbricus_sp_terrestris_herculeus: Lumbricus_terrestris_herculeus
+    life_stage_overrides:
+      Lumbricus_sp_terrestris_herculeus: Adult
+  min_individuals_per_class_by_task:
+    genus: 3
+    species: 3
+    age: 3
+multi_task:
+  loss_weights:
+    genus: 1.0
+    species: 0.5
+    age: 2.0
+  hierarchy_loss:
+    enabled: false
+    parent_task: genus
+    child_task: species
+    weight: 0.0
+  normalize_loss_by_active_tasks: true
+  selection_metric: loss
+colour_ablation:
+  enabled: false
+  start_percent: 100
+  stop_percent: 0
+  step_percent: 1
+  combine_with_sweep: true
+early_stopping:
+  enabled: true
+  monitor: macro_f1
+  mode: min
+  patience: 6
+  min_delta: 0.0001
+split:
+  test_size: 0.2
+  val_size: 0.15
+  predefined_split_dir: data/splits
+  use_predefined_splits: true
+  save_splits: false
+model:
+  name: efficientnet_b0
+  pretrained: true
+  freeze_backbone: false
+training:
+  mode: multitask
+  use_masked_labels: true
+  epochs: 200
+  batch_size: 256
+  lr: 0.0003
+  weight_decay: 0.0001
+  use_amp: true
+  class_weight: true
+  num_workers: 6
+  val_interval: 1
+output:
+  out_dir: outputs/training/runs/adult_taxon_holdouts
+cache:
+  enabled: true
+  dir: outputs/cache/images
+  root_dir_cache: ../cache
+  format: png
+  rebuild: false
+  num_workers: 6
+  condition_variants:
+    enabled: true
+    protocol_version: 1
+    storage: torch_float32
+input_condition:
+  enabled: false
+  condition: original
+  feature: baseline
+  transform: original
+  strength: 0.0
+  name: original
+  parameters: {}
+test_cue_suppression:
+  enabled: false
+  saturation:
+    enabled: true
+    start: 1.0
+    stop: 0.0
+    step: 0.01
+  grayscale:
+    enabled: true
+  channel_shuffle:
+    enabled: true
+    orders:
+    - - 2
+      - 0
+      - 1
+  bilateral_filter:
+    enabled: true
+    settings:
+    - diameter: 5
+      sigma_colour: 25
+      sigma_space: 25
+    - diameter: 7
+      sigma_colour: 50
+      sigma_space: 50
+    - diameter: 9
+      sigma_colour: 100
+      sigma_space: 100
+  gaussian_blur:
+    enabled: true
+    sigmas:
+    - 0.5
+    - 1.0
+    - 2.0
+    - 4.0
+  patch_shuffle:
+    enabled: true
+    grid_sizes:
+    - 2
+    - 4
+    - 8
+    seed: 2026
+matched_condition_training:
+  enabled: false
+  include_original: true
+  deduplicate_equivalent_conditions: true
+  evaluate_original_model_on_all_test_conditions: true
+sweep:
+  enabled: true
+  parameters:
+    model.name:
+    - convnext_base
+    seed:
+    - 40
+    - 140
+    - 240
+    - 340
+    - 440
+    - 540
+    - 640
+    - 740
+    - 840
+    - 940
+    - 1040
+    - 1140
+    - 1240
+    - 1340
+    - 1440
+    - 1540
+    - 1640
+    - 1740
+    - 1840
+    - 1940
+    - 2040
+    - 2140
+    - 2240
+    - 2340
+    - 2440
+    - 2540
+    - 2640
+    - 2740
+    - 2840
+    - 2940
+    multi_task.loss_weights:
+    - genus: 1.0
+      species: 0.5
+      age: 2.0
+    multi_task.hierarchy_loss:
+    - enabled: false
+      parent_task: genus
+      child_task: species
+      weight: 0.0
+    data_holdout:
+    - enabled: true
+      name: adult_allolobophora_chlorotica
+      question: What is lost when Adult Allolobophora_chlorotica is absent from model
+        development?
+      remove_from:
+      - train
+      - validation
+      where: &id001
+        genus: Allolobophora
+        species: Allolobophora_chlorotica
+        age: Adult
+      evaluation_where: *id001
+      primary_tasks:
+      - genus
+      - species
+      - age
+    - enabled: true
+      name: adult_aporrectodea_caliginosa
+      question: What is lost when Adult Aporrectodea_caliginosa is absent from model
+        development?
+      remove_from:
+      - train
+      - validation
+      where: &id002
+        genus: Aporrectodea
+        species: Aporrectodea_caliginosa
+        age: Adult
+      evaluation_where: *id002
+      primary_tasks:
+      - genus
+      - species
+      - age
+    - enabled: true
+      name: adult_aporrectodea_longa
+      question: What is lost when Adult Aporrectodea_longa is absent from model development?
+      remove_from:
+      - train
+      - validation
+      where: &id003
+        genus: Aporrectodea
+        species: Aporrectodea_longa
+        age: Adult
+      evaluation_where: *id003
+      primary_tasks:
+      - genus
+      - species
+      - age
+    - enabled: true
+      name: adult_aporrectodea_rosea
+      question: What is lost when Adult Aporrectodea_rosea is absent from model development?
+      remove_from:
+      - train
+      - validation
+      where: &id004
+        genus: Aporrectodea
+        species: Aporrectodea_rosea
+        age: Adult
+      evaluation_where: *id004
+      primary_tasks:
+      - genus
+      - species
+      - age
+    - enabled: true
+      name: adult_aporrectodea_tuberculata
+      question: What is lost when Adult Aporrectodea_tuberculata is absent from model
+        development?
+      remove_from:
+      - train
+      - validation
+      where: &id005
+        genus: Aporrectodea
+        species: Aporrectodea_tuberculata
+        age: Adult
+      evaluation_where: *id005
+      primary_tasks:
+      - genus
+      - species
+      - age
+    - enabled: true
+      name: adult_lumbricus_castaneus
+      question: What is lost when Adult Lumbricus_castaneus is absent from model development?
+      remove_from:
+      - train
+      - validation
+      where: &id006
+        genus: Lumbricus
+        species: Lumbricus_castaneus
+        age: Adult
+      evaluation_where: *id006
+      primary_tasks:
+      - genus
+      - species
+      - age
+    - enabled: true
+      name: adult_lumbricus_festivus
+      question: What is lost when Adult Lumbricus_festivus is absent from model development?
+      remove_from:
+      - train
+      - validation
+      where: &id007
+        genus: Lumbricus
+        species: Lumbricus_festivus
+        age: Adult
+      evaluation_where: *id007
+      primary_tasks:
+      - genus
+      - species
+      - age
+    - enabled: true
+      name: adult_lumbricus_terrestris_herculeus
+      question: What is lost when Adult Lumbricus_terrestris_herculeus is absent from
+        model development?
+      remove_from:
+      - train
+      - validation
+      where: &id008
+        genus: Lumbricus
+        species: Lumbricus_terrestris_herculeus
+        age: Adult
+      evaluation_where: *id008
+      primary_tasks:
+      - genus
+      - species
+      - age
+    - enabled: true
+      name: juvenile_allolobophora_chlorotica
+      question: What is lost when Juvenile Allolobophora_chlorotica is absent from
+        model development?
+      remove_from:
+      - train
+      - validation
+      where: &id009
+        genus: Allolobophora
+        species: Allolobophora_chlorotica
+        age: Juvenile
+      evaluation_where: *id009
+      primary_tasks:
+      - genus
+      - species
+      - age
+    - enabled: true
+      name: juvenile_aporrectodea_longa
+      question: What is lost when Juvenile Aporrectodea_longa is absent from model
+        development?
+      remove_from:
+      - train
+      - validation
+      where: &id010
+        genus: Aporrectodea
+        species: Aporrectodea_longa
+        age: Juvenile
+      evaluation_where: *id010
+      primary_tasks:
+      - genus
+      - species
+      - age
+    - enabled: true
+      name: juvenile_aporrectodea_rosea
+      question: What is lost when Juvenile Aporrectodea_rosea is absent from model
+        development?
+      remove_from:
+      - train
+      - validation
+      where: &id011
+        genus: Aporrectodea
+        species: Aporrectodea_rosea
+        age: Juvenile
+      evaluation_where: *id011
+      primary_tasks:
+      - genus
+      - species
+      - age
+  conditions:
+  - name: original
+    feature: baseline
+    transform: original
+    strength: 0.0
+    parameters: {}
+condition_matrix_evaluation:
+  enabled: false
+  condition_names:
+  - original
+  write_reports: true
+preprocessing:
+  image_size: 224
+  normalisation:
+    enabled: true
+    mean:
+    - 0.485
+    - 0.456
+    - 0.406
+    std:
+    - 0.229
+    - 0.224
+    - 0.225
+augmentation:
+  enabled: true
+  horizontal_flip:
+    enabled: true
+    probability: 0.5
+  vertical_flip:
+    enabled: true
+    probability: 0.5
+  rotation:
+    enabled: true
+    degrees: 270
+evaluation:
+  test_conditions:
+    enabled: false
+    conditions: []
+    evaluate_original_training: false
+  condition_matrix:
+    enabled: false
+    conditions: []
+    write_reports: false
+    allow_training_condition_absent: true
+  data_holdout_controls:
+    enabled: false
+    definitions: []
+data_holdout:
+  enabled: false
+checkpointing:
+  save_last: false

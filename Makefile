@@ -12,7 +12,7 @@ DEVICE_ARG = $(if $(DEVICE),--device $(DEVICE),)
 .PHONY: help check test all plan inference features analysis adaptive supplement figures verify status controls-compile
 
 help:
-	@printf '%s\n' 'make test  - Check configuration and numerical tests' 'make all   - Analyse saved results and build tables/plots' 'Optional inference: make plan inference features' 'Overrides: PYTHON=... CONFIG=... DEVICE=cpu INDEX=0 STAGE=baseline'
+	@printf '%s\n' 'make test  - Check configuration and numerical tests' 'make all   - Analyse saved results and build tables/plots' 'Optional inference: make plan inference features' 'Optional training: make train-plan; make train EXPERIMENT=baseline INDEX=0; make train-all' 'Overrides: PYTHON=... CONFIG=... DEVICE=cpu INDEX=0 STAGE=baseline'
 check:
 	$(PAPER) check
 test: check
@@ -54,3 +54,16 @@ dataset-prepare:
 	$(PAPER) dataset-prepare
 dataset-segment:
 	$(PAPER) dataset-segment $(DEVICE_ARG)
+
+TRAIN_CONFIG ?= configs/train.yaml
+EXPERIMENT ?= all
+TRAIN = $(PYTHON) scripts/paper_training.py --config $(CONFIG) --training-config $(TRAIN_CONFIG)
+.PHONY: train-plan train train-all train-status
+train-plan:
+	$(TRAIN) plan $(DEVICE_ARG)
+train:
+	$(TRAIN) run --experiment $(EXPERIMENT) $(INDEX_ARG) $(DEVICE_ARG)
+train-all:
+	$(TRAIN) run $(DEVICE_ARG)
+train-status:
+	$(TRAIN) status --experiment $(EXPERIMENT) $(DEVICE_ARG)

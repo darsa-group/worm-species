@@ -1,6 +1,6 @@
-# Paper analysis
+# Paper training and analysis
 
-A smaller branch for analysing the earthworm paper's results and running local inference from existing models. Neural-network training and cluster setup are omitted. Frozen visual-scoring conditions are retained in `configs/visual_conditions.yaml`. The full reproduction package remains on `paper-oublish`.
+A portable branch for analysing the earthworm paper's results, running inference and optionally training new models. Cluster setup is omitted. Frozen visual-scoring conditions are retained in `configs/visual_conditions.yaml`. The full reproduction package remains on `paper-oublish`.
 
 ## Run the analysis
 
@@ -21,6 +21,19 @@ make all
 `make all` reads saved prediction CSVs, feature NPZs and completed biological-control results. It calculates F1, bootstrap intervals and calibration results, then creates tables and diagnostic plots in the configured output folders. It does not run neural-network training or image inference. Ridge, CORAL and PCA are fitted to saved features.
 
 Required inputs include the dataset manifest, original worm-level splits, inference/feature plans, baseline validation summaries, visual-experiment predictions and matched-control CSVs with their frozen configurations and completion receipts. **Images, model weights and result files are distributed separately.** See [docs/data_contract.md](docs/data_contract.md) for their layout.
+
+## Optional training
+
+Training uses a fresh output folder and produces the same checkpoint, prediction and receipt files consumed by the analysis:
+
+```bash
+make train-plan
+make train EXPERIMENT=baseline INDEX=0
+# Explicitly rerun the entire 2,640-fit grid:
+make train-all
+```
+
+Edit `configs/train.yaml` for resources and W&B tracking. [Training instructions](docs/training.md) explain the complete grid and how to analyse new runs using the generated `analysis.yaml`. `make all` remains analysis-only.
 
 ## Optional local inference
 

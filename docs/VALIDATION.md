@@ -1,12 +1,12 @@
 # Local validation
 
-Checked on 6 October 2026 using the existing `wormspecies` environment. This branch is for saved-result analysis and optional local inference; it does not provide neural-network training.
+Checked on 6 October 2026 using the existing `wormspecies` environment.
 
-- All 16 numerical/protocol tests passed. These check scoring, sampling, calibration algebra, whole-worm splits, nested subsets, input/output separation, local artifact discovery and the local command interface.
-- Python compilation and inference-module imports passed.
-- All 4,320 task-specific visual scores were rebuilt from local saved decisions; frozen scoring definitions remain in `configs/visual_conditions.yaml` without training setup.
-- `make all` dry-run contains analysis, adaptive-rank calibration, saved-control compilation, supplementary tables, plots and verification. It contains no neural-network training or image inference.
-- The analysis/calibration implementations are retained from `paper-oublish`. The parent package checked baseline summary values, task-specific visual scores, five-fold allocation, saved calibration decisions and paired biological-bootstrap contrasts against the reference outputs.
-- Training commands, scheduler modules, submission templates and cluster configuration were removed. The saved-control compiler reads the configured local result folder and preserves configuration/receipt validation.
+- All 20 tests passed: numerical/protocol checks plus frozen training counts, matching visual condition definitions, protected output paths, partial-fit handling and an actual one-epoch synthetic CPU fit.
+- The CPU fit used an unpretrained, frozen-backbone ResNet-18. Its saved checkpoint was reloaded strictly, predictions were obtained, and its saved probabilities passed the same biological-control validator used by the analysis. The control used reference-cohort individual class weights even after training worms were removed. This is an interface test, not a scientific experiment.
+- A full plan against the mounted prepared dataset produced 2,640 configurations: 90 architecture baselines, 840 visual conditions, 600 visual interactions, 30 biological references, 330 biological exclusions and 750 matched controls. No paper training fit was launched. Original partitions remain worm-disjoint. Control and downstream-analysis test-split hashes agree.
+- Representative existing best checkpoints were strictly loaded on CPU for all three baseline architectures and for visual, combined-visual, biological-exclusion and matched-control runs. Synthetic forward passes produced finite logits with the saved head sizes. This tests compatibility, not classification performance.
+- All 4,320 task-specific visual scores were previously rebuilt from local saved decisions. The frozen scoring definitions remain consistent with the restored training conditions.
+- `make all` remains saved-result analysis only; training is exposed separately through `train-plan`, `train`, `train-all` and `train-status`. No cluster configuration, submission templates or remote-login commands are included.
 
-The additional saved-result rerun could not proceed because the source archive at its configured mount was unavailable. No new scientific results are claimed. Full image inference, segmentation, a fresh dependency installation and a complete rerun of all 30-seed calibrations were not performed during this simplification. Images, checkpoints and saved result archives are separate inputs. Diagnostic plots are not a promise to reproduce the manuscript's arranged layout.
+Full publication-model training, full image inference/segmentation, an installation in a fresh environment, online W&B connectivity and a complete rerun of every 30-seed analysis were not performed in this update. Existing research results are preserved. Dataset, checkpoints and saved results are separate inputs; manuscript figures are supplied separately from the diagnostic plotting commands.

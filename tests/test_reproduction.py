@@ -79,10 +79,9 @@ class ReproductionTests(unittest.TestCase):
         for command in ['training-submit','controls-submit','controls-worker']:
             self.assertNotIn(command,help_text)
 
-    def test_no_cluster_or_training_entrypoints(self):
+    def test_no_cluster_entrypoints(self):
         for path in ['configs/genome.yaml','slurm','src/worm_species/slurm',
-                     'src/worm_species/training','scripts/run_ablation_pipeline.py',
-                     'scripts/run_publication_matched_controls.py']:
+                     'scripts/run_ablation_pipeline.py']:
             self.assertFalse((ROOT/path).exists(),path)
 
     def test_control_artifacts_use_configured_local_roots(self):

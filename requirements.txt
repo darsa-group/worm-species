@@ -13,3 +13,6 @@ tqdm
 # Install torch/torchvision as a matched pair for your CUDA runtime.
 torch>=2.3
 torchvision>=0.18
+
+# Optional online tracking; offline is the training default.
+wandb>=0.17
