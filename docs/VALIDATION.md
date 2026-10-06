@@ -2,7 +2,7 @@
 
 Checked on 6 October 2026 using the existing `wormspecies` environment.
 
-- All 20 tests passed: numerical/protocol checks plus frozen training counts, matching visual condition definitions, protected output paths, partial-fit handling and an actual one-epoch synthetic CPU fit.
+- All 21 tests passed: numerical/protocol checks plus frozen training counts, matching visual condition definitions, protected output paths, partial-fit handling, read-only control-plan staging and an actual one-epoch synthetic CPU fit.
 - The CPU fit used an unpretrained, frozen-backbone ResNet-18. Its saved checkpoint was reloaded strictly, predictions were obtained, and its saved probabilities passed the same biological-control validator used by the analysis. The control used reference-cohort individual class weights even after training worms were removed. This is an interface test, not a scientific experiment.
 - A full plan against the mounted prepared dataset produced 2,640 configurations: 90 architecture baselines, 840 visual conditions, 600 visual interactions, 30 biological references, 330 biological exclusions and 750 matched controls. No paper training fit was launched. Original partitions remain worm-disjoint. Control and downstream-analysis test-split hashes agree.
 - Representative existing best checkpoints were strictly loaded on CPU for all three baseline architectures and for visual, combined-visual, biological-exclusion and matched-control runs. Synthetic forward passes produced finite logits with the saved head sizes. This tests compatibility, not classification performance.

@@ -11,6 +11,7 @@ import torch
 import yaml
 
 from scripts import paper_training as train
+from scripts.paper import stage_control_plan
 from scripts import compile_received_publication_controls as compiler
 from worm_species.models.multitask import build_multitask_model
 
@@ -51,6 +52,17 @@ class TrainingTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError,'Partial fit'):
                 train.run_job(job)
             self.assertFalse((Path(d)/'training_complete.json').exists())
+
+    def test_control_compilation_preserves_frozen_input(self):
+        with tempfile.TemporaryDirectory() as d:
+            source=Path(d)/'input';output=Path(d)/'output'
+            for name in ['plan.json','conditions.csv','full_train.csv','metadata.csv','configs/full/a.json','splits/full/split_csv/test_split.csv']:
+                p=source/'training'/name;p.parent.mkdir(parents=True,exist_ok=True);p.write_text('frozen bytes')
+            stage_control_plan(source,output)
+            stage_control_plan(source,output)
+            target=output/'training/plan.json';target.write_text('changed')
+            with self.assertRaisesRegex(ValueError,'changed'):stage_control_plan(source,output)
+            self.assertEqual((source/'training/plan.json').read_text(),'frozen bytes')
 
     def test_cpu_checkpoint_predictions_and_control_scoring(self):
         torch.set_num_threads(2)

@@ -5,6 +5,7 @@ import argparse
 import json
 from pathlib import Path
 import subprocess
+import shutil
 import sys
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -48,6 +49,8 @@ def load_settings(path):
     for k, p in cfg['paths'].items():
         cfg['paths'][k] = str((ROOT / Path(p).expanduser()).resolve())
     inputs = [Path(cfg['paths'][k]) for k in ['dataset', 'original_data', 'splits', 'trained_results']]
+    if 'control_source' in cfg['paths']:
+        inputs.append(Path(cfg['paths']['control_source']))
     outputs = [Path(cfg['paths'][k]) for k in ['predictions', 'features', 'analysis', 'adaptive_analysis', 'controls']]
     for out in outputs:
         for src in inputs:
@@ -132,9 +135,26 @@ def run_analysis(cfg, stage, adaptive=False):
     io.save_json(root/f'{stage}_complete.json',dict(identity=identity,stage=stage))
 
 
+def stage_control_plan(source, output):
+    """Copy small frozen plan/config/split files before compiling read-only inputs."""
+    source, output = Path(source)/'training', Path(output)/'training'
+    files = [source/name for name in ['plan.json','conditions.csv','full_train.csv','metadata.csv']]
+    files += [p for name in ['configs','splits'] for p in (source/name).rglob('*') if p.is_file()]
+    for original in files:
+        target=output/original.relative_to(source)
+        if target.exists():
+            if io.sha(target)!=io.sha(original):
+                raise ValueError(f'Copied control plan changed: {target}; use a fresh output root')
+        else:
+            target.parent.mkdir(parents=True,exist_ok=True)
+            shutil.copy2(original,target)
+
+
 def compile_controls(cfg):
     from scripts import compile_received_publication_controls as compiler
     opts=analysis_settings(cfg);opts['output']=cfg['paths']['controls']
+    if cfg['paths'].get('control_source'):
+        stage_control_plan(cfg['paths']['control_source'],cfg['paths']['controls'])
     plan=json.loads((Path(opts['output'])/'training/plan.json').read_text())
     test=Path(cfg['paths']['splits'])/'test_split.csv'
     if io.sha(test)!=plan['source_splits']['test']: raise ValueError('Local test split differs from frozen training partition')

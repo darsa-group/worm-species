@@ -65,6 +65,8 @@ Calibration pairs averages of **all usable photographs within a worm and camera*
 
 ## Matched-removal controls and CSV-only return
 
+For a read-only release archive, set optional `paths.control_source` to its frozen control folder and `paths.controls` to a fresh output folder. Compilation copies only the small plan/config/split files before writing new summaries; it leaves the archived predictions and weights untouched.
+
 `paths.controls/training` contains the frozen `plan.json`, `conditions.csv`, `full_train.csv`, per-condition splits and per-job config JSONs. Preserve these JSON bytes when moving results: receipts compare configuration hashes. Put returned output directories under `paths.received_controls/<condition>/seed_<N>`.
 
 Each returned fit needs its `audit_complete.json` plus one run directory containing `test_predictions_best.csv`, `label_to_index_by_task.json` and `run_summary.json`. Include referenced logs if the completion receipt names them. Checkpoints are unnecessary for compiling saved decisions.
