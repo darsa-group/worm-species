@@ -7,7 +7,7 @@ import unittest
 import numpy as np
 import pandas as pd
 import yaml
-from scripts.paper import load_settings, analysis_settings, PROTOCOLS
+from scripts.paper import load_settings, analysis_settings, verify_feature_plan, PROTOCOLS
 from scripts.paired_bootstrap import paired_interval
 from scripts.compile_received_publication_controls import saved_directories
 from worm_species.domain_transfer import make_splits, make_trials
@@ -100,6 +100,15 @@ class ReproductionTests(unittest.TestCase):
             operations=c['parameters']['operations']
             self.assertEqual(operations[0]['transform'],'gaussian_blur_percent')
             self.assertIn(operations[1]['transform'],['patch_shuffle','saturation'])
+
+    def test_historical_plan_checks_only_retained_calibration_trials(self):
+        plan={'settings':{'directions':['webcam_to_gphoto2','gphoto2_to_webcam']},'trials':[
+            {'protocol':'global','fit':['A'],'test':['B']},
+            {'protocol':'within_individual','fit':['A'],'test':['A']}]}
+        verify_feature_plan(plan,'webcam_to_gphoto2')
+        plan['trials'][0]['test']=['A']
+        with self.assertRaisesRegex(ValueError,'leakage'):
+            verify_feature_plan(plan,'webcam_to_gphoto2')
 
     def test_all_command_has_no_neural_training_or_inference(self):
         text=(ROOT/'Makefile').read_text();recipe=text.split('\nall:\n',1)[1].split('\nplan:',1)[0]

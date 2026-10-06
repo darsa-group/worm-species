@@ -2,7 +2,7 @@
 
 Checked on 6 October 2026 using the existing `wormspecies` environment. This branch is for saved-result analysis and optional local inference; it does not provide neural-network training.
 
-- All 15 numerical/protocol tests passed. These check scoring, sampling, calibration algebra, whole-worm splits, nested subsets, input/output separation, local artifact discovery and the local command interface.
+- All 16 numerical/protocol tests passed. These check scoring, sampling, calibration algebra, whole-worm splits, nested subsets, input/output separation, local artifact discovery and the local command interface.
 - Python compilation and inference-module imports passed.
 - All 4,320 task-specific visual scores were rebuilt from local saved decisions; frozen scoring definitions remain in `configs/visual_conditions.yaml` without training setup.
 - `make all` dry-run contains analysis, adaptive-rank calibration, saved-control compilation, supplementary tables, plots and verification. It contains no neural-network training or image inference.

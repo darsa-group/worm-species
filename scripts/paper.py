@@ -144,6 +144,18 @@ def compile_controls(cfg):
     compiler.main()
 
 
+def verify_feature_plan(plan, direction):
+    """Check the retained trials in either current or historical feature plans."""
+    recorded = plan.get('direction')
+    if recorded is not None and recorded != direction:
+        raise ValueError('Wrong correction direction')
+    if recorded is None and direction not in plan.get('settings', {}).get('directions', []):
+        raise ValueError('Historical feature plan does not support the retained direction')
+    active = [t for t in plan['trials'] if t['protocol'] in PROTOCOLS]
+    if not active or any(set(t['fit']) & set(t['test']) for t in active):
+        raise ValueError('Calibration/test leakage or missing retained trials')
+
+
 def verify(cfg):
     base=json.loads((Path(cfg['paths']['predictions'])/'plan.json').read_text())
     if len(base['runs']) != 90 or 'rgb' not in base['settings']['inputs']: raise ValueError('Invalid baseline inference plan')
@@ -157,9 +169,13 @@ def verify(cfg):
         path=Path(cfg['paths'][key])/'tables/calibration_summary.csv'
         if not path.is_file():raise FileNotFoundError(path)
     plan=json.loads((Path(cfg['paths']['features'])/'plan.json').read_text())
-    if any(set(t['fit'])&set(t['test']) for t in plan['trials']): raise ValueError('Calibration/test leakage')
-    if plan['direction']!='webcam_to_gphoto2':raise ValueError('Wrong correction direction')
-    result=dict(inputs='RGB',direction=plan['direction'],biological_splits_disjoint=True,calibration_test_disjoint=True,
+    verify_feature_plan(plan,cfg['direction'])
+    for key in ['analysis','adaptive_analysis']:
+        for seed in cfg['seeds']:
+            path=Path(cfg['paths'][key])/'calibration'/f'seed_{seed}'/'predictions.csv.gz'
+            directions=set(pd.read_csv(path,usecols=['direction']).direction)
+            if directions != {cfg['direction']}:raise ValueError('Correction predictions have the wrong direction')
+    result=dict(inputs='RGB',direction=cfg['direction'],biological_splits_disjoint=True,calibration_test_disjoint=True,
                 runs=len(base['runs']),seeds=len(cfg['seeds']),folds=cfg['folds'])
     root=Path(cfg['paths']['analysis']);files=sorted((root/'tables').glob('*.csv'))
     io.save_json(root/'reproduction_receipt.json',dict(**result,table_sha256={p.name:io.sha(p) for p in files}))
