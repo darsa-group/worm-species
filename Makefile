@@ -9,10 +9,10 @@ INDEX_ARG = $(if $(INDEX),--index $(INDEX),)
 DEVICE_ARG = $(if $(DEVICE),--device $(DEVICE),)
 
 .DEFAULT_GOAL := help
-.PHONY: help check test all plan inference features analysis adaptive supplement figures verify status training-plan training-submit controls-plan controls-slurm-plan controls-submit controls-compile
+.PHONY: help check test all plan inference features analysis adaptive supplement figures verify status controls-compile
 
 help:
-	@printf '%s\n' 'Local: make check test | make plan inference features | make all' 'Saved CSV/NPZ only: make analysis adaptive controls-compile supplement figures verify' 'GenomeDK: make training-plan | make training-submit' 'Matched controls on GenomeDK: make controls-plan controls-slurm-plan | make controls-submit' 'Overrides: PYTHON=... CONFIG=... DEVICE=cpu INDEX=0 STAGE=baseline'
+	@printf '%s\n' 'make test  - Check configuration and numerical tests' 'make all   - Analyse saved results and build tables/plots' 'Optional inference: make plan inference features' 'Overrides: PYTHON=... CONFIG=... DEVICE=cpu INDEX=0 STAGE=baseline'
 check:
 	$(PAPER) check
 test: check
@@ -44,16 +44,6 @@ verify:
 	$(PAPER) verify
 status:
 	$(PAPER) status
-training-plan:
-	$(PAPER) training-plan
-training-submit:
-	$(PAPER) training-submit
-controls-plan:
-	$(PAPER) controls-plan
-controls-slurm-plan:
-	$(PAPER) controls-slurm-plan
-controls-submit:
-	$(PAPER) controls-submit
 controls-compile:
 	$(PAPER) controls-compile
 

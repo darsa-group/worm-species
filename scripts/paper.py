@@ -1,19 +1,14 @@
 #!/usr/bin/env python3
-"""Paper reproduction commands. Neural training is submitted explicitly to Slurm."""
+"""Local analysis and inference for the earthworm classification paper."""
 from __future__ import annotations
 import argparse
-import copy
-import hashlib
 import json
-import os
 from pathlib import Path
-import shlex
 import subprocess
 import sys
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(ROOT / 'src'), str(ROOT)]
-import numpy as np
 import pandas as pd
 import yaml
 from scripts import run_publication_external_test as io
@@ -81,8 +76,7 @@ def analysis_settings(cfg, adaptive=False):
                 seed=cfg['seed'], cpu_threads=cfg['resources']['cpu_threads'], bootstrap_repeats=cfg['bootstrap_repeats'],
                 alignment_rank=cfg['adaptive_max_rank'] if adaptive else cfg['alignment_rank'], adaptive_rank=adaptive,
                 ridge_alpha=cfg['ridge_alpha'], head_alpha=cfg['head_alpha'], calibration_sizes=cfg['calibration_sizes'],
-                training_control_repeats=cfg['training_control_repeats'], training_batch_size=cfg['training_batch_size'],
-                wandb=cfg['wandb'])
+                training_control_repeats=cfg['training_control_repeats'])
 
 
 def transfer_plan(cfg, base):
@@ -138,81 +132,6 @@ def run_analysis(cfg, stage, adaptive=False):
     io.save_json(root/f'{stage}_complete.json',dict(identity=identity,stage=stage))
 
 
-def training_plan(cfg, submit=False):
-    output=Path(cfg['paths']['trained_results']);runtime=output/'configuration';runtime.mkdir(parents=True,exist_ok=True)
-    stages=[]
-    for source in sorted((ROOT/'configs/training').glob('*.yaml')):
-        if source.stem=='resolution_gapfill':continue  # Recovery subset, already included in visual_ablation.
-        c=yaml.safe_load(source.read_text())
-        c['data'].update(root_dir=cfg['paths']['original_data'],metadata_csv=str(Path(cfg['paths']['original_data'])/'01_Segmented/global_metadata.csv'))
-        c['split']['predefined_split_dir']=str(Path(cfg['paths']['splits']).parent)
-        # The historical loader looks for predefined_split_dir/split_csv. Supply
-        # that layout explicitly rather than silently creating new random splits.
-        if Path(cfg['paths']['splits']).name != 'split_csv':
-            raise ValueError('Set paths.splits to a directory named split_csv containing the original partitions')
-        c['output']['out_dir']=str(output/'runs'/source.stem)
-        c['cache']['dir']=str(output/'image_cache')
-        c['wandb'].update(mode=cfg['wandb']['mode'],project=cfg['wandb']['project'])
-        target=runtime/source.name;target.write_text(yaml.safe_dump(c,sort_keys=False))
-        stages.append({'name':source.stem,'config':str(target)})
-    # Baseline must be first: it establishes the shared image cache.
-    stages.sort(key=lambda s:(s['name']!='baseline',s['name']))
-    cluster=yaml.safe_load((ROOT/'configs/genome.yaml').read_text())
-    cluster['slurm']['paths'].update(project_root=str(ROOT),data_root=cfg['paths']['original_data'],
-        metadata_csv=str(Path(cfg['paths']['original_data'])/'01_Segmented/global_metadata.csv'),
-        results_root=str(output),cache_root=str(output/'image_cache'))
-    cluster_path=runtime/'genome.yaml';cluster_path.write_text(yaml.safe_dump(cluster,sort_keys=False))
-    pipeline=dict(name='paper-reproduction',cluster_config=str(cluster_path),paper_result_dir=str(output),
-        dependency='afterok',required_hierarchy_loss_weights=[0.0],
-        base_cache=dict(enabled=True,source_stage='baseline',directory_name='image_cache',cpus_per_task=8,memory='16G',time_limit='04:00:00'),
-        condition_cache=dict(enabled=True,source_stages=['visual_ablation','visual_interactions'],
-            consumer_stages=['visual_ablation','visual_interactions'],directory_name='condition_cache',
-            transforms=['gaussian_blur_percent','patch_shuffle','resolution_loss','binary_mask','composed'],
-            cpus_per_task=8,memory='64G',time_limit='04:00:00',max_active=12),stages=stages,report=dict(enabled=False))
-    path=runtime/'pipeline.yaml';path.write_text(yaml.safe_dump(pipeline,sort_keys=False))
-    argv=[sys.executable,str(ROOT/'scripts/run_ablation_pipeline.py'),'--pipeline',str(path),'--mode','submit' if submit else 'dry-run']
-    subprocess.run(argv,cwd=ROOT,check=True)
-
-
-def controls_slurm(cfg, submit=False):
-    root=Path(cfg['paths']['controls']);plan=json.loads((root/'training/plan.json').read_text())
-    cluster=yaml.safe_load((ROOT/'configs/genome.yaml').read_text())['slurm'];root.mkdir(parents=True,exist_ok=True)
-    logs=root/'logs';logs.mkdir(exist_ok=True)
-    job=root/'training/controls.sbatch'
-    # Command operands are shell-quoted; resource directives are config values.
-    for key in ['account','partition','time_limit','memory','cpus_per_task','gpus_per_task']:
-        if '\n' in str(cluster[key]): raise ValueError('Invalid Slurm resource directive')
-    text=f'''#!/bin/bash
-#SBATCH --job-name=worm-paper-controls
-#SBATCH --account={cluster['account']}
-#SBATCH --partition={cluster['partition']}
-#SBATCH --cpus-per-task={cluster['cpus_per_task']}
-#SBATCH --mem={cluster['memory']}
-#SBATCH --time={cluster['time_limit']}
-#SBATCH --gres=gpu:{cluster['gpus_per_task']}
-#SBATCH --array=0-{len(plan['jobs'])-1}%{cluster['array']['max_active']}
-#SBATCH --output={logs}/%A_%a.log
-set -euo pipefail
-cd {shlex.quote(str(ROOT))}
-'''
-    # Expand HOME in a controlled Python path operation rather than quoting an
-    # unexpanded shell placeholder. Environment name is always shell-quoted.
-    conda_sh=os.path.expandvars(cluster['environment']['conda_sh'])
-    text += 'source '+shlex.quote(conda_sh)+'\nconda activate '+shlex.quote(cluster['environment']['conda_env'])+'\n'
-    text += f'export WORM_AUDIT_CPU_THREADS={int(cluster["cpus_per_task"])}\n'
-    text += shlex.join(['python',str(ROOT/'scripts/paper.py'),'controls-worker','--config',str(cfg['_config_file'])])+' --index "$SLURM_ARRAY_TASK_ID"\n'
-    job.write_text(text)
-    print(f'Rendered {job}: {len(plan["jobs"])} fits; no training executed')
-    if submit:
-        if not subprocess.run(['which','sbatch'],capture_output=True).returncode==0:
-            raise RuntimeError('Run training submission from the GenomeDK terminal')
-        receipt=root/'training/submission.json'
-        if receipt.exists(): raise ValueError('Submission receipt already exists; inspect jobs before resubmitting')
-        result=subprocess.run(['sbatch','--parsable',str(job)],check=True,text=True,capture_output=True)
-        io.save_json(receipt,dict(job_id=result.stdout.strip(),script_sha256=io.sha(job),plan_sha256=io.sha(root/'training/plan.json')))
-        print(result.stdout.strip())
-
-
 def compile_controls(cfg):
     from scripts import compile_received_publication_controls as compiler
     opts=analysis_settings(cfg);opts['output']=cfg['paths']['controls']
@@ -249,11 +168,11 @@ def verify(cfg):
 
 def main():
     commands=['check','plan','inference','features','analysis','adaptive','supplement','figures','verify','status',
-              'dataset-plan','dataset-prepare','dataset-segment','training-plan','training-submit','controls-plan','controls-slurm-plan','controls-submit','controls-worker','controls-compile']
+              'dataset-plan','dataset-prepare','dataset-segment','controls-compile']
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('command',choices=commands)
     parser.add_argument('--config',default=ROOT/'configs/paper.yaml',type=Path)
-    parser.add_argument('--index',type=int,help='One checkpoint or controls-array index; omit to run all inference checkpoints')
+    parser.add_argument('--index',type=int,help='One checkpoint index; omit to run all inference checkpoints')
     parser.add_argument('--stage',choices=['all','baseline','segmentation','visual','calibration'],default='all')
     parser.add_argument('--device',help='Runtime inference override, for example cpu or cuda:0')
     args=parser.parse_args();cfg=load_settings(args.config);cfg['_config_file']=str(args.config.resolve())
@@ -268,19 +187,8 @@ def main():
               '--model',str((ROOT/acquisition['segmentation_checkpoint']).resolve()),'--device',cfg['resources']['device'],
               '--threads',str(cfg['resources']['cpu_threads'])]
         subprocess.run(argv,cwd=ROOT,check=True);return
-    if args.command in ['training-plan','training-submit']:
-        training_plan(cfg,args.command=='training-submit');return
-    if args.command.startswith('controls-'):
-        from scripts import run_publication_matched_controls as controls
-        root=Path(cfg['paths']['controls']);root.mkdir(parents=True,exist_ok=True)
-        opts=analysis_settings(cfg);opts['output']=str(root)
-        if args.command=='controls-plan':controls.prepare(opts,root)
-        elif args.command in ['controls-slurm-plan','controls-submit']:controls_slurm(cfg,args.command=='controls-submit')
-        elif args.command=='controls-compile':compile_controls(cfg)
-        else:
-            if args.index is None:raise ValueError('controls-worker requires --index')
-            plan=json.loads((root/'training/plan.json').read_text());controls.worker(plan['jobs'][args.index]['config'])
-        return
+    if args.command=='controls-compile':
+        compile_controls(cfg);return
     if args.command=='plan':
         base=inference.make_plan(inference_settings(cfg));transfer_plan(cfg,base);return
     if args.command in ['inference','features','status']:

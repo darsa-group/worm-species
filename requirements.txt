@@ -10,7 +10,6 @@ umap-learn>=0.5
 numba
 llvmlite
 tqdm
-wandb
 # Install torch/torchvision as a matched pair for your CUDA runtime.
 torch>=2.3
 torchvision>=0.18

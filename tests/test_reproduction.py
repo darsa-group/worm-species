@@ -1,18 +1,15 @@
 """Portable guards and scientific split checks using small synthetic inputs."""
-from contextlib import redirect_stdout
-import copy
-import io
-import json
 from pathlib import Path
 import tempfile
+import subprocess
+import sys
 import unittest
-from unittest.mock import patch
 import numpy as np
 import pandas as pd
 import yaml
-from scripts.paper import load_settings, PROTOCOLS
+from scripts.paper import load_settings, analysis_settings, PROTOCOLS
 from scripts.paired_bootstrap import paired_interval
-from scripts.run_publication_matched_controls import worker
+from scripts.compile_received_publication_controls import saved_directories
 from worm_species.domain_transfer import make_splits, make_trials
 
 ROOT=Path(__file__).resolve().parents[1]
@@ -72,22 +69,26 @@ class ReproductionTests(unittest.TestCase):
         mean,ci,_=paired_interval(truth,p,0,['A','A','B','B'],100,8)
         self.assertEqual(mean,0);np.testing.assert_array_equal(ci,[0,0])
 
-    def test_training_worker_refuses_local_execution(self):
-        with patch.dict('os.environ',{},clear=True):
-            with self.assertRaisesRegex(RuntimeError,'Slurm'):
-                worker(Path('/nonexistent/config.json'))
+    def test_local_settings_and_cli(self):
+        cfg=self.config()
+        self.assertEqual(analysis_settings(cfg)['alignment_rank'],8)
+        self.assertEqual(analysis_settings(cfg,True)['alignment_rank'],32)
+        help_text=subprocess.run([sys.executable,str(ROOT/'scripts/paper.py'),'--help'],
+                                 check=True,capture_output=True,text=True).stdout
+        self.assertIn('controls-compile',help_text)
+        for command in ['training-submit','controls-submit','controls-worker']:
+            self.assertNotIn(command,help_text)
 
-    def test_configs_preserve_the_original_visual_intervention(self):
-        cfg=yaml.safe_load((ROOT/'configs/training/visual_interactions.yaml').read_text())
-        conditions=cfg['sweep']['conditions']
-        self.assertTrue(conditions)
-        for c in conditions:
-            self.assertEqual(c['transform'],'composed')
-            operations=c['parameters']['operations']
-            self.assertEqual(operations[0]['transform'],'gaussian_blur_percent')
-            self.assertIn(operations[1]['transform'],['patch_shuffle','saturation'])
-        self.assertEqual(cfg['preprocessing']['image_size'],224)
-        self.assertEqual(cfg['sweep']['parameters']['seed'],list(range(40,2941,100)))
+    def test_no_cluster_or_training_entrypoints(self):
+        for path in ['configs/genome.yaml','slurm','src/worm_species/slurm',
+                     'src/worm_species/training','scripts/run_ablation_pipeline.py',
+                     'scripts/run_publication_matched_controls.py']:
+            self.assertFalse((ROOT/path).exists(),path)
+
+    def test_control_artifacts_use_configured_local_roots(self):
+        found=saved_directories('/saved/results','/saved/csv',{'condition':'reference','seed':40})
+        self.assertEqual(found,[('saved',Path('/saved/results/reference/seed_40')),
+                                ('csv_only',Path('/saved/csv/reference/seed_40'))])
 
     def test_all_command_has_no_neural_training_or_inference(self):
         text=(ROOT/'Makefile').read_text();recipe=text.split('\nall:\n',1)[1].split('\nplan:',1)[0]

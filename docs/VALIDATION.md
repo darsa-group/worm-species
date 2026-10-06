@@ -1,24 +1,11 @@
-# Validation of the reproduction branch
+# Local validation
 
-Checked locally on 6 October 2026 in the existing `wormspecies` environment. Generated verification outputs were stored separately under `/tmp`; the original manuscript, training runs and result directories were not rewritten.
+Checked on 6 October 2026 using the existing `wormspecies` environment. This branch is for saved-result analysis and optional local inference; it does not provide neural-network training.
 
-## Executed
+- All 14 numerical/protocol tests passed. These check scoring, sampling, calibration algebra, whole-worm splits, nested subsets, input/output separation, local artifact discovery and the local command interface.
+- Python compilation and inference-module imports passed.
+- `make all` dry-run contains analysis, adaptive-rank calibration, saved-control compilation, supplementary tables, plots and verification. It contains no neural-network training or image inference.
+- The analysis/calibration implementations are retained from `paper-oublish`. The parent package checked baseline summary values, task-specific visual scores, five-fold allocation, saved calibration decisions and paired biological-bootstrap contrasts against the reference outputs.
+- Training commands, scheduler modules, submission templates and cluster configuration were removed. The saved-control compiler reads the configured local result folder and preserves configuration/receipt validation.
 
-- Configuration validation and 13 numerical/protocol tests: passed. Tests cover fixed scoring with out-of-cohort predictions and abstentions, whole-worm bootstrap behaviour, correction/head algebra, view aggregation, matched training subsets, five-fold independence, nested calibration subsets, input/output separation, visual intervention order, exclusion guards and refusal of local matched-control training.
-- Python compilation for all included modules: passed.
-- Make dry run: `make all` contains saved-artifact analysis, calibration, CSV compilation, supplementary tables, diagnostic plotting and verification; no neural training or inference.
-- CPU baseline rescoring: all **54** external-performance summary rows matched the authoritative saved analysis exactly, including point estimates and sampling intervals.
-- Original visual rescoring: all **4,320** task-specific condition/seed F1 values matched the frozen analysis exactly, without using manuscript/poster files.
-- Five-fold reconstruction: all worm allocations matched the authoritative calibration plan. The primary global calibration/test sets matched as well.
-- Fixed-rank mapping check: held-out decisions for **15** task/method combinations (five feature methods × three tasks), seed 40, global fold 0, matched saved decisions exactly. No neural checkpoint was loaded.
-- CSV-only matched-control compiler: validated all **750** completed fits using prediction CSVs, class maps, configuration hashes and completion receipts, without loading checkpoints.
-- Paired whole-worm bootstrap: all **36** biological contrasts, their sampling intervals and seed SDs matched the manuscript's frozen table within numerical tolerance.
-- Historical training pipeline dry run: rendered the five complete experiment stages and required image/condition-cache jobs. The recovery-only resolution subset was not duplicated. No `sbatch` submission occurred. Rendered shell syntax was checked.
-
-## Not executed as part of packaging
-
-No neural-network training, CUDA inference, physical-camera acquisition, live Slurm submission, new segmentation, complete rerun of every calibration fit, or fresh dependency installation was performed. These require the external archives/checkpoints and appropriate runtime. The scientific calibration core was checked against saved held-out outcomes; it was not re-estimated for all 30 seeds during packaging.
-
-The new figure runner is a diagnostic CSV-based presentation, not a pixel-identical export of the manuscript's composed layouts. PCA/UMAP figures are qualitative and do not establish quantitative recovery. Their parameter and coordinate files are exported separately.
-
-The code/config package does not replace the required data/checkpoint release, missing acquisition records, or manual image/mask review. Dataset/code reuse licences and archive access remain separate release decisions.
+The additional saved-result rerun could not proceed because the source archive at its configured mount was unavailable. No new scientific results are claimed. Full image inference, segmentation, a fresh dependency installation and a complete rerun of all 30-seed calibrations were not performed during this simplification. Images, checkpoints and saved result archives are separate inputs. Diagnostic plots are not a promise to reproduce the manuscript's arranged layout.

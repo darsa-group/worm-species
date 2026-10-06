@@ -3,7 +3,7 @@ paths:
   dataset: data/publication_dataset
   original_data: data/original
   splits: data/split_csv
-  trained_results: outputs/training
+  trained_results: outputs/training  # Completed training artifacts: input only.
   predictions: outputs/inference
   features: outputs/features
   analysis: outputs/analysis
@@ -35,15 +35,11 @@ bootstrap_repeats: 2000
 chance_repeats: 10000
 view_repeats: 10
 training_control_repeats: 3
-training_batch_size: 16
 resources:
   device: cuda:0
   batch_size: 32
   workers: 2
   cpu_threads: 8
-wandb:
-  mode: offline
-  project: worm-species-paper
 # Optional rebuilding of the prepared dataset from both acquisition archives.
 acquisition:
   new_captures: data/captures_2026

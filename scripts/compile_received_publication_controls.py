@@ -50,7 +50,7 @@ def validate_predictions(job, config, source):
         raise ValueError('Saved summary/labels disagree with receipt/config')
     log_record = receipt.get('runtime_log')
     if receipt.get('runtime_path_mapping') and not log_record:
-        raise ValueError('Genome completion log not finalised')
+        raise ValueError('Completion log not finalised')
     sources = [receipt_path, prediction_path, summary_path, map_path, Path(job['config'])]
     if log_record:
         relative = Path(log_record['path'])
@@ -130,9 +130,15 @@ def plot_excess_loss(summary, out, complete):
     fig.savefig(out / 'coverage_excess_loss.png', dpi=180); plt.close(fig)
 
 
+def saved_directories(result_root, csv_root, job):
+    """Only inspect the explicitly supplied local artifact folders."""
+    suffix = Path(job['condition']) / f"seed_{job['seed']}"
+    return [('saved', Path(result_root) / suffix), ('csv_only', Path(csv_root) / suffix)]
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--config', default='dev/publication_deployment_audit_v2.yaml')
+    parser.add_argument('--config', required=True)
     parser.add_argument('--csv-root', type=Path, help='Separate CSV-only download directory; default: output/csv_only/runs')
     args = parser.parse_args()
     cfg = yaml.safe_load(Path(args.config).read_text())
@@ -142,7 +148,6 @@ def main():
     out = root / 'received_csv_summary' / stamp
     out.mkdir(parents=True)
     final = Path(cfg['training_run_root'])
-    stage = final.parent / 'genome_download/runs'
     csv_root = args.csv_root or root / 'csv_only/runs'
     # Freeze the candidate list before scoring; newly arriving files wait for rerun.
     candidates = []
@@ -152,9 +157,7 @@ def main():
             config_path=root/'training/configs'/job['condition']/f"seed_{job['seed']}.json"
         job=dict(job,config=str(config_path))
         config = read(config_path)
-        for origin, directory in [('final', Path(config['output']['out_dir'])),
-                                  ('csv_only', csv_root / job['condition'] / f"seed_{job['seed']}"),
-                                  ('staging', stage / job['condition'] / f"seed_{job['seed']}")]:
+        for origin, directory in saved_directories(final, csv_root, job):
             if (directory / 'audit_complete.json').is_file():
                 candidates.append((job, config, origin, directory))
     units, inventory, sources, accepted = [], [], {}, set()
