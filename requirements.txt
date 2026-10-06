@@ -1,0 +1,16 @@
+numpy>=1.24
+pandas>=2.0
+scipy>=1.10
+scikit-learn>=1.4
+Pillow>=10
+PyYAML>=6
+matplotlib>=3.8
+threadpoolctl>=3
+umap-learn>=0.5
+numba
+llvmlite
+tqdm
+wandb
+# Install torch/torchvision as a matched pair for your CUDA runtime.
+torch>=2.3
+torchvision>=0.18

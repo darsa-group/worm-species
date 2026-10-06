@@ -1,0 +1,50 @@
+# Paths resolve against the repository root; change only this paths block.
+paths:
+  dataset: data/publication_dataset
+  original_data: data/original
+  splits: data/split_csv
+  trained_results: outputs/training
+  predictions: outputs/inference
+  features: outputs/features
+  analysis: outputs/analysis
+  adaptive_analysis: outputs/adaptive_analysis
+  controls: outputs/controls
+  received_controls: outputs/controls/training/runs
+  control_summary: outputs/controls/received_csv_summary/latest.json
+seed: 2026
+seeds: [40, 140, 240, 340, 440, 540, 640, 740, 840, 940, 1040, 1140, 1240, 1340, 1440, 1540, 1640, 1740, 1840, 1940, 2040, 2140, 2240, 2340, 2440, 2540, 2640, 2740, 2840, 2940]
+models: [convnext_base, vit_b_16, resnet50]
+external_inputs: [rgb]
+direction: webcam_to_gphoto2
+common_species_indices: [0, 1, 2, 3, 4, 7]
+folds: 5
+methods: [none, mean_shift, coral, paired_ridge, procrustes, head_ridge]
+umap:
+  n_neighbors: 15
+  min_dist: 0.1
+  metric: cosine
+  random_state: 2026
+projection_fold: 0
+alignment_rank: 8
+adaptive_max_rank: 32
+ridge_alpha: 0.1
+head_alpha: 1.0
+calibration_sizes: [5, 10, 20, 50, 100, all]
+calibration_repeats: 3
+bootstrap_repeats: 2000
+chance_repeats: 10000
+view_repeats: 10
+training_control_repeats: 3
+training_batch_size: 16
+resources:
+  device: cuda:0
+  batch_size: 32
+  workers: 2
+  cpu_threads: 8
+wandb:
+  mode: offline
+  project: worm-species-paper
+# Optional rebuilding of the prepared dataset from both acquisition archives.
+acquisition:
+  new_captures: data/captures_2026
+  segmentation_checkpoint: data/checkpoints/segmentation.pt
