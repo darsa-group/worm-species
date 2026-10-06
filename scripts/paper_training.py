@@ -144,6 +144,8 @@ def prepare(cfg, train, root):
             config_sha256=job['config_sha256'], output=config['output']['out_dir']))
     save(control_root/'training/plan.json', control_plan)
     analysis = copy.deepcopy(cfg)
+    # New control plans belong to this run; do not import a release archive's plans.
+    analysis['paths'].pop('control_source',None)
     analysis['paths'].update(trained_results=str(root/'reference'), splits=str(root/'splits/split_csv'),
         predictions=str(root/'inference'), features=str(root/'features'), analysis=str(root/'analysis'),
         adaptive_analysis=str(root/'adaptive_analysis'), controls=str(control_root),
