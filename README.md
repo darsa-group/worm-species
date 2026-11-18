@@ -81,8 +81,5 @@ The full plan contains 2,640 classifier fits across the baseline, visual-informa
 
 The supplied ConvNeXt checkpoint is one fitted model. Reproducing the comparisons requires training the remaining fits. See `docs/training.md` for individual stages and output files, and `docs/data_contract.md` for the input formats.
 
-Retraining the segmentation model requires the original human-annotated YOLO data and training split, which are outside the image release. `scripts/train_segmentation.py` contains the training recipe. Model-generated masks are not independent training annotations.
+Retraining the segmentation model requires the original human-annotated YOLO data and training split, which are outside the image release. `scripts/train_segmentation.py` contains the training recipe. 
 
-## Licence and citation
-
-Original code uses MIT. Third-party terms are listed in `THIRD_PARTY_NOTICES.md`, including Ultralytics AGPL-3.0, torchvision BSD and Tabler MIT. The Zenodo records state the data and model licences. Cite both records and the versioned code release when using this work.
