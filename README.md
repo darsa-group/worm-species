@@ -1,5 +1,7 @@
 # Earthworm image classification
 
+[![DOI](https://zenodo.org/badge/1285945911.svg)](https://doi.org/10.5281/zenodo.24342603)
+
 Code for segmenting earthworm photographs, training classifiers and reproducing the analyses in the paper. The classifiers predict developmental stage, genus and species from segmented images.
 
 | Resource | Link |
