@@ -1,13 +1,11 @@
 .gitignore
 LICENSE
 Makefile
-Makefile.research
 README.md
 RELEASE_NOTES.md
 SHA256SUMS
 SOURCE_MANIFEST.csv
 THIRD_PARTY_NOTICES.md
-ZENODO_UPLOAD_CHECKLIST_2026-11-18.md
 assets/tabler/LICENSE
 assets/tabler/README.md
 assets/tabler/adjustments-horizontal.svg
@@ -40,15 +38,8 @@ configs/training/visual_interactions.yaml
 configs/visual_conditions.yaml
 docs/PUBLISHING.md
 docs/RELEASE_FREEZE.md
-docs/RESEARCH_WORKSPACE.md
-docs/VALIDATION.md
 docs/data_contract.md
-docs/experiments.csv
-docs/figure_source_provenance.json
-docs/result_parity.json
-docs/tested_environment.txt
 docs/training.md
-docs/validation.json
 environment.yml
 licenses/TORCHVISION-BSD.txt
 licenses/ULTRALYTICS-AGPL-3.0.txt
@@ -69,7 +60,6 @@ scripts/publication_figures.py
 scripts/publication_layouts.py
 scripts/release.py
 scripts/release_analysis.py
-scripts/release_build_dataset.py
 scripts/release_calibration_donors.py
 scripts/release_compile_controls.py
 scripts/release_dataset.py

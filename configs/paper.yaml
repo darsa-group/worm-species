@@ -41,7 +41,3 @@ resources:
   batch_size: 32
   workers: 2
   cpu_threads: 8
-# Optional rebuilding of the prepared dataset from both acquisition archives.
-acquisition:
-  new_captures: data/captures_2026
-  segmentation_checkpoint: data/checkpoints/segmentation.pt

@@ -5,7 +5,6 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
-import subprocess
 import shutil
 import sys
 
@@ -383,9 +382,6 @@ def main():
         "figures",
         "verify",
         "status",
-        "dataset-plan",
-        "dataset-prepare",
-        "dataset-segment",
         "controls-compile",
     ]
     parser = argparse.ArgumentParser(description=__doc__)
@@ -413,30 +409,6 @@ def main():
         print(
             "Configuration valid: RGB, USB-to-Canon, five folds, fixed rank 8, 30 seeds; no data/model execution."
         )
-        return
-    if args.command.startswith("dataset-"):
-        acquisition = cfg["acquisition"]
-        argv = [
-            sys.executable,
-            str(ROOT / "scripts/release_build_dataset.py"),
-            "--mode",
-            args.command.split("-", 1)[1],
-            "--old-root",
-            cfg["paths"]["original_data"],
-            "--new-root",
-            str((ROOT / acquisition["new_captures"]).resolve()),
-            "--split-root",
-            cfg["paths"]["splits"],
-            "--output",
-            cfg["paths"]["dataset"],
-            "--model",
-            str((ROOT / acquisition["segmentation_checkpoint"]).resolve()),
-            "--device",
-            cfg["resources"]["device"],
-            "--threads",
-            str(cfg["resources"]["cpu_threads"]),
-        ]
-        subprocess.run(argv, cwd=ROOT, check=True)
         return
     if args.command == "controls-compile":
         compile_controls(cfg)

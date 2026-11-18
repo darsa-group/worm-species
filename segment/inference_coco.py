@@ -376,13 +376,3 @@ def mirror_and_process(src_root: str, dst_root: str, model):
         print(f"[INFO] Wrote COCO annotations: {ann_path}")
     except Exception as e:
         print(f"[ERROR] Could not write COCO JSON: {e}")
-
-if __name__ == "__main__":
-    from ultralytics import YOLO
-    SRC_ROOT = "/home/quentin/erda-home/Earthworms/petridish-worm-images/00_RawData"
-    DST_ROOT = "/home/quentin/erda-home/Earthworms/petridish-worm-images/01_Segmented"
-    MODEL_PATH = "runs/segment/train_2025-09-29/weights/best.pt"
-
-    model = YOLO(MODEL_PATH)
-    model.to("cuda:0")
-    mirror_and_process(SRC_ROOT, DST_ROOT, model)

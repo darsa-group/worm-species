@@ -1,8 +1,5 @@
 #!/usr/bin/env python3
-"""Frozen training plans with the artifact contracts consumed by scripts/paper.py.
-
-No scheduler or remote-service dependency. All new fits have a separate root.
-"""
+"""Prepare the study's training runs from the original splits and settings."""
 
 from __future__ import annotations
 import argparse
@@ -153,6 +150,7 @@ def prepare(cfg, train, root):
             config["data"].update(
                 root_dir=cfg["paths"]["dataset"], metadata_csv=str(metadata)
             )
+            # Reuse the paper splits. A new seed changes the fit, not the test worms.
             config["split"].update(
                 predefined_split_dir=str(root / "splits"),
                 use_predefined_splits=True,

@@ -1,6 +1,6 @@
 # Training and analysis use the same files
 
-Training is optional. `make all` analyses completed results without training a neural network. The public runner works locally and does not submit jobs. The earlier research and scheduler scripts remain available through `Makefile.research` in the repository.
+Training is optional. `make all` analyses completed results without training a neural network. The public runner works locally and does not submit jobs.
 
 ## Configure a fresh run
 
@@ -56,5 +56,3 @@ Replace the path if you changed `output_root`. These commands require the comple
 Each standard fit produces `reference/runs/<stage>/fit_<index>/<run-name>/` containing `config.json`, `label_to_index_by_task.json`, `best_model.pt`, `run_summary.json` and `test_predictions_best.csv`. Its parent contains `run_status.txt` and `training_complete.json`. Best checkpoints are selected using validation loss, not external-camera performance.
 
 Controls use `controls/training/runs/<condition>/seed_<seed>/<run-name>/`, with the same run files plus `audit_complete.json` and `fixed_class_weights.json` in the parent. Removal applies only to whole training worms; validation/test images are unchanged. The complete reference training cohort supplies individual-count class weights to every control fit, and the output vocabulary is checked before training.
-
-The training and saved-file interface were checked locally during preparation. The 2,640-fit publication grid was not rerun for this release.

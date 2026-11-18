@@ -29,6 +29,7 @@ def paired_interval(truth, predictions, target, strata, repeats=2000, seed=2026)
     assert predictions.shape[2] == len(truth) == len(strata)
     rng = np.random.default_rng(seed)
     weights = np.zeros((repeats, len(truth)))
+    # Resample worms within each group and share the draw across all conditions.
     for key in sorted(set(strata)):
         ids = np.flatnonzero(np.asarray(strata) == key)
         weights[:, ids] = rng.multinomial(

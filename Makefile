@@ -9,14 +9,12 @@ INDEX_ARG = $(if $(INDEX),--index $(INDEX),)
 DEVICE_ARG = $(if $(DEVICE),--device $(DEVICE),)
 
 .DEFAULT_GOAL := help
-.PHONY: help check all plan inference features analysis adaptive supplement figures verify status controls-compile research-help release-freeze-check
+.PHONY: help check all plan inference features analysis adaptive supplement figures verify status controls-compile release-freeze-check
 
 help:
-	@printf '%s\n' 'make release-check   Check downloaded images and model weights' 'make predict         Classify the segmented photographs' 'make segment         Segment the original photographs' 'make score           Score predictions by individual worm' 'make prepare-data    Prepare the original study splits' 'make reproduce-plan  List the fits for a full rerun' 'make reproduce       Train models and generate study results' 'make research-help   Show the earlier research commands' 'See README.md for installation and input folders'
+	@printf '%s\n' 'make release-check   Check downloaded images and model weights' 'make predict         Classify the segmented photographs' 'make segment         Segment the original photographs' 'make score           Score predictions by individual worm' 'make prepare-data    Prepare the original study splits' 'make reproduce-plan  List the fits for a full rerun' 'make reproduce       Train models and generate study results' 'See README.md for installation and input folders'
 check:
 	$(PAPER) check
-research-help:
-	$(MAKE) -f Makefile.research help PYTHON="$(PYTHON)"
 release-freeze-check:
 	$(PYTHON) scripts/check_release_freeze.py --require-links --require-committed
 # These stages share outputs, so run them in order even when make uses -j.
@@ -48,14 +46,6 @@ status:
 	$(PAPER) status
 controls-compile:
 	$(PAPER) controls-compile
-
-.PHONY: dataset-plan dataset-prepare dataset-segment
-dataset-plan:
-	$(PAPER) dataset-plan
-dataset-prepare:
-	$(PAPER) dataset-prepare
-dataset-segment:
-	$(PAPER) dataset-segment $(DEVICE_ARG)
 
 TRAIN_CONFIG ?= configs/train.yaml
 EXPERIMENT ?= all

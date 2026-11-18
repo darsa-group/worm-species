@@ -1,4 +1,4 @@
-"""Read the public global metadata and restore frozen runtime inputs."""
+"""Read the image metadata and restore the original paper splits."""
 
 from __future__ import annotations
 import csv

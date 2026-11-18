@@ -12,4 +12,4 @@ Full reproduction first trains the omitted grid. Each fit produces a checkpoint,
 
 Generated analysis paths keep inputs, predictions, features, fixed-rank analysis, adaptive-rank analysis and controls separate. Figures read those outputs. No saved paper predictions, features or result tables are bundled in this source release. Existing results may be configured as read-only inputs when their plans, maps, hashes and split files are also available.
 
-The acquisition-layout dataset builder is retained as historical source. It requires original capture archives outside this reduced release. Training, supplied-model inference and mask generation use the public photographs directly. Segmentation retraining needs independent human annotations and their original partition; generated masks are not a replacement.
+Training, supplied-model inference and mask generation use the public photographs directly. Segmentation retraining needs independent human annotations and their original partition; generated masks are not a replacement.

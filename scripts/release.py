@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Commands for the two public weight files and the global image metadata."""
+"""Run segmentation, classification and scoring with the supplied models."""
 
 from __future__ import annotations
 import argparse

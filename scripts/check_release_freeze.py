@@ -38,9 +38,9 @@ def check(require_links=False, require_committed=False):
         repository = links.get("github_repository_url", "")
         if (
             not repository.startswith("https://github.com/")
-            or links.get("github_release_url") != repository + "/releases/tag/v1.0.0"
+            or links.get("github_release_url") != repository + "/releases/tag/v1.0.1"
         ):
-            errors.append("Confirm the versioned GitHub release URL for v1.0.0")
+            errors.append("Confirm the versioned GitHub release URL for v1.0.1")
     if require_committed:
         paths = (ROOT / "configs/release_commit_paths.txt").read_text().splitlines()
         for name in paths:
