@@ -1,0 +1,8 @@
+{
+  "description": "Selected plotting functions copied from the active manuscript and adapted to configured runtime result paths. No saved numerical results copied.",
+  "source_sha256": {
+    "build_mee_v2_assets.py": "37693646cfca4f27070f3c4e1c5c13a8fdb11dc649b965aca3f461d19a9d214f",
+    "build_mee_v2_controls.py": "4b213433b93acb91cfbfe4f7b95ec882aaf29a566d354b96595b231824d4f69f",
+    "mee_figure_updates.py": "4acdf28697172069077fc84bf465571d46c435136665c7e8abf35f5741873964"
+  }
+}

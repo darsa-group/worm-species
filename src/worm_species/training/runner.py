@@ -248,12 +248,15 @@ def run_test_evaluation(
 def run_one(cfg: dict, profile: TrainingProfile) -> dict:
     """Run exactly one resolved configuration; never generate another config."""
     set_seed(cfg["seed"])
-    device_name = (
-        torch.cuda.get_device_name(0) if torch.cuda.is_available() else "CPU"
-    )
-    print(f"Using device: {device_name}")
+    requested = cfg.get("training", {}).get("device", "auto")
+    device = torch.device("cuda:0" if requested == "auto" and torch.cuda.is_available()
+                          else "cpu" if requested == "auto" else requested)
+    if device.type == "cuda":
+        if not torch.cuda.is_available():
+            raise RuntimeError("CUDA was requested but is unavailable; activate a compatible environment or use DEVICE=cpu")
+        torch.cuda.set_device(device)
+    print(f"Using device: {device}")
     print("Starting training")
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     input_condition = {
         "condition": "original",

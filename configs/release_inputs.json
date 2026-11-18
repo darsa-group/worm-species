@@ -1,0 +1,19 @@
+{
+  "schema": 1,
+  "metadata_sha256": "694a600fafe0ac869aa4432ac4b5c391ea28e1a38ff765a034333c7d2b2aa026",
+  "images": 9356,
+  "segmented_images": 9295,
+  "reference_images": 6191,
+  "classification": {
+    "relative_path": "classification/convnext_base_seed2340.pt",
+    "sha256": "60d579f5c6ebe8891c50253682d407a9751cb98f5d9c89d9834fb4301c104e8b"
+  },
+  "segmentation": {
+    "relative_path": "segmentation/segmentation.pt",
+    "sha256": "9d20d032449b8ed9e2155b2fb264bc4e7bf80985bb4f648bcbe27e1ab4b1f703"
+  },
+  "dataset_doi": "10.5281/zenodo.24341462",
+  "model_doi": "10.5281/zenodo.24341741",
+  "github_release_url": "https://github.com/darsa-group/worm-species/releases/tag/v1.0.0",
+  "github_repository_url": "https://github.com/darsa-group/worm-species"
+}

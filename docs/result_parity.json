@@ -1,0 +1,52 @@
+[
+  {
+    "table": "baseline_summary.csv",
+    "rows": 54,
+    "maximum_absolute_differences": {
+      "mean": 0.0,
+      "seed_sd": 0.0
+    }
+  },
+  {
+    "table": "domain_differences.csv",
+    "rows": 33,
+    "maximum_absolute_differences": {
+      "difference_pp": 0.0
+    }
+  },
+  {
+    "table": "visual_task_summary.csv",
+    "rows": 144,
+    "maximum_absolute_differences": {
+      "mean": 0.0,
+      "seed_sd": 0.0
+    }
+  },
+  {
+    "table": "global_calibration_sampling_summary.csv",
+    "rows": 18,
+    "maximum_absolute_differences": {
+      "mean": 0.0,
+      "seed_sd": 0.0,
+      "gain_pp": 0.0
+    }
+  },
+  {
+    "table": "calibration_summary.csv",
+    "rows": 1302,
+    "maximum_absolute_differences": {
+      "mean": 0.0,
+      "seed_sd": 0.0,
+      "gain_pp": 0.0
+    }
+  },
+  {
+    "table": "matched_stage_bootstrap_summary.csv",
+    "rows": 36,
+    "maximum_absolute_differences": {
+      "excess_mean": 0.0,
+      "excess_sampling_ci_low": 0.0,
+      "excess_sampling_ci_high": 0.0
+    }
+  }
+]
