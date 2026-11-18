@@ -6,7 +6,7 @@ Code for segmenting earthworm photographs, training classifiers and reproducing 
 |---|---|
 | Photographs, segmentations and metadata | [10.5281/zenodo.24341462](https://doi.org/10.5281/zenodo.24341462) |
 | Model weights | [10.5281/zenodo.24341741](https://doi.org/10.5281/zenodo.24341741) |
-| Code | [Version 1.0.1](https://github.com/darsa-group/worm-species/releases/tag/v1.0.3) |
+| Code | [Version 1.0.3](https://github.com/darsa-group/worm-species/releases/tag/v1.0.3) |
 
 ## Installation
 
